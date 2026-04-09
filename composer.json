@@ -1,0 +1,81 @@
+{
+    "name": "pohoc/sa-token",
+    "type": "library",
+    "description": "一个轻量级 PHP 权限认证框架，灵感源自 sa-token",
+    "keywords": [
+        "sa-token",
+        "auth",
+        "authentication",
+        "authorization",
+        "session",
+        "sso",
+        "oauth2",
+        "jwt"
+    ],
+    "license": "MIT",
+    "homepage": "https://github.com/pohoc/sa-token",
+    "authors": [
+        {
+            "name": "pohoc",
+            "email": "po.hoc4@gmail.com",
+            "homepage": "https://github.com/pohoc"
+        }
+    ],
+    "support": {
+        "issues": "https://github.com/pohoc/sa-token/issues",
+        "source": "https://github.com/pohoc/sa-token"
+    },
+    "require": {
+        "php": "^8.1|^8.2|^8.3|^8.4",
+        "ext-openssl": "*",
+        "firebase/php-jwt": "^7.0",
+        "psr/http-message": "^2.0",
+        "psr/simple-cache": "^3.0"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.0",
+        "php-cs-fixer/shim": "^3.94",
+        "phpstan/phpstan": "^2.1",
+        "predis/predis": "^2.0",
+        "pohoc/crypto-sm": "^0.0"
+    },
+    "suggest": {
+        "ext-redis": "可选：使用 phpredis 扩展替代 Predis，性能更优",
+        "ext-gmp": "可选：国密算法（SM2/SM3/SM4）所需",
+        "pohoc/crypto-sm": "可选：国密算法插件所需"
+    },
+    "scripts": {
+        "test": "phpunit",
+        "analyse": "phpstan analyse",
+        "cs-check": "php-cs-fixer fix --dry-run --diff",
+        "cs-fix": "php-cs-fixer fix",
+        "changelog": "php scripts/changelog.php",
+        "check": [
+            "@cs-check",
+            "@analyse",
+            "@test"
+        ]
+    },
+    "autoload": {
+        "psr-4": {
+            "SaToken\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "SaToken\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "preferred-install": "dist",
+        "sort-packages": true
+    },
+    "extra": {
+        "config": {
+            "sa_token": "config/sa_token.php"
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}

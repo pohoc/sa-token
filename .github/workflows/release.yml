@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: gmp, openssl
+
+      - name: Validate composer.json
+        run: composer validate --strict
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Run tests
+        run: vendor/bin/phpunit
+
+      - name: Get version
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Generate changelog
+        run: php scripts/changelog.php
+
+      - name: Extract current version changelog
+        id: changelog
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          NEXT_HEADER=$(grep -n "^## \[" CHANGELOG.md | head -2 | tail -1 | cut -d: -f1)
+          CURR_HEADER=$(grep -n "^## \[" CHANGELOG.md | head -1 | cut -d: -f1)
+          if [ -n "$NEXT_HEADER" ]; then
+            BODY=$(sed -n "$((CURR_HEADER + 1)),$((NEXT_HEADER - 1))p" CHANGELOG.md | sed '/^$/d; /^\[.*\]:/d')
+          else
+            BODY=$(sed -n "$((CURR_HEADER + 1)),\$p" CHANGELOG.md | sed '/^$/d; /^\[.*\]:/d')
+          fi
+          echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
+          echo "$BODY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Commit changelog
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git diff --cached --quiet || git commit -m "docs: 更新变更日志 ${{ steps.version.outputs.VERSION }}"
+          git push origin HEAD:main
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.VERSION }}
+          name: Release ${{ steps.version.outputs.VERSION }}
+          body: ${{ steps.changelog.outputs.CHANGELOG }}
+          draft: false
+          prerelease: false
