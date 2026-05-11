@@ -129,6 +129,12 @@ class SaTokenConfig
     // 签名算法（md5 / sha256）
     protected string $signAlg = 'md5';
 
+    // 连续登录失败最大次数，0 表示不限制
+    protected int $antiBruteMaxFailures = 5;
+
+    // 登录失败锁定时长（秒）
+    protected int $antiBruteLockDuration = 600;
+
     // SSO 配置
     protected array $sso = [
         'loginUrl'          => '',
@@ -232,6 +238,8 @@ class SaTokenConfig
             'signKey'                => $this->signKey,
             'signTimestampGap'       => $this->signTimestampGap,
             'signAlg'                => $this->signAlg,
+            'antiBruteMaxFailures'   => $this->antiBruteMaxFailures,
+            'antiBruteLockDuration'   => $this->antiBruteLockDuration,
             'sso'                    => $this->sso,
             'oauth2'                 => $this->oauth2,
             'apiKeyHeader'           => $this->apiKeyHeader,
@@ -724,6 +732,28 @@ class SaTokenConfig
     public function setApiSecretHeader(string $apiSecretHeader): static
     {
         $this->apiSecretHeader = $apiSecretHeader;
+        return $this;
+    }
+
+    public function getAntiBruteMaxFailures(): int
+    {
+        return $this->antiBruteMaxFailures;
+    }
+
+    public function setAntiBruteMaxFailures(int $antiBruteMaxFailures): static
+    {
+        $this->antiBruteMaxFailures = $antiBruteMaxFailures;
+        return $this;
+    }
+
+    public function getAntiBruteLockDuration(): int
+    {
+        return $this->antiBruteLockDuration;
+    }
+
+    public function setAntiBruteLockDuration(int $antiBruteLockDuration): static
+    {
+        $this->antiBruteLockDuration = $antiBruteLockDuration;
         return $this;
     }
 }

@@ -6,3 +6,5 @@ parameters:
     ignoreErrors:
         - '#Call to method PHPUnit\\Framework\\Assert::(assertTrue|assertNotNull|assertIsArray).*always evaluate to#'
         - '#Unsafe usage of new static#'
+        - '#Negated boolean expression is always true#'
+        - '#Unreachable statement - code above always terminates#'

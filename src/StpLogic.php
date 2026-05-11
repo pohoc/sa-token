@@ -13,6 +13,7 @@ use SaToken\Exception\NotSafeException;
 use SaToken\Exception\SaTokenException;
 use SaToken\Listener\SaTokenEvent;
 use SaToken\Plugin\SaTokenJwt;
+use SaToken\Security\SaAntiBruteUtil;
 use SaToken\Util\SaFoxUtil;
 use SaToken\Util\SaTokenContext;
 
@@ -132,6 +133,8 @@ class StpLogic
 
         // 触发登录事件
         $this->getEvent()->onLogin($this->loginType, $loginId, $tokenValue, $parameter);
+
+        $this->clearAntiBruteFailures($loginId);
 
         return $tokenValue;
     }
@@ -1103,5 +1106,64 @@ class StpLogic
                 $config->getCookieSameSite()
             );
         }
+    }
+
+    public function checkAntiBrute(string $account): void
+    {
+        $config = $this->getConfig();
+        $maxFailures = $config->getAntiBruteMaxFailures();
+
+        if ($maxFailures <= 0) {
+            return;
+        }
+
+        SaAntiBruteUtil::checkAndThrow($account, $this->loginType);
+    }
+
+    public function recordAntiBruteFailure(string $account): void
+    {
+        $config = $this->getConfig();
+        $maxFailures = $config->getAntiBruteMaxFailures();
+
+        if ($maxFailures <= 0) {
+            return;
+        }
+
+        SaAntiBruteUtil::recordFailure($account, $this->loginType);
+
+        if (SaAntiBruteUtil::getFailCount($account, $this->loginType) >= $maxFailures) {
+            $lockDuration = $config->getAntiBruteLockDuration();
+            SaAntiBruteUtil::lock($account, $this->loginType, $lockDuration);
+        }
+    }
+
+    protected function clearAntiBruteFailures(mixed $loginId): void
+    {
+        $config = $this->getConfig();
+        if ($config->getAntiBruteMaxFailures() <= 0) {
+            return;
+        }
+
+        SaAntiBruteUtil::clearFailures((string) $loginId, $this->loginType);
+    }
+
+    public function isAccountLocked(string $account): bool
+    {
+        return SaAntiBruteUtil::isAccountLocked($account, $this->loginType);
+    }
+
+    public function getRemainingLockTime(string $account): int
+    {
+        return SaAntiBruteUtil::getRemainingLockTime($account, $this->loginType);
+    }
+
+    public function unlockAccount(string $account): void
+    {
+        SaAntiBruteUtil::unlock($account, $this->loginType);
+    }
+
+    public function getAntiBruteInfo(string $account): array
+    {
+        return SaAntiBruteUtil::getSecurityInfo($account, $this->loginType);
     }
 }
