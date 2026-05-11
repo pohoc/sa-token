@@ -78,6 +78,10 @@ class StpLogicPermissionRoleTest extends TestCase
             {
                 return [];
             }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
+            }
         });
 
         $this->loginAndGetToken();
@@ -97,6 +101,10 @@ class StpLogicPermissionRoleTest extends TestCase
             {
                 return [];
             }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
+            }
         });
 
         $this->loginAndGetToken();
@@ -114,6 +122,10 @@ class StpLogicPermissionRoleTest extends TestCase
             public function getRoleList(mixed $loginId, string $loginType): array
             {
                 return [];
+            }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
             }
         });
 
@@ -134,6 +146,10 @@ class StpLogicPermissionRoleTest extends TestCase
             {
                 return [];
             }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
+            }
         });
 
         $this->loginAndGetToken();
@@ -153,6 +169,10 @@ class StpLogicPermissionRoleTest extends TestCase
             {
                 return [];
             }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
+            }
         });
 
         $this->loginAndGetToken();
@@ -170,6 +190,10 @@ class StpLogicPermissionRoleTest extends TestCase
             public function getRoleList(mixed $loginId, string $loginType): array
             {
                 return [];
+            }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
             }
         });
 
@@ -190,6 +214,10 @@ class StpLogicPermissionRoleTest extends TestCase
             {
                 return [];
             }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
+            }
         });
 
         $this->loginAndGetToken();
@@ -207,6 +235,10 @@ class StpLogicPermissionRoleTest extends TestCase
             public function getRoleList(mixed $loginId, string $loginType): array
             {
                 return [];
+            }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
             }
         });
 
@@ -226,6 +258,10 @@ class StpLogicPermissionRoleTest extends TestCase
             {
                 return [];
             }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
+            }
         });
 
         $this->loginAndGetToken();
@@ -243,6 +279,10 @@ class StpLogicPermissionRoleTest extends TestCase
             public function getRoleList(mixed $loginId, string $loginType): array
             {
                 return [];
+            }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
             }
         });
 
@@ -263,6 +303,10 @@ class StpLogicPermissionRoleTest extends TestCase
             {
                 return [];
             }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
+            }
         });
 
         $this->loginAndGetToken();
@@ -280,6 +324,10 @@ class StpLogicPermissionRoleTest extends TestCase
             {
                 return [];
             }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
+            }
         });
 
         $this->loginAndGetToken();
@@ -296,6 +344,10 @@ class StpLogicPermissionRoleTest extends TestCase
             public function getRoleList(mixed $loginId, string $loginType): array
             {
                 return [];
+            }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
             }
         });
 
@@ -315,6 +367,10 @@ class StpLogicPermissionRoleTest extends TestCase
             {
                 return ['admin', 'user'];
             }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
+            }
         });
 
         $this->loginAndGetToken();
@@ -333,6 +389,10 @@ class StpLogicPermissionRoleTest extends TestCase
             {
                 return ['user'];
             }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
+            }
         });
 
         $this->loginAndGetToken();
@@ -350,6 +410,10 @@ class StpLogicPermissionRoleTest extends TestCase
             public function getRoleList(mixed $loginId, string $loginType): array
             {
                 return ['admin'];
+            }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
             }
         });
 
@@ -370,6 +434,10 @@ class StpLogicPermissionRoleTest extends TestCase
             {
                 return ['user'];
             }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
+            }
         });
 
         $this->loginAndGetToken();
@@ -387,6 +455,10 @@ class StpLogicPermissionRoleTest extends TestCase
             public function getRoleList(mixed $loginId, string $loginType): array
             {
                 return ['guest'];
+            }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
             }
         });
 
@@ -408,6 +480,10 @@ class StpLogicPermissionRoleTest extends TestCase
             {
                 return ['admin', 'user', 'super'];
             }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
+            }
         });
 
         $this->loginAndGetToken();
@@ -425,6 +501,10 @@ class StpLogicPermissionRoleTest extends TestCase
             public function getRoleList(mixed $loginId, string $loginType): array
             {
                 return ['admin', 'user'];
+            }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
             }
         });
 
@@ -446,6 +526,10 @@ class StpLogicPermissionRoleTest extends TestCase
             {
                 return ['admin'];
             }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
+            }
         });
 
         $this->loginAndGetToken();
@@ -462,6 +546,10 @@ class StpLogicPermissionRoleTest extends TestCase
             public function getRoleList(mixed $loginId, string $loginType): array
             {
                 return ['user'];
+            }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
             }
         });
 
@@ -480,6 +568,10 @@ class StpLogicPermissionRoleTest extends TestCase
             {
                 return ['admin'];
             }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
+            }
         });
 
         $this->assertFalse($this->logic->hasRole('admin'));
@@ -497,6 +589,10 @@ class StpLogicPermissionRoleTest extends TestCase
             public function getRoleList(mixed $loginId, string $loginType): array
             {
                 return [];
+            }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
             }
         });
 
@@ -520,6 +616,10 @@ class StpLogicPermissionRoleTest extends TestCase
             {
                 return [];
             }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
+            }
         });
 
         $this->loginAndGetToken();
@@ -542,6 +642,10 @@ class StpLogicPermissionRoleTest extends TestCase
             public function getRoleList(mixed $loginId, string $loginType): array
             {
                 return [];
+            }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
             }
         });
 

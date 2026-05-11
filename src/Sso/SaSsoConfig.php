@@ -42,6 +42,12 @@ class SaSsoConfig
     // SSO Client Secret
     protected string $clientSecret = '';
 
+    // SSO 允许的回调域名列表
+    protected array $allowDomains = [];
+
+    // 参数防丢 Cookie/Query 参数名
+    protected string $paramName = 'sso_params';
+
     public function __construct(array $config = [])
     {
         foreach ($config as $key => $value) {
@@ -137,6 +143,28 @@ class SaSsoConfig
     public function setClientSecret(string $clientSecret): static
     {
         $this->clientSecret = $clientSecret;
+        return $this;
+    }
+
+    public function getAllowDomains(): array
+    {
+        return $this->allowDomains;
+    }
+
+    public function setAllowDomains(array $allowDomains): static
+    {
+        $this->allowDomains = $allowDomains;
+        return $this;
+    }
+
+    public function getParamName(): string
+    {
+        return $this->paramName;
+    }
+
+    public function setParamName(string $paramName): static
+    {
+        $this->paramName = $paramName;
         return $this;
     }
 }

@@ -56,10 +56,22 @@ class TokenManager
 
     public function createTokenValue(mixed $loginId, string $loginType): string
     {
+        $action = SaToken::getAction();
+        if ($action !== null) {
+            $customToken = $action->generateTokenValue($loginId, $loginType);
+            if ($customToken !== null) {
+                return $customToken;
+            }
+        }
+
         $style = $this->getConfig()->getTokenStyle();
         return match ($style) {
             'uuid'          => SaFoxUtil::uuid(),
             'simple-random' => SaFoxUtil::randomString(32),
+            'random-64'     => SaFoxUtil::randomString(64),
+            'random-128'    => SaFoxUtil::randomString(128),
+            'random-256'    => SaFoxUtil::randomString(256),
+            'tiket'         => SaFoxUtil::randomNumber(20),
             default         => SaFoxUtil::uuid(),
         };
     }
@@ -303,12 +315,17 @@ class TokenManager
 
     public function searchTokenValue(string $keyword, int $start, int $size): array
     {
-        return [];
+        return $this->getDao()->search(self::TOKEN_PREFIX, $keyword, $start, $size);
     }
 
     public function searchSessionId(string $keyword, int $start, int $size): array
     {
-        return [];
+        return $this->getDao()->search(self::SESSION_PREFIX, $keyword, $start, $size);
+    }
+
+    public function searchTokenSessionId(string $keyword, int $start, int $size): array
+    {
+        return $this->getDao()->search(self::TOKEN_SESSION_PREFIX, $keyword, $start, $size);
     }
 
     public function resetEncryptor(): void

@@ -17,6 +17,7 @@ class SaOAuth2AccessToken
     protected mixed $loginId = null;
     protected string $clientId = '';
     protected int $createTime = 0;
+    protected string $idToken = '';
 
     public function __construct(array $data = [])
     {
@@ -45,6 +46,7 @@ class SaOAuth2AccessToken
             'loginId'      => $this->loginId,
             'clientId'     => $this->clientId,
             'createTime'   => $this->createTime,
+            'idToken'      => $this->idToken,
         ];
     }
 
@@ -63,6 +65,9 @@ class SaOAuth2AccessToken
         ];
         if ($this->refreshToken !== null) {
             $result['refresh_token'] = $this->refreshToken;
+        }
+        if ($this->idToken !== '') {
+            $result['id_token'] = $this->idToken;
         }
         return $result;
     }
@@ -152,6 +157,17 @@ class SaOAuth2AccessToken
     public function setCreateTime(int $createTime): static
     {
         $this->createTime = $createTime;
+        return $this;
+    }
+
+    public function getIdToken(): string
+    {
+        return $this->idToken;
+    }
+
+    public function setIdToken(string $idToken): static
+    {
+        $this->idToken = $idToken;
         return $this;
     }
 }

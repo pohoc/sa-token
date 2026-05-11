@@ -43,6 +43,23 @@ class SaFoxUtil
     }
 
     /**
+     * 生成随机数字字符串
+     *
+     * @param  int    $length 字符串长度
+     * @return string
+     */
+    public static function randomNumber(int $length): string
+    {
+        $chars = '0123456789';
+        $str = '';
+        $max = strlen($chars) - 1;
+        for ($i = 0; $i < $length; $i++) {
+            $str .= $chars[random_int(0, $max)];
+        }
+        return $str;
+    }
+
+    /**
      * 获取当前时间戳（秒）
      *
      * @return int

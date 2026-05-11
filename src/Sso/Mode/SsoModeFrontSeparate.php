@@ -50,11 +50,13 @@ class SsoModeFrontSeparate
 
         $tokenValue = StpUtil::getTokenValue();
         $tokenName = SaToken::getConfig()->getTokenName();
+        $redirect = $this->handle->restorePreLoginUrl();
 
         return [
             'tokenValue' => $tokenValue ?? '',
             'loginId'    => $loginId,
             'tokenName'  => $tokenName,
+            'redirect'   => $redirect,
         ];
     }
 

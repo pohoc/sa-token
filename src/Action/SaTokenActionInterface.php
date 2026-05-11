@@ -38,4 +38,15 @@ interface SaTokenActionInterface
      * @return array<string> 角色标识列表
      */
     public function getRoleList(mixed $loginId, string $loginType): array;
+
+    /**
+     * 自定义生成 Token 值
+     *
+     * 返回 null 则使用默认风格生成，返回字符串则使用自定义值
+     *
+     * @param  mixed       $loginId   登录 ID
+     * @param  string      $loginType 登录类型
+     * @return string|null 自定义 Token 值，返回 null 使用默认生成
+     */
+    public function generateTokenValue(mixed $loginId, string $loginType): ?string;
 }

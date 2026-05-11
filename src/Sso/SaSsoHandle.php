@@ -7,6 +7,7 @@ namespace SaToken\Sso;
 use SaToken\Exception\SaTokenException;
 use SaToken\StpUtil;
 use SaToken\Util\SaFoxUtil;
+use SaToken\Util\SaTokenContext;
 
 /**
  * SSO 请求处理器
@@ -47,10 +48,18 @@ class SaSsoHandle
      * @param  string|null $redirect 登录后回调地址
      * @return string      登录 URL
      */
-    public function buildLoginUrl(?string $redirect = null): string
+    public function buildLoginUrl(?string $redirect = null, ?string $currentUrl = null): string
     {
+        if ($currentUrl !== null) {
+            $this->savePreLoginUrl($currentUrl);
+        }
+
         $loginUrl = $this->config->getLoginUrl();
         $backUrl = $redirect ?? $this->config->getBackUrl();
+
+        if ($backUrl !== '' && !$this->validateDomain($backUrl)) {
+            throw new SaTokenException('SSO 回调域名不在允许列表中');
+        }
 
         $params = [];
         if ($backUrl !== '') {
@@ -67,6 +76,29 @@ class SaSsoHandle
         return $loginUrl;
     }
 
+    public function savePreLoginUrl(string $currentUrl): void
+    {
+        $encoded = base64_encode($currentUrl);
+        SaTokenContext::setCookie($this->config->getParamName(), $encoded, 300);
+    }
+
+    public function restorePreLoginUrl(): string
+    {
+        $encoded = SaTokenContext::getCookie($this->config->getParamName());
+        if ($encoded === null || $encoded === '') {
+            return '';
+        }
+
+        $decoded = base64_decode($encoded, true);
+        if ($decoded === false) {
+            return '';
+        }
+
+        SaTokenContext::setCookie($this->config->getParamName(), '', -1);
+
+        return $decoded;
+    }
+
     /**
      * 处理登录回调
      *
@@ -76,10 +108,14 @@ class SaSsoHandle
      * @return mixed            登录 ID
      * @throws SaTokenException
      */
-    public function doLoginCallback(string $ticket): mixed
+    public function doLoginCallback(string $ticket, ?string $redirect = null): mixed
     {
         if (SaFoxUtil::isEmpty($ticket)) {
             throw new SaTokenException('SSO ticket 不能为空');
+        }
+
+        if ($redirect !== null && $redirect !== '' && !$this->validateDomain($redirect)) {
+            throw new SaTokenException('SSO 回调域名不在允许列表中');
         }
 
         // 校验 ticket
@@ -167,6 +203,39 @@ class SaSsoHandle
         }
 
         return $sloUrl;
+    }
+
+    /**
+     * 校验回调域名是否在允许列表中
+     *
+     * @param  string $url 回调 URL
+     * @return bool   是否合法
+     */
+    protected function validateDomain(string $url): bool
+    {
+        $allowDomains = $this->config->getAllowDomains();
+        if (empty($allowDomains)) {
+            return true;
+        }
+
+        $host = parse_url($url, PHP_URL_HOST);
+        if ($host === null || $host === false) {
+            return false;
+        }
+
+        foreach ($allowDomains as $pattern) {
+            if ($pattern === $host) {
+                return true;
+            }
+            if (str_starts_with($pattern, '*.')) {
+                $suffix = substr($pattern, 2);
+                if ($host === $suffix || str_ends_with($host, '.' . $suffix)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**

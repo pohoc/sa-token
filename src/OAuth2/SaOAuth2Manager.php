@@ -7,6 +7,7 @@ namespace SaToken\OAuth2;
 use SaToken\OAuth2\Data\SaOAuth2AccessToken;
 use SaToken\OAuth2\Data\SaOAuth2AuthorizationCode;
 use SaToken\OAuth2\Data\SaOAuth2Client;
+use SaToken\OAuth2\Data\SaOAuth2IdToken;
 use SaToken\OAuth2\Strategy\AuthorizationCodeStrategy;
 use SaToken\OAuth2\Strategy\ClientCredentialsStrategy;
 use SaToken\OAuth2\Strategy\PasswordStrategy;
@@ -100,5 +101,10 @@ class SaOAuth2Manager
     public function getHandle(): SaOAuth2Handle
     {
         return $this->handle;
+    }
+
+    public function generateIdToken(string $clientId, mixed $loginId, string $scope = ''): SaOAuth2IdToken
+    {
+        return $this->handle->generateIdToken($clientId, $loginId, $scope);
     }
 }

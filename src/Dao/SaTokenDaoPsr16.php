@@ -119,4 +119,9 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface
     {
         return -1;
     }
+
+    public function search(string $prefix, string $keyword, int $start, int $size): array
+    {
+        return [];
+    }
 }

@@ -99,6 +99,9 @@ class SaTokenConfig
     // JWT 密钥
     protected string $jwtSecretKey = '';
 
+    // JWT 无状态模式
+    protected bool $jwtStateless = false;
+
     // 是否开启 Token 内容加密
     protected bool $tokenEncrypt = false;
 
@@ -107,6 +110,21 @@ class SaTokenConfig
 
     // 是否在登录后将 Token 信息写入 Session
     protected bool $tokenSessionCheckLogin = true;
+
+    // 是否启用独立 Redis
+    protected bool $separateRedis = false;
+
+    // 独立 Redis 连接配置（host, port, db, password, timeout）
+    protected array $separateRedisConfig = [];
+
+    // 签名密钥
+    protected string $signKey = '';
+
+    // 签名时间戳容差（秒）
+    protected int $signTimestampGap = 600;
+
+    // 签名算法（md5 / sha256）
+    protected string $signAlg = 'md5';
 
     // SSO 配置
     protected array $sso = [
@@ -118,6 +136,7 @@ class SaTokenConfig
         'mode'           => 'same-domain',
         'clientId'       => '',
         'clientSecret'   => '',
+        'allowDomains'   => [],
     ];
 
     // OAuth2 配置
@@ -127,7 +146,15 @@ class SaTokenConfig
         'accessTokenTimeout'   => 7200,
         'refreshTokenTimeout'  => -1,
         'isNewRefreshToken'    => false,
+        'openIdMode'           => false,
+        'issuer'               => '',
     ];
+
+    // API Key 请求头名称
+    protected string $apiKeyHeader = 'api-key';
+
+    // API Secret 请求头名称
+    protected string $apiSecretHeader = 'api-secret';
 
     /**
      * @param array $config 配置数组
@@ -190,11 +217,19 @@ class SaTokenConfig
             'sm2PublicKey'           => $this->sm2PublicKey,
             'sm4Key'                 => $this->sm4Key,
             'jwtSecretKey'           => $this->jwtSecretKey,
+            'jwtStateless'           => $this->jwtStateless,
             'tokenEncrypt'           => $this->tokenEncrypt,
             'tokenEncryptKey'        => $this->tokenEncryptKey,
             'tokenSessionCheckLogin' => $this->tokenSessionCheckLogin,
+            'separateRedis'          => $this->separateRedis,
+            'separateRedisConfig'    => $this->separateRedisConfig,
+            'signKey'                => $this->signKey,
+            'signTimestampGap'       => $this->signTimestampGap,
+            'signAlg'                => $this->signAlg,
             'sso'                    => $this->sso,
             'oauth2'                 => $this->oauth2,
+            'apiKeyHeader'           => $this->apiKeyHeader,
+            'apiSecretHeader'        => $this->apiSecretHeader,
         ];
     }
 
@@ -508,6 +543,17 @@ class SaTokenConfig
         return $this;
     }
 
+    public function isJwtStateless(): bool
+    {
+        return $this->jwtStateless;
+    }
+
+    public function setJwtStateless(bool $jwtStateless): static
+    {
+        $this->jwtStateless = $jwtStateless;
+        return $this;
+    }
+
     public function isTokenEncrypt(): bool
     {
         return $this->tokenEncrypt;
@@ -538,6 +584,61 @@ class SaTokenConfig
     public function setTokenSessionCheckLogin(bool $tokenSessionCheckLogin): static
     {
         $this->tokenSessionCheckLogin = $tokenSessionCheckLogin;
+        return $this;
+    }
+
+    public function isSeparateRedis(): bool
+    {
+        return $this->separateRedis;
+    }
+
+    public function setSeparateRedis(bool $separateRedis): static
+    {
+        $this->separateRedis = $separateRedis;
+        return $this;
+    }
+
+    public function getSeparateRedisConfig(): array
+    {
+        return $this->separateRedisConfig;
+    }
+
+    public function setSeparateRedisConfig(array $separateRedisConfig): static
+    {
+        $this->separateRedisConfig = $separateRedisConfig;
+        return $this;
+    }
+
+    public function getSignKey(): string
+    {
+        return $this->signKey;
+    }
+
+    public function setSignKey(string $signKey): static
+    {
+        $this->signKey = $signKey;
+        return $this;
+    }
+
+    public function getSignTimestampGap(): int
+    {
+        return $this->signTimestampGap;
+    }
+
+    public function setSignTimestampGap(int $signTimestampGap): static
+    {
+        $this->signTimestampGap = $signTimestampGap;
+        return $this;
+    }
+
+    public function getSignAlg(): string
+    {
+        return $this->signAlg;
+    }
+
+    public function setSignAlg(string $signAlg): static
+    {
+        $this->signAlg = $signAlg;
         return $this;
     }
 
@@ -585,5 +686,27 @@ class SaTokenConfig
     public function getOauth2Value(string $key, mixed $default = null): mixed
     {
         return $this->oauth2[$key] ?? $default;
+    }
+
+    public function getApiKeyHeader(): string
+    {
+        return $this->apiKeyHeader;
+    }
+
+    public function setApiKeyHeader(string $apiKeyHeader): static
+    {
+        $this->apiKeyHeader = $apiKeyHeader;
+        return $this;
+    }
+
+    public function getApiSecretHeader(): string
+    {
+        return $this->apiSecretHeader;
+    }
+
+    public function setApiSecretHeader(string $apiSecretHeader): static
+    {
+        $this->apiSecretHeader = $apiSecretHeader;
+        return $this;
     }
 }

@@ -119,6 +119,10 @@ class StpUtilTest extends TestCase
             {
                 return ['admin', 'user'];
             }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
+            }
         });
 
         $token = StpUtil::login(10001);

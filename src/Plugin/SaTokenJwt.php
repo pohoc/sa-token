@@ -19,7 +19,7 @@ class SaTokenJwt
         $this->cryptoType = $config['cryptoType'] ?? 'intl';
     }
 
-    public function createToken(mixed $loginId, string $loginType, ?int $timeout = null): string
+    public function createToken(mixed $loginId, string $loginType, ?int $timeout = null, array $extraClaims = []): string
     {
         if ($this->secretKey === '') {
             throw new SaTokenException('JWT 密钥未配置');
@@ -41,6 +41,8 @@ class SaTokenJwt
         if ($timeout !== null && $timeout > 0) {
             $payload['exp'] = $now + $timeout;
         }
+
+        $payload = array_merge($payload, $extraClaims);
 
         $headerB64 = $this->base64UrlEncode(json_encode($header, JSON_UNESCAPED_UNICODE));
         $payloadB64 = $this->base64UrlEncode(json_encode($payload, JSON_UNESCAPED_UNICODE));
@@ -123,6 +125,37 @@ class SaTokenJwt
             return $payload['type'] ?? '';
         } catch (SaTokenException) {
             return '';
+        }
+    }
+
+    public function getExtraClaims(string $token): array
+    {
+        $payload = $this->parseToken($token);
+        $standardKeys = ['iat', 'jti', 'sub', 'type', 'exp'];
+        return array_diff_key($payload, array_flip($standardKeys));
+    }
+
+    public function createStatelessToken(mixed $loginId, string $loginType, ?int $timeout = null, array $extraClaims = []): string
+    {
+        $sessionData = [];
+        $sessionId = \SaToken\TokenManager::SESSION_PREFIX . $loginType . ':' . $loginId;
+        $session = \SaToken\SaSession::getBySessionId($sessionId);
+        if ($session !== null) {
+            $sessionData = $session->getDataMap();
+        }
+
+        $statelessClaims = array_merge($extraClaims, $sessionData);
+
+        return $this->createToken($loginId, $loginType, $timeout, $statelessClaims);
+    }
+
+    public function validateStatelessToken(string $token): ?array
+    {
+        try {
+            $payload = $this->parseToken($token);
+            return $payload;
+        } catch (SaTokenException) {
+            return null;
         }
     }
 

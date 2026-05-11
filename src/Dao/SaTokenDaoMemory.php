@@ -145,6 +145,23 @@ class SaTokenDaoMemory implements SaTokenDaoInterface
     }
 
     /**
+     * @inheritdoc
+     */
+    public function search(string $prefix, string $keyword, int $start, int $size): array
+    {
+        $this->cleanExpired();
+
+        $values = [];
+        foreach ($this->dataMap as $key => $item) {
+            if (str_starts_with($key, $prefix) && str_contains($key, $keyword)) {
+                $values[] = $item['value'];
+            }
+        }
+
+        return array_slice($values, $start, $size);
+    }
+
+    /**
      * 清除所有数据
      *
      * @return void

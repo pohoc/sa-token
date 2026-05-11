@@ -8,6 +8,8 @@ class SaTokenDaoRedis implements SaTokenDaoInterface
 {
     protected \Redis $client;
 
+    protected ?\Redis $saRedis = null;
+
     protected int $database = 0;
 
     public function __construct(array|string $config = [], ?\Redis $client = null)
@@ -37,32 +39,33 @@ class SaTokenDaoRedis implements SaTokenDaoInterface
 
     public function get(string $key): ?string
     {
-        $value = $this->client->get($key);
+        $value = ($this->saRedis ?? $this->client)->get($key);
         return $value === false ? null : (string) $value;
     }
 
     public function set(string $key, string $value, ?int $timeout = null): void
     {
+        $client = $this->saRedis ?? $this->client;
         if ($timeout !== null && $timeout > 0) {
-            $this->client->setex($key, $timeout, $value);
+            $client->setex($key, $timeout, $value);
         } else {
-            $this->client->set($key, $value);
+            $client->set($key, $value);
         }
     }
 
     public function update(string $key, string $value): void
     {
-        $this->client->set($key, $value, ['XX' => true]);
+        ($this->saRedis ?? $this->client)->set($key, $value, ['XX' => true]);
     }
 
     public function delete(string $key): void
     {
-        $this->client->del([$key]);
+        ($this->saRedis ?? $this->client)->del([$key]);
     }
 
     public function getTimeout(string $key): int
     {
-        $ttl = $this->client->ttl($key);
+        $ttl = ($this->saRedis ?? $this->client)->ttl($key);
         if ($ttl === -2) {
             return -2;
         }
@@ -74,10 +77,11 @@ class SaTokenDaoRedis implements SaTokenDaoInterface
 
     public function expire(string $key, int $timeout): void
     {
+        $client = $this->saRedis ?? $this->client;
         if ($timeout > 0) {
-            $this->client->expire($key, $timeout);
+            $client->expire($key, $timeout);
         } else {
-            $this->client->persist($key);
+            $client->persist($key);
         }
     }
 
@@ -90,7 +94,7 @@ if value then
 end
 return value
 LUA;
-        $result = $this->client->eval($script, array_merge([$key], [$timeout]), 1);
+        $result = ($this->saRedis ?? $this->client)->eval($script, array_merge([$key], [$timeout]), 1);
         return $result === false ? null : (string) $result;
     }
 
@@ -103,18 +107,18 @@ if value then
 end
 return value
 LUA;
-        $result = $this->client->eval($script, [$key], 1);
+        $result = ($this->saRedis ?? $this->client)->eval($script, [$key], 1);
         return $result === false ? null : (string) $result;
     }
 
     public function exists(string $key): bool
     {
-        return (bool) $this->client->exists($key);
+        return (bool) ($this->saRedis ?? $this->client)->exists($key);
     }
 
     public function size(): int
     {
-        $info = $this->client->info('keyspace');
+        $info = ($this->saRedis ?? $this->client)->info('keyspace');
         if (!is_array($info)) {
             return 0;
         }
@@ -135,8 +139,69 @@ LUA;
         return 0;
     }
 
+    public function search(string $prefix, string $keyword, int $start, int $size): array
+    {
+        $client = $this->saRedis ?? $this->client;
+        $pattern = $prefix . '*' . $keyword . '*';
+        $keys = [];
+        $iterator = null;
+
+        while (($scanResult = $client->scan($iterator, $pattern, 100)) !== false) {
+            $keys = array_merge($keys, $scanResult);
+        }
+
+        $keys = array_unique($keys);
+
+        if (empty($keys)) {
+            return [];
+        }
+
+        $values = [];
+        $pipe = $client->pipeline();
+        foreach ($keys as $key) {
+            $pipe->get($key);
+        }
+        $results = $pipe->exec();
+
+        foreach ($results as $value) {
+            if ($value !== false && $value !== null) {
+                $values[] = (string) $value;
+            }
+        }
+
+        return array_slice($values, $start, $size);
+    }
+
     public function getClient(): \Redis
     {
         return $this->client;
+    }
+
+    public function setSaRedis(\Redis $redis): void
+    {
+        $this->saRedis = $redis;
+    }
+
+    public static function createWithSeparateRedis(array $mainConfig, array $separateConfig): self
+    {
+        $instance = new self($mainConfig);
+
+        $saRedis = new \Redis();
+        $host = $separateConfig['host'] ?? '127.0.0.1';
+        $port = (int) ($separateConfig['port'] ?? 6379);
+        $timeout = $separateConfig['timeout'] ?? 0;
+
+        $saRedis->connect($host, $port, $timeout);
+
+        if (!empty($separateConfig['password'])) {
+            $saRedis->auth($separateConfig['password']);
+        }
+        if (isset($separateConfig['db'])) {
+            $saRedis->select((int) $separateConfig['db']);
+        }
+
+        $instance->setSaRedis($saRedis);
+
+        return $instance;
     }
 }

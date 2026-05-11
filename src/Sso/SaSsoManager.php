@@ -52,9 +52,9 @@ class SaSsoManager
         return $this->handle->buildLoginUrl($redirect);
     }
 
-    public function doLoginCallback(string $ticket): mixed
+    public function doLoginCallback(string $ticket, ?string $redirect = null): mixed
     {
-        return $this->handle->doLoginCallback($ticket);
+        return $this->handle->doLoginCallback($ticket, $redirect);
     }
 
     public function buildSloUrl(?string $redirect = null): string

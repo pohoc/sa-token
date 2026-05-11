@@ -142,6 +142,10 @@ class SaTokenCoreTest extends TestCase
             {
                 return [];
             }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
+            }
         };
         SaToken::setAction($action);
         $this->assertSame($action, SaToken::getAction());
@@ -197,6 +201,10 @@ class SaTokenCoreTest extends TestCase
             public function getRoleList(mixed $loginId, string $loginType): array
             {
                 return [];
+            }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
             }
         });
         SaToken::getStpLogic('login');

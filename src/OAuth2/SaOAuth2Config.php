@@ -33,6 +33,12 @@ class SaOAuth2Config
     // 是否每次生成新的 Refresh Token
     protected bool $isNewRefreshToken = false;
 
+    // 是否启用 OpenID Connect 模式
+    protected bool $openIdMode = false;
+
+    // id_token 签发者 URL
+    protected string $issuer = '';
+
     public function __construct(array $config = [])
     {
         foreach ($config as $key => $value) {
@@ -95,6 +101,28 @@ class SaOAuth2Config
     public function setIsNewRefreshToken(bool $isNewRefreshToken): static
     {
         $this->isNewRefreshToken = $isNewRefreshToken;
+        return $this;
+    }
+
+    public function isOpenIdMode(): bool
+    {
+        return $this->openIdMode;
+    }
+
+    public function setOpenIdMode(bool $openIdMode): static
+    {
+        $this->openIdMode = $openIdMode;
+        return $this;
+    }
+
+    public function getIssuer(): string
+    {
+        return $this->issuer;
+    }
+
+    public function setIssuer(string $issuer): static
+    {
+        $this->issuer = $issuer;
         return $this;
     }
 }

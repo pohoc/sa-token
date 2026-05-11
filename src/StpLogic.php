@@ -12,6 +12,7 @@ use SaToken\Exception\NotRoleException;
 use SaToken\Exception\NotSafeException;
 use SaToken\Exception\SaTokenException;
 use SaToken\Listener\SaTokenEvent;
+use SaToken\Plugin\SaTokenJwt;
 use SaToken\Util\SaFoxUtil;
 use SaToken\Util\SaTokenContext;
 
@@ -135,6 +136,25 @@ class StpLogic
         return $tokenValue;
     }
 
+    public function loginStateless(mixed $loginId, ?SaLoginParameter $parameter = null): string
+    {
+        $parameter = $parameter ?? new SaLoginParameter();
+        $config = $this->getConfig();
+
+        $this->checkDisableForLogin($loginId);
+
+        $timeout = $parameter->getTimeout() ?? $config->getTimeout();
+
+        $jwt = $this->getJwt();
+        $tokenValue = $jwt->createStatelessToken($loginId, $this->loginType, $timeout);
+
+        $this->writeTokenToResponse($tokenValue, $parameter);
+
+        $this->getEvent()->onLogin($this->loginType, $loginId, $tokenValue, $parameter);
+
+        return $tokenValue;
+    }
+
     /**
      * 注销登录（当前 Token）
      *
@@ -216,6 +236,15 @@ class StpLogic
         $tokenValue = $this->getTokenValue();
         if ($tokenValue === null) {
             throw new NotLoginException('未登录，请先登录', NotLoginException::NOT_LOGIN);
+        }
+
+        if ($this->getConfig()->isJwtStateless()) {
+            $jwt = $this->getJwt();
+            $payload = $jwt->validateStatelessToken($tokenValue);
+            if ($payload !== null) {
+                return;
+            }
+            throw new NotLoginException('Token 已失效，请重新登录', NotLoginException::TOKEN_TIMEOUT);
         }
 
         $loginId = $this->tokenManager->getLoginIdByToken($tokenValue);
@@ -878,6 +907,15 @@ class StpLogic
     }
 
     // ---- 内部辅助方法 ----
+
+    protected function getJwt(): SaTokenJwt
+    {
+        $config = $this->getConfig();
+        return new SaTokenJwt([
+            'jwtSecretKey' => $config->getJwtSecretKey(),
+            'cryptoType'   => $config->getCryptoType(),
+        ]);
+    }
 
     /**
      * 检查登录前的封禁状态

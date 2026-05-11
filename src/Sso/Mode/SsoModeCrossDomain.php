@@ -33,9 +33,9 @@ class SsoModeCrossDomain
      * @param  string|null $redirect 登录后回调地址
      * @return string
      */
-    public function buildLoginUrl(?string $redirect = null): string
+    public function buildLoginUrl(?string $redirect = null, ?string $currentUrl = null): string
     {
-        return $this->handle->buildLoginUrl($redirect);
+        return $this->handle->buildLoginUrl($redirect, $currentUrl);
     }
 
     /**
@@ -47,6 +47,17 @@ class SsoModeCrossDomain
     public function doLoginCallback(string $ticket): mixed
     {
         return $this->handle->doLoginCallback($ticket);
+    }
+
+    public function doLoginCallbackWithRedirect(string $ticket): array
+    {
+        $loginId = $this->handle->doLoginCallback($ticket);
+        $redirect = $this->handle->restorePreLoginUrl();
+
+        return [
+            'loginId'  => $loginId,
+            'redirect' => $redirect,
+        ];
     }
 
     /**

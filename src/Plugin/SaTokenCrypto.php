@@ -204,6 +204,41 @@ class SaTokenCrypto
         return hash_equals($expected, $sign);
     }
 
+    public static function md5(string $data): string
+    {
+        return hash('md5', $data);
+    }
+
+    public static function sha1(string $data): string
+    {
+        return hash('sha1', $data);
+    }
+
+    public static function sha256(string $data): string
+    {
+        return hash('sha256', $data);
+    }
+
+    public static function hmacSha256(string $data, string $key): string
+    {
+        return hash_hmac('sha256', $data, $key);
+    }
+
+    public static function hmacSha1(string $data, string $key): string
+    {
+        return hash_hmac('sha1', $data, $key);
+    }
+
+    public static function bcryptVerify(string $data, string $hash): bool
+    {
+        return password_verify($data, $hash);
+    }
+
+    public static function bcryptHash(string $data, int $cost = 10): string
+    {
+        return password_hash($data, PASSWORD_BCRYPT, ['cost' => $cost]);
+    }
+
     /**
      * 对 AES 密钥进行补位
      *

@@ -5,12 +5,14 @@ declare(strict_types=1);
 namespace SaToken;
 
 use SaToken\Action\SaTokenActionInterface;
+use SaToken\Auth\SaHttpAuth;
 use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoInterface;
 use SaToken\Dao\SaTokenDaoMemory;
 use SaToken\Exception\SaTokenException;
 use SaToken\Listener\SaTokenEvent;
 use SaToken\Listener\SaTokenListenerInterface;
+use SaToken\Sign\SaSign;
 
 /**
  * Sa-Token 核心入口类
@@ -64,6 +66,14 @@ class SaToken
      * @var bool
      */
     protected static bool $initialized = false;
+
+    protected static ?SaHttpAuth $httpAuth = null;
+
+    protected static ?Auth\SaApiKey $apiKey = null;
+
+    protected static ?SaSign $sign = null;
+
+    protected static ?Middleware\SaGlobalFilter $globalFilter = null;
 
     /**
      * 初始化 Sa-Token
@@ -229,6 +239,47 @@ class SaToken
         self::$action = $action;
     }
 
+    public static function getHttpAuth(): SaHttpAuth
+    {
+        if (self::$httpAuth === null) {
+            self::$httpAuth = new SaHttpAuth();
+        }
+        return self::$httpAuth;
+    }
+
+    public static function getApiKey(): Auth\SaApiKey
+    {
+        if (self::$apiKey === null) {
+            $config = self::getConfig();
+            self::$apiKey = new Auth\SaApiKey([
+                'headerName'       => $config->getApiKeyHeader(),
+                'secretHeaderName' => $config->getApiSecretHeader(),
+            ]);
+        }
+        return self::$apiKey;
+    }
+
+    public static function getGlobalFilter(): Middleware\SaGlobalFilter
+    {
+        if (self::$globalFilter === null) {
+            self::$globalFilter = new Middleware\SaGlobalFilter();
+        }
+        return self::$globalFilter;
+    }
+
+    public static function getSign(): SaSign
+    {
+        if (self::$sign === null) {
+            $config = self::getConfig();
+            self::$sign = new SaSign([
+                'key'          => $config->getSignKey(),
+                'timestampGap' => $config->getSignTimestampGap(),
+                'signAlg'      => $config->getSignAlg(),
+            ]);
+        }
+        return self::$sign;
+    }
+
     /**
      * 获取 StpLogic 实例（多账号体系）
      *
@@ -276,6 +327,10 @@ class SaToken
         self::$event = null;
         self::$stpLogicMap = [];
         self::$action = null;
+        self::$httpAuth = null;
+        self::$apiKey = null;
+        self::$globalFilter = null;
+        self::$sign = null;
         self::$initialized = false;
     }
 

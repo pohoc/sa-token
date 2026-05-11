@@ -69,6 +69,10 @@ class StpLogicFullTest extends TestCase
             {
                 return [];
             }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
+            }
         });
 
         $token = $this->loginAndGetToken();
@@ -92,6 +96,10 @@ class StpLogicFullTest extends TestCase
             {
                 return [];
             }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
+            }
         });
 
         // 未登录时 checkPermission 先抛 NotLoginException
@@ -110,6 +118,10 @@ class StpLogicFullTest extends TestCase
             {
                 return [];
             }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
+            }
         });
 
         $permissions = $this->logic->getPermissionList('10001');
@@ -126,6 +138,10 @@ class StpLogicFullTest extends TestCase
             public function getRoleList(mixed $loginId, string $loginType): array
             {
                 return [];
+            }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
             }
         });
 
@@ -151,6 +167,10 @@ class StpLogicFullTest extends TestCase
             public function getRoleList(mixed $loginId, string $loginType): array
             {
                 return ['admin', 'user'];
+            }
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
             }
         });
 

@@ -9,6 +9,7 @@ use SaToken\Exception\SaTokenException;
 use SaToken\OAuth2\Data\SaOAuth2AccessToken;
 use SaToken\OAuth2\Data\SaOAuth2AuthorizationCode;
 use SaToken\OAuth2\Data\SaOAuth2Client;
+use SaToken\OAuth2\Data\SaOAuth2IdToken;
 use SaToken\OAuth2\Data\SaOAuth2RefreshToken;
 use SaToken\SaToken;
 use SaToken\Util\SaFoxUtil;
@@ -122,7 +123,14 @@ class SaOAuth2Handle
             throw new SaTokenException('回调地址不匹配');
         }
 
-        return $this->generateAccessToken($clientId, $codeData->getLoginId(), $codeData->getScope());
+        $accessToken = $this->generateAccessToken($clientId, $codeData->getLoginId(), $codeData->getScope());
+
+        if ($this->config->isOpenIdMode() && $this->scopeContainsOpenid($codeData->getScope())) {
+            $idTokenObj = $this->generateIdToken($clientId, $codeData->getLoginId(), $codeData->getScope());
+            $accessToken->setIdToken($idTokenObj->getIdToken());
+        }
+
+        return $accessToken;
     }
 
     /**
@@ -241,6 +249,34 @@ class SaOAuth2Handle
         $this->getDao()->delete($this->buildAccessTokenKey($accessToken));
     }
 
+    public function checkScope(string $accessToken, string $requiredScope): bool
+    {
+        $tokenData = $this->validateAccessToken($accessToken);
+        if ($tokenData === null) {
+            return false;
+        }
+
+        $scope = $tokenData->getScope();
+        if ($scope === '') {
+            return false;
+        }
+
+        $scopes = explode(' ', $scope);
+        return in_array($requiredScope, $scopes, true);
+    }
+
+    public function checkScopeAndThrow(string $accessToken, string $requiredScope): void
+    {
+        if (!$this->checkScope($accessToken, $requiredScope)) {
+            throw new SaTokenException("权限不足，缺少 scope: {$requiredScope}");
+        }
+    }
+
+    public function hasScope(string $accessToken, string $scope): bool
+    {
+        return $this->checkScope($accessToken, $scope);
+    }
+
     // ---- 内部方法 ----
 
     /**
@@ -271,6 +307,11 @@ class SaOAuth2Handle
         if ($this->config->getRefreshTokenTimeout() > 0) {
             $refreshToken = $this->createRefreshToken($clientId, $loginId, $tokenStr, $scope);
             $accessToken->setRefreshToken($refreshToken->getRefreshToken());
+        }
+
+        if ($this->config->isOpenIdMode()) {
+            $idTokenObj = $this->generateIdToken($clientId, $loginId, $scope);
+            $accessToken->setIdToken($idTokenObj->getIdToken());
         }
 
         return $accessToken;
@@ -423,6 +464,77 @@ class SaOAuth2Handle
             return ($this->userCredentialsValidator)($username, $password);
         }
         return null;
+    }
+
+    /**
+     * 生成 ID Token（OpenID Connect）
+     *
+     * @param  string          $clientId 客户端 ID
+     * @param  mixed           $loginId  资源所有者登录 ID
+     * @param  string          $scope    权限范围
+     * @return SaOAuth2IdToken
+     */
+    public function generateIdToken(string $clientId, mixed $loginId, string $scope = ''): SaOAuth2IdToken
+    {
+        $now = time();
+        $expiresAt = $now + $this->config->getAccessTokenTimeout();
+
+        $payload = [
+            'iss' => $this->config->getIssuer(),
+            'sub' => (string) $loginId,
+            'aud' => $clientId,
+            'iat' => $now,
+            'exp' => $expiresAt,
+        ];
+
+        $jwtStr = $this->signJwt($payload);
+
+        return new SaOAuth2IdToken([
+            'idToken'  => $jwtStr,
+            'subject'  => (string) $loginId,
+            'audience' => $clientId,
+            'issuedAt' => $now,
+            'expiresAt' => $expiresAt,
+            'issuer'   => $this->config->getIssuer(),
+            'claims'   => $payload,
+        ]);
+    }
+
+    protected function scopeContainsOpenid(string $scope): bool
+    {
+        $scopes = preg_split('/\s+/', $scope);
+        return in_array('openid', $scopes, true);
+    }
+
+    protected function signJwt(array $payload): string
+    {
+        $header = [
+            'typ' => 'JWT',
+            'alg' => 'HS256',
+        ];
+
+        $headerB64 = $this->base64UrlEncode(json_encode($header, JSON_UNESCAPED_UNICODE));
+        $payloadB64 = $this->base64UrlEncode(json_encode($payload, JSON_UNESCAPED_UNICODE));
+        $signingInput = $headerB64 . '.' . $payloadB64;
+
+        $secretKey = $this->getClientSecretForSigning();
+        $signature = hash_hmac('sha256', $signingInput, $secretKey);
+
+        return $signingInput . '.' . $this->base64UrlEncode(hex2bin($signature));
+    }
+
+    protected function getClientSecretForSigning(): string
+    {
+        $jwtSecretKey = SaToken::getConfig()->getJwtSecretKey();
+        if ($jwtSecretKey !== '') {
+            return $jwtSecretKey;
+        }
+        return $this->config->getIssuer() . '-sa-token-oauth2-id-token-secret';
+    }
+
+    protected function base64UrlEncode(string $data): string
+    {
+        return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
     }
 
     /**

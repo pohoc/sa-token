@@ -95,4 +95,15 @@ interface SaTokenDaoInterface
      * @return int
      */
     public function size(): int;
+
+    /**
+     * 搜索匹配指定前缀和关键字的键，返回对应的值列表
+     *
+     * @param  string        $prefix  键前缀
+     * @param  string        $keyword 搜索关键字
+     * @param  int           $start   起始偏移量
+     * @param  int           $size    返回数量上限
+     * @return array<string> 匹配的值列表
+     */
+    public function search(string $prefix, string $keyword, int $start, int $size): array;
 }
