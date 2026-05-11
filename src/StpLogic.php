@@ -238,11 +238,28 @@ class StpLogic
             throw new NotLoginException('未登录，请先登录', NotLoginException::NOT_LOGIN);
         }
 
-        if ($this->getConfig()->isJwtStateless()) {
+        $config = $this->getConfig();
+
+        if ($config->isJwtStateless()) {
             $jwt = $this->getJwt();
             $payload = $jwt->validateStatelessToken($tokenValue);
             if ($payload !== null) {
                 return;
+            }
+            throw new NotLoginException('Token 已失效，请重新登录', NotLoginException::TOKEN_TIMEOUT);
+        }
+
+        if ($config->getJwtMode() === 'mixed') {
+            $jwt = $this->getJwt();
+            $payload = $jwt->validateStatelessToken($tokenValue);
+            if ($payload !== null) {
+                $jwtLoginId = $payload['sub'] ?? null;
+                $daoLoginId = $this->tokenManager->getLoginIdByToken($tokenValue);
+                if ($daoLoginId !== null && $jwtLoginId === $daoLoginId) {
+                    $this->checkActivityTimeout($tokenValue);
+                    $this->tokenManager->updateLastActiveToNow($tokenValue);
+                    return;
+                }
             }
             throw new NotLoginException('Token 已失效，请重新登录', NotLoginException::TOKEN_TIMEOUT);
         }

@@ -48,6 +48,12 @@ class SaSsoConfig
     // 参数防丢 Cookie/Query 参数名
     protected string $paramName = 'sso_params';
 
+    // 是否跨 Redis（SSO 客户端与服务端使用不同 Redis 实例）
+    protected bool $crossRedis = false;
+
+    // 跨 Redis ticket 校验地址
+    protected string $crossRedisCheckUrl = '';
+
     public function __construct(array $config = [])
     {
         foreach ($config as $key => $value) {
@@ -165,6 +171,28 @@ class SaSsoConfig
     public function setParamName(string $paramName): static
     {
         $this->paramName = $paramName;
+        return $this;
+    }
+
+    public function isCrossRedis(): bool
+    {
+        return $this->crossRedis;
+    }
+
+    public function setCrossRedis(bool $crossRedis): static
+    {
+        $this->crossRedis = $crossRedis;
+        return $this;
+    }
+
+    public function getCrossRedisCheckUrl(): string
+    {
+        return $this->crossRedisCheckUrl;
+    }
+
+    public function setCrossRedisCheckUrl(string $crossRedisCheckUrl): static
+    {
+        $this->crossRedisCheckUrl = $crossRedisCheckUrl;
         return $this;
     }
 }

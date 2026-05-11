@@ -102,6 +102,9 @@ class SaTokenConfig
     // JWT 无状态模式
     protected bool $jwtStateless = false;
 
+    // JWT 模式（simple / mixed / stateless）
+    protected string $jwtMode = 'simple';
+
     // 是否开启 Token 内容加密
     protected bool $tokenEncrypt = false;
 
@@ -128,15 +131,17 @@ class SaTokenConfig
 
     // SSO 配置
     protected array $sso = [
-        'loginUrl'       => '',
-        'authUrl'        => '',
-        'backUrl'        => '',
-        'checkTicketUrl' => '',
-        'sloUrl'         => '',
-        'mode'           => 'same-domain',
-        'clientId'       => '',
-        'clientSecret'   => '',
-        'allowDomains'   => [],
+        'loginUrl'          => '',
+        'authUrl'           => '',
+        'backUrl'           => '',
+        'checkTicketUrl'    => '',
+        'sloUrl'            => '',
+        'mode'              => 'same-domain',
+        'clientId'          => '',
+        'clientSecret'      => '',
+        'allowDomains'      => [],
+        'crossRedis'        => false,
+        'crossRedisCheckUrl' => '',
     ];
 
     // OAuth2 配置
@@ -218,6 +223,7 @@ class SaTokenConfig
             'sm4Key'                 => $this->sm4Key,
             'jwtSecretKey'           => $this->jwtSecretKey,
             'jwtStateless'           => $this->jwtStateless,
+            'jwtMode'                => $this->jwtMode,
             'tokenEncrypt'           => $this->tokenEncrypt,
             'tokenEncryptKey'        => $this->tokenEncryptKey,
             'tokenSessionCheckLogin' => $this->tokenSessionCheckLogin,
@@ -551,6 +557,17 @@ class SaTokenConfig
     public function setJwtStateless(bool $jwtStateless): static
     {
         $this->jwtStateless = $jwtStateless;
+        return $this;
+    }
+
+    public function getJwtMode(): string
+    {
+        return $this->jwtMode;
+    }
+
+    public function setJwtMode(string $jwtMode): static
+    {
+        $this->jwtMode = $jwtMode;
         return $this;
     }
 

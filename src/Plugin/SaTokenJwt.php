@@ -60,6 +60,21 @@ class SaTokenJwt
         return $signingInput . '.' . $this->base64UrlEncode(hex2bin($signature));
     }
 
+    public function createMixedToken(mixed $loginId, string $loginType, ?int $timeout = null, array $extraClaims = []): string
+    {
+        if ($this->secretKey === '') {
+            throw new SaTokenException('JWT 密钥未配置');
+        }
+
+        $jti = bin2hex(random_bytes(16));
+
+        $mixedClaims = array_merge($extraClaims, [
+            'jti' => $jti,
+        ]);
+
+        return $this->createToken($loginId, $loginType, $timeout, $mixedClaims);
+    }
+
     public function parseToken(string $token): array
     {
         if ($this->secretKey === '') {

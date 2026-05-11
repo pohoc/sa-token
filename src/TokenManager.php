@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SaToken;
 
 use SaToken\Config\SaTokenConfig;
+use SaToken\Plugin\SaTokenJwt;
 use SaToken\Util\SaFoxUtil;
 use SaToken\Util\SaTokenEncryptor;
 
@@ -82,6 +83,14 @@ class TokenManager
         $timeout = $timeout ?? $config->getTimeout();
         $effectiveTimeout = ($timeout === -1) ? null : $timeout;
 
+        if ($config->getJwtMode() === 'mixed') {
+            $jwt = new SaTokenJwt([
+                'jwtSecretKey' => $config->getJwtSecretKey(),
+                'cryptoType'   => $config->getCryptoType(),
+            ]);
+            $tokenValue = $jwt->createMixedToken($loginId, $loginType, $effectiveTimeout);
+        }
+
         $this->getDao()->set(self::TOKEN_PREFIX . $tokenValue, $this->encryptValue((string) $loginId), $effectiveTimeout);
 
         $loginIdKey = self::LOGIN_ID_PREFIX . $loginType . ':' . $loginId;
@@ -122,10 +131,27 @@ class TokenManager
     public function getLoginIdByToken(string $tokenValue): ?string
     {
         $value = $this->getDao()->get(self::TOKEN_PREFIX . $tokenValue);
-        if ($value === null) {
-            return null;
+        if ($value !== null) {
+            return $this->decryptValue($value);
         }
-        return $this->decryptValue($value);
+
+        $config = $this->getConfig();
+        if ($config->getJwtMode() === 'mixed') {
+            $jwt = new SaTokenJwt([
+                'jwtSecretKey' => $config->getJwtSecretKey(),
+                'cryptoType'   => $config->getCryptoType(),
+            ]);
+            $loginId = $jwt->getLoginId($tokenValue);
+            if ($loginId !== null) {
+                $daoValue = $this->getDao()->get(self::TOKEN_PREFIX . $tokenValue);
+                if ($daoValue !== null) {
+                    return $this->decryptValue($daoValue);
+                }
+                return $loginId;
+            }
+        }
+
+        return null;
     }
 
     public function getTokenListByLoginId(mixed $loginId, string $loginType): array

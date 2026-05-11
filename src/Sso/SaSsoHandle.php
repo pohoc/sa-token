@@ -169,6 +169,37 @@ class SaSsoHandle
         }
     }
 
+    public function checkTicketCrossRedis(string $ticket): mixed
+    {
+        $checkUrl = $this->config->getCrossRedisCheckUrl();
+        if ($checkUrl === '') {
+            throw new SaTokenException('跨 Redis ticket 校验地址未配置');
+        }
+
+        $data = [
+            'ticket'    => $ticket,
+            'client_id' => $this->config->getClientId(),
+            'timestamp' => (string) time(),
+        ];
+
+        $clientSecret = $this->config->getClientSecret();
+        if ($clientSecret !== '') {
+            $data = $this->template->signParams($data, $clientSecret);
+        }
+
+        try {
+            $response = $this->template->post($checkUrl, $data);
+            $result = json_decode($response, true);
+
+            if (is_array($result) && isset($result['loginId'])) {
+                return $result['loginId'];
+            }
+            return null;
+        } catch (SaTokenException) {
+            return null;
+        }
+    }
+
     /**
      * 处理单点注销回调
      *

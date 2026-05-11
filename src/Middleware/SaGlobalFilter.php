@@ -40,6 +40,10 @@ class SaGlobalFilter
 
         $this->applyCorsHeaders();
         $this->applySecurityHeaders();
+
+        foreach ($this->afterFilters as $filter) {
+            $filter();
+        }
     }
 
     public function applySecurityHeaders(): void
