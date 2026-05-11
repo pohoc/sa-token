@@ -94,6 +94,12 @@ class SaToken
         if (self::$event === null) {
             self::$event = new SaTokenEvent();
         }
+
+        $config = self::$config ?? self::getConfig();
+        \SaToken\Security\SaAuditLog::setEnabled($config->isAuditLog());
+        \SaToken\Security\SaAuditLog::setMaxEntries($config->getAuditLogMaxEntries());
+        \SaToken\Security\SaAuditLog::setTtlDays($config->getAuditLogTtlDays());
+
         self::$stpLogicMap = [];
         self::$initialized = true;
     }
@@ -332,6 +338,7 @@ class SaToken
         self::$globalFilter = null;
         self::$sign = null;
         self::$initialized = false;
+        \SaToken\Security\SaAuditLog::reset();
     }
 
     public static function clearContext(): void

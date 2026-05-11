@@ -135,6 +135,23 @@ class SaTokenConfig
     // 登录失败锁定时长（秒）
     protected int $antiBruteLockDuration = 600;
 
+    protected bool $deviceManagement = false;
+
+    // 是否开启 IP 异常检测
+    protected bool $ipAnomalyDetection = false;
+
+    // IP 异常检测灵敏度（从同一区域登录多少次后不再判定为异常）
+    protected int $ipAnomalySensitivity = 3;
+
+    // 是否开启审计日志
+    protected bool $auditLog = false;
+
+    // 审计日志最大条数
+    protected int $auditLogMaxEntries = 1000;
+
+    // 审计日志保留天数
+    protected int $auditLogTtlDays = 30;
+
     // SSO 配置
     protected array $sso = [
         'loginUrl'          => '',
@@ -166,6 +183,8 @@ class SaTokenConfig
 
     // API Secret 请求头名称
     protected string $apiSecretHeader = 'api-secret';
+
+    protected mixed $sensitiveVerifyCallback = null;
 
     /**
      * @param array $config 配置数组
@@ -240,6 +259,11 @@ class SaTokenConfig
             'signAlg'                => $this->signAlg,
             'antiBruteMaxFailures'   => $this->antiBruteMaxFailures,
             'antiBruteLockDuration'   => $this->antiBruteLockDuration,
+            'ipAnomalyDetection'      => $this->ipAnomalyDetection,
+            'ipAnomalySensitivity'    => $this->ipAnomalySensitivity,
+            'auditLog'                => $this->auditLog,
+            'auditLogMaxEntries'      => $this->auditLogMaxEntries,
+            'auditLogTtlDays'         => $this->auditLogTtlDays,
             'sso'                    => $this->sso,
             'oauth2'                 => $this->oauth2,
             'apiKeyHeader'           => $this->apiKeyHeader,
@@ -754,6 +778,83 @@ class SaTokenConfig
     public function setAntiBruteLockDuration(int $antiBruteLockDuration): static
     {
         $this->antiBruteLockDuration = $antiBruteLockDuration;
+        return $this;
+    }
+
+    public function isDeviceManagement(): bool
+    {
+        return $this->deviceManagement;
+    }
+
+    public function setDeviceManagement(bool $deviceManagement): static
+    {
+        $this->deviceManagement = $deviceManagement;
+        return $this;
+    }
+
+    public function getIpAnomalyDetection(): bool
+    {
+        return $this->ipAnomalyDetection;
+    }
+
+    public function setIpAnomalyDetection(bool $ipAnomalyDetection): static
+    {
+        $this->ipAnomalyDetection = $ipAnomalyDetection;
+        return $this;
+    }
+
+    public function getIpAnomalySensitivity(): int
+    {
+        return $this->ipAnomalySensitivity;
+    }
+
+    public function setIpAnomalySensitivity(int $ipAnomalySensitivity): static
+    {
+        $this->ipAnomalySensitivity = $ipAnomalySensitivity;
+        return $this;
+    }
+
+    public function getSensitiveVerifyCallback(): mixed
+    {
+        return $this->sensitiveVerifyCallback;
+    }
+
+    public function setSensitiveVerifyCallback(mixed $sensitiveVerifyCallback): static
+    {
+        $this->sensitiveVerifyCallback = $sensitiveVerifyCallback;
+        return $this;
+    }
+
+    public function isAuditLog(): bool
+    {
+        return $this->auditLog;
+    }
+
+    public function setAuditLog(bool $auditLog): static
+    {
+        $this->auditLog = $auditLog;
+        return $this;
+    }
+
+    public function getAuditLogMaxEntries(): int
+    {
+        return $this->auditLogMaxEntries;
+    }
+
+    public function setAuditLogMaxEntries(int $auditLogMaxEntries): static
+    {
+        $this->auditLogMaxEntries = $auditLogMaxEntries;
+        return $this;
+    }
+
+    public function getAuditLogTtlDays(): int
+    {
+        return $this->auditLogTtlDays;
+    }
+
+    public function setAuditLogTtlDays(int $auditLogTtlDays): static
+    {
+        $this->auditLogTtlDays = $auditLogTtlDays;
         return $this;
     }
 }

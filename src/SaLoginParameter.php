@@ -4,42 +4,21 @@ declare(strict_types=1);
 
 namespace SaToken;
 
-/**
- * 登录参数类
- *
- * 登录时可选的组合参数，用于指定设备类型、记住我、超时时间等
- *
- * 使用示例：
- *   $param = new SaLoginParameter();
- *   $param->setDeviceType('PC')->setIsLastingCookie(true)->setTimeout(7200);
- *   StpUtil::login(10001, $param);
- */
+use SaToken\Data\SaLoginDevice;
+
 class SaLoginParameter
 {
-    /**
-     * 设备类型
-     */
     protected string $deviceType = '';
 
-    /**
-     * 是否为持久化 Cookie（记住我）
-     */
     protected bool $isLastingCookie = true;
 
-    /**
-     * Token 超时时间（秒），null 使用全局配置
-     */
     protected ?int $timeout = null;
 
-    /**
-     * 同端最大登录数，null 使用全局配置
-     */
     protected ?int $maxLoginCount = null;
 
-    /**
-     * 是否共享 Token（isShare）
-     */
     protected ?bool $isShare = null;
+
+    protected ?SaLoginDevice $device = null;
 
     public function __construct(array $data = [])
     {
@@ -103,6 +82,17 @@ class SaLoginParameter
     public function setIsShare(?bool $isShare): static
     {
         $this->isShare = $isShare;
+        return $this;
+    }
+
+    public function getDevice(): ?SaLoginDevice
+    {
+        return $this->device;
+    }
+
+    public function setDevice(?SaLoginDevice $device): static
+    {
+        $this->device = $device;
         return $this;
     }
 }

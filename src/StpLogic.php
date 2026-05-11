@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SaToken;
 
 use SaToken\Config\SaTokenConfig;
+use SaToken\Data\SaLoginDevice;
 use SaToken\Exception\DisableServiceException;
 use SaToken\Exception\NotLoginException;
 use SaToken\Exception\NotPermissionException;
@@ -14,6 +15,10 @@ use SaToken\Exception\SaTokenException;
 use SaToken\Listener\SaTokenEvent;
 use SaToken\Plugin\SaTokenJwt;
 use SaToken\Security\SaAntiBruteUtil;
+use SaToken\Security\SaAuditLog;
+use SaToken\Security\SaIpAnomalyDetector;
+use SaToken\Security\SaLoginDeviceManager;
+use SaToken\Security\SaSensitiveVerify;
 use SaToken\Util\SaFoxUtil;
 use SaToken\Util\SaTokenContext;
 
@@ -99,7 +104,6 @@ class StpLogic
         $parameter = $parameter ?? new SaLoginParameter();
         $config = $this->getConfig();
 
-        // 检查账号是否被封禁
         $this->checkDisableForLogin($loginId);
 
         $deviceType = $parameter->getDeviceType();
@@ -107,7 +111,6 @@ class StpLogic
         $isShare = $parameter->getIsShare() ?? $config->isShare();
         $maxLoginCount = $parameter->getMaxLoginCount() ?? $config->getMaxLoginCount();
 
-        // 判断是否复用已有 Token（isShare + 同设备类型）
         $tokenValue = null;
         if ($isShare && $config->isConcurrent()) {
             $tokenValue = $this->getTokenValueByDeviceType($loginId, $deviceType);
@@ -117,24 +120,27 @@ class StpLogic
             $this->logoutAllExceptCurrent($loginId, $deviceType);
         }
 
-        // 无可复用 Token，则创建新 Token
         if ($tokenValue === null) {
             $tokenValue = $this->tokenManager->createTokenValue($loginId, $this->loginType);
         }
 
-        // 并发登录控制：超过最大登录数时踢出最早的
         $this->controlMaxLoginCount($loginId, $deviceType, $maxLoginCount, $tokenValue);
 
-        // 保存 Token
         $this->tokenManager->saveToken($tokenValue, $loginId, $this->loginType, $deviceType, $timeout);
 
-        // 写入 Token 到响应
         $this->writeTokenToResponse($tokenValue, $parameter);
 
-        // 触发登录事件
         $this->getEvent()->onLogin($this->loginType, $loginId, $tokenValue, $parameter);
 
         $this->clearAntiBruteFailures($loginId);
+
+        if ($config->isDeviceManagement()) {
+            $device = $parameter->getDevice();
+            if ($device !== null) {
+                $device->setDeviceType($deviceType !== '' ? $deviceType : $device->getDeviceType());
+            }
+            SaLoginDeviceManager::registerDevice($loginId, $this->loginType, $device, $tokenValue);
+        }
 
         return $tokenValue;
     }
@@ -668,6 +674,8 @@ class StpLogic
     {
         $this->tokenManager->disable($loginId, $service, $level, $time, $this->loginType);
         $this->getEvent()->onBlock($this->loginType, $loginId, $service, $level, $time);
+
+        SaAuditLog::logDisable($loginId, $this->loginType, $service . ':' . $level . ':' . $time);
     }
 
     /**
@@ -721,6 +729,8 @@ class StpLogic
     public function untieDisable(mixed $loginId, string $service): void
     {
         $this->tokenManager->untieDisable($loginId, $service, $this->loginType);
+
+        SaAuditLog::logUndisable($loginId, $this->loginType);
     }
 
     /**
@@ -802,6 +812,8 @@ class StpLogic
 
         $this->tokenManager->setSwitchTo($tokenValue, $loginId, $this->loginType);
         $this->getEvent()->onSwitch($this->loginType, $currentLoginId, $loginId, $tokenValue);
+
+        SaAuditLog::logSwitchTo($currentLoginId, $loginId, $this->loginType);
     }
 
     /**
@@ -881,6 +893,31 @@ class StpLogic
             ]);
         }
         return $result;
+    }
+
+    public function getDeviceList(mixed $loginId): array
+    {
+        return SaLoginDeviceManager::getDeviceList($loginId, $this->loginType);
+    }
+
+    public function getDeviceCount(mixed $loginId): int
+    {
+        return SaLoginDeviceManager::getDeviceCount($loginId, $this->loginType);
+    }
+
+    public function kickoutDevice(mixed $loginId, string $deviceId): void
+    {
+        SaLoginDeviceManager::kickoutDevice($loginId, $deviceId, $this->loginType);
+    }
+
+    public function kickoutAllDevices(mixed $loginId, ?string $exceptToken = null): int
+    {
+        return SaLoginDeviceManager::kickoutAllDevices($loginId, $this->loginType, $exceptToken);
+    }
+
+    public function findDevice(mixed $loginId, string $deviceId): ?SaLoginDevice
+    {
+        return SaLoginDeviceManager::findDevice($loginId, $deviceId, $this->loginType);
     }
 
     /**
@@ -1165,5 +1202,95 @@ class StpLogic
     public function getAntiBruteInfo(string $account): array
     {
         return SaAntiBruteUtil::getSecurityInfo($account, $this->loginType);
+    }
+
+    public function getAnomalyCount(mixed $loginId): int
+    {
+        return SaIpAnomalyDetector::getAnomalyCount($loginId, $this->loginType);
+    }
+
+    public function getIpHistory(mixed $loginId): array
+    {
+        return SaIpAnomalyDetector::getIpHistory($loginId, $this->loginType);
+    }
+
+    public function getLoginInfo(mixed $loginId): array
+    {
+        return SaIpAnomalyDetector::getLoginInfo($loginId, $this->loginType);
+    }
+
+    public function clearLoginHistory(mixed $loginId): void
+    {
+        SaIpAnomalyDetector::clearHistory($loginId, $this->loginType);
+    }
+
+    public function openSensitiveVerify(string $scene, int $validSeconds = 600): string
+    {
+        $loginId = $this->getLoginIdAsNotNull();
+        return SaSensitiveVerify::createSafeToken($scene, $loginId, $this->loginType, $validSeconds);
+    }
+
+    public function checkSensitiveVerify(string $scene, string $token): void
+    {
+        $loginId = $this->getLoginIdAsNotNull();
+        SaSensitiveVerify::verifySafeTokenAndThrow($scene, $token, $loginId, $this->loginType);
+    }
+
+    public function generateOtpCode(string $scene): string
+    {
+        $loginId = $this->getLoginIdAsNotNull();
+        return SaSensitiveVerify::generateCode($scene, $loginId, $this->loginType);
+    }
+
+    public function sendOtpCode(string $scene): string
+    {
+        $loginId = $this->getLoginIdAsNotNull();
+        return SaSensitiveVerify::sendCode($scene, $loginId, $this->loginType);
+    }
+
+    public function verifyOtpCode(string $scene, string $code): void
+    {
+        $loginId = $this->getLoginIdAsNotNull();
+        SaSensitiveVerify::verifyCodeAndThrow($scene, $code, $loginId, $this->loginType);
+    }
+
+    public function isSensitiveVerified(string $scene): bool
+    {
+        $loginId = $this->getLoginId();
+        if ($loginId === null) {
+            return false;
+        }
+        return SaSensitiveVerify::isVerified($scene, $loginId, $this->loginType);
+    }
+
+    public function clearSensitiveVerify(string $scene): void
+    {
+        $loginId = $this->getLoginId();
+        if ($loginId !== null) {
+            SaSensitiveVerify::clearVerified($scene, $loginId, $this->loginType);
+        }
+    }
+
+    public function getSensitiveVerifyRemainingAttempts(string $scene): int
+    {
+        $loginId = $this->getLoginId();
+        if ($loginId === null) {
+            return SaSensitiveVerify::getRemainingAttempts($scene, 0, $this->loginType);
+        }
+        return SaSensitiveVerify::getRemainingAttempts($scene, $loginId, $this->loginType);
+    }
+
+    public function getAuditLogs(int $limit = 50): array
+    {
+        $loginId = $this->getLoginId();
+        if ($loginId === null) {
+            return [];
+        }
+        return SaAuditLog::getLogsByLoginId($loginId, $this->loginType, $limit);
+    }
+
+    public function getAuditLog(string $id): ?array
+    {
+        return SaAuditLog::getLog($id, $this->loginType);
     }
 }

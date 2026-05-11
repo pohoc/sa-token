@@ -6,6 +6,7 @@ namespace SaToken\Annotation;
 
 use ReflectionClass;
 use SaToken\SaToken;
+use SaToken\Security\SaSensitiveVerify;
 
 class SaAnnotationProcessor
 {
@@ -55,7 +56,18 @@ class SaAnnotationProcessor
                     $stpLogic->checkRoleOr($roles);
                 }
             } elseif ($instance instanceof SaCheckSafe) {
-                $stpLogic->checkSafe($instance->getService());
+                $service = $instance->getService();
+                $loginId = $stpLogic->getLoginId();
+
+                if ($service === 'otp' || str_starts_with($service, 'verify:')) {
+                    $stpLogic->checkSafe($service);
+                } elseif ($loginId !== null) {
+                    if (!SaSensitiveVerify::isVerified($service, $loginId, $loginType)) {
+                        $stpLogic->checkSafe($service);
+                    }
+                } else {
+                    $stpLogic->checkSafe($service);
+                }
             } elseif ($instance instanceof SaCheckDisable) {
                 $loginId = $stpLogic->getLoginId();
                 if ($loginId !== null) {
