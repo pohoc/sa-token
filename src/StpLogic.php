@@ -392,11 +392,11 @@ class StpLogic
         return $tokenValue;
     }
 
-    /**
-     * 获取 Token 信息
-     *
-     * @return SaTokenInfo
-     */
+    public function getLoginIdByToken(string $tokenValue): ?string
+    {
+        return $this->tokenManager->getLoginIdByToken($tokenValue);
+    }
+
     public function getTokenInfo(): SaTokenInfo
     {
         $tokenValue = $this->getTokenValue();
