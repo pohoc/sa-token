@@ -99,6 +99,12 @@ class SaTokenConfig
     // JWT 密钥
     protected string $jwtSecretKey = '';
 
+    // 是否开启 Token 内容加密
+    protected bool $tokenEncrypt = false;
+
+    // Token 内容加密密钥（为空时自动使用 aesKey）
+    protected string $tokenEncryptKey = '';
+
     // 是否在登录后将 Token 信息写入 Session
     protected bool $tokenSessionCheckLogin = true;
 
@@ -143,9 +149,6 @@ class SaTokenConfig
             $method = 'set' . ucfirst($key);
             if (method_exists($this, $method)) {
                 $this->$method($value);
-            } elseif (property_exists($this, $key)) {
-                // 类型安全检查：确保赋值类型与属性声明一致
-                $this->$key = $value;
             }
         }
         return $this;
@@ -187,6 +190,8 @@ class SaTokenConfig
             'sm2PublicKey'           => $this->sm2PublicKey,
             'sm4Key'                 => $this->sm4Key,
             'jwtSecretKey'           => $this->jwtSecretKey,
+            'tokenEncrypt'           => $this->tokenEncrypt,
+            'tokenEncryptKey'        => $this->tokenEncryptKey,
             'tokenSessionCheckLogin' => $this->tokenSessionCheckLogin,
             'sso'                    => $this->sso,
             'oauth2'                 => $this->oauth2,
@@ -500,6 +505,28 @@ class SaTokenConfig
     public function setJwtSecretKey(string $jwtSecretKey): static
     {
         $this->jwtSecretKey = $jwtSecretKey;
+        return $this;
+    }
+
+    public function isTokenEncrypt(): bool
+    {
+        return $this->tokenEncrypt;
+    }
+
+    public function setTokenEncrypt(bool $tokenEncrypt): static
+    {
+        $this->tokenEncrypt = $tokenEncrypt;
+        return $this;
+    }
+
+    public function getTokenEncryptKey(): string
+    {
+        return $this->tokenEncryptKey;
+    }
+
+    public function setTokenEncryptKey(string $tokenEncryptKey): static
+    {
+        $this->tokenEncryptKey = $tokenEncryptKey;
         return $this;
     }
 

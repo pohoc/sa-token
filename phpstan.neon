@@ -6,5 +6,3 @@ parameters:
     ignoreErrors:
         - '#Call to method PHPUnit\\Framework\\Assert::(assertTrue|assertNotNull|assertIsArray).*always evaluate to#'
         - '#Unsafe usage of new static#'
-        - '#Offset .* on array.*on left side of \?\? always exists#'
-        - '#Call to an undefined method#'

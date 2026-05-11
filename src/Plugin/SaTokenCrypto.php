@@ -222,10 +222,7 @@ class SaTokenCrypto
         if ($len >= 16) {
             return substr($key, 0, 16);
         }
-        // 密钥不足 16 字节时，使用 HKDF-like 方式派生
-        // 用 SHA-256 哈希后截取，比零填充更安全
-        $derived = hash('sha256', $key . 'sa-token-aes-key', true);
-        return substr($derived, 0, 16);
+        return hash_hkdf('sha256', $key, 16, 'sa-token-aes-key', '');
     }
 
     /**

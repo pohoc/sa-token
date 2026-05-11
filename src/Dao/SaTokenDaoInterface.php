@@ -74,6 +74,14 @@ interface SaTokenDaoInterface
     public function getAndExpire(string $key, int $timeout): ?string;
 
     /**
+     * 获取指定 key 的值并删除（原子操作）
+     *
+     * @param  string      $key 存储键
+     * @return string|null 值，不存在时返回 null
+     */
+    public function getAndDelete(string $key): ?string;
+
+    /**
      * 判断指定 key 是否存在
      *
      * @param  string $key 存储键

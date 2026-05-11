@@ -38,13 +38,20 @@ class StpLogic
      */
     protected TokenManager $tokenManager;
 
-    /**
-     * @param string $loginType 登录类型，如 'login'、'admin'
-     */
-    public function __construct(string $loginType = 'login')
+    public function __construct(string $loginType = 'login', ?TokenManager $tokenManager = null)
     {
         $this->loginType = $loginType;
-        $this->tokenManager = new TokenManager();
+        $this->tokenManager = $tokenManager ?? new TokenManager();
+    }
+
+    public function setTokenManager(TokenManager $tokenManager): void
+    {
+        $this->tokenManager = $tokenManager;
+    }
+
+    public function getTokenManager(): TokenManager
+    {
+        return $this->tokenManager;
     }
 
     /**
@@ -102,6 +109,10 @@ class StpLogic
         $tokenValue = null;
         if ($isShare && $config->isConcurrent()) {
             $tokenValue = $this->getTokenValueByDeviceType($loginId, $deviceType);
+        }
+
+        if (!$config->isConcurrent() && $isShare) {
+            $this->logoutAllExceptCurrent($loginId, $deviceType);
         }
 
         // 无可复用 Token，则创建新 Token
@@ -562,7 +573,9 @@ class StpLogic
         $session = SaSession::getBySessionId($sessionId);
 
         if ($session === null && $isCreate) {
-            $session = new SaSession($sessionId);
+            $timeout = $this->getConfig()->getTimeout();
+            $sessionTimeout = ($timeout > 0) ? $timeout : null;
+            $session = new SaSession($sessionId, false, $sessionTimeout);
         }
 
         return $session;
@@ -585,7 +598,9 @@ class StpLogic
         $session = SaSession::getBySessionId($sessionId);
 
         if ($session === null && $isCreate) {
-            $session = new SaSession($sessionId);
+            $timeout = $this->tokenManager->getTokenTimeout($tokenValue);
+            $sessionTimeout = ($timeout > 0) ? $timeout : null;
+            $session = new SaSession($sessionId, false, $sessionTimeout);
         }
 
         return $session;
@@ -921,6 +936,17 @@ class StpLogic
             }
         }
         return null;
+    }
+
+    protected function logoutAllExceptCurrent(mixed $loginId, string $deviceType): void
+    {
+        $tokens = $this->tokenManager->getTokenListByLoginId($loginId, $this->loginType);
+        foreach ($tokens as $item) {
+            if ($item['deviceType'] === $deviceType && $this->tokenManager->isTokenValid($item['tokenValue'])) {
+                $this->tokenManager->kickout($item['tokenValue'], $loginId, $this->loginType);
+                $this->getEvent()->onReplaced($this->loginType, $loginId, $item['tokenValue']);
+            }
+        }
     }
 
     /**

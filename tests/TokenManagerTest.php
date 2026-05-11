@@ -9,6 +9,7 @@ use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoMemory;
 use SaToken\SaToken;
 use SaToken\TokenManager;
+use SaToken\Util\SaTokenEncryptor;
 
 class TokenManagerTest extends TestCase
 {
@@ -152,5 +153,90 @@ class TokenManagerTest extends TestCase
 
         $this->manager->clearSwitch($token, 'login');
         $this->assertNull($this->manager->getSwitchTo($token, 'login'));
+    }
+
+    public function testTokenEncryptDisabledByDefault(): void
+    {
+        $token = $this->manager->createTokenValue(10001, 'login');
+        $this->manager->saveToken($token, 10001, 'login', 'PC', 3600);
+
+        $rawValue = $this->dao->get('satoken:login:token:' . $token);
+        $this->assertEquals('10001', $rawValue);
+    }
+
+    public function testTokenEncryptEnabled(): void
+    {
+        SaToken::getConfig()->setTokenEncrypt(true)->setTokenEncryptKey('test-encrypt-key-12345');
+        $this->manager->resetEncryptor();
+
+        $token = $this->manager->createTokenValue(10001, 'login');
+        $this->manager->saveToken($token, 10001, 'login', 'PC', 3600);
+
+        $rawValue = $this->dao->get('satoken:login:token:' . $token);
+        $this->assertNotEquals('10001', $rawValue);
+        $this->assertNotEquals('', $rawValue);
+
+        $loginId = $this->manager->getLoginIdByToken($token);
+        $this->assertEquals('10001', $loginId);
+    }
+
+    public function testTokenEncryptPreservesAllOperations(): void
+    {
+        SaToken::getConfig()->setTokenEncrypt(true)->setAesKey('my-secret-aes-key-for-test');
+        $this->manager->resetEncryptor();
+
+        $token = $this->manager->createTokenValue(10001, 'login');
+        $this->manager->saveToken($token, 10001, 'login', 'PC', 3600);
+
+        $this->assertTrue($this->manager->isTokenValid($token));
+        $this->assertEquals('10001', $this->manager->getLoginIdByToken($token));
+
+        $tokens = $this->manager->getTokenListByLoginId(10001, 'login');
+        $this->assertCount(1, $tokens);
+        $this->assertEquals($token, $tokens[0]['tokenValue']);
+
+        $this->manager->setSwitchTo($token, 20001, 'login');
+        $this->assertEquals('20001', $this->manager->getSwitchTo($token, 'login'));
+
+        $this->manager->openSafe($token, 'transfer', 120, 'login');
+        $this->assertTrue($this->manager->isSafe($token, 'transfer', 'login'));
+
+        $this->manager->disable(10001, 'comment', 2, 3600, 'login');
+        $this->assertTrue($this->manager->isDisable(10001, 'comment', 'login'));
+        $this->assertEquals(2, $this->manager->getDisableLevel(10001, 'comment', 'login'));
+
+        $this->manager->deleteToken($token, 10001, 'login');
+        $this->assertNull($this->manager->getLoginIdByToken($token));
+    }
+
+    public function testEncryptorDecryptRoundTrip(): void
+    {
+        $encryptor = new SaTokenEncryptor(true, 'test-key');
+        $original = 'sensitive-login-id-10001';
+        $encrypted = $encryptor->encrypt($original);
+        $this->assertNotEquals($original, $encrypted);
+        $decrypted = $encryptor->decrypt($encrypted);
+        $this->assertEquals($original, $decrypted);
+    }
+
+    public function testEncryptorDisabledPassthrough(): void
+    {
+        $encryptor = new SaTokenEncryptor(false, 'test-key');
+        $original = 'plain-value';
+        $result = $encryptor->encrypt($original);
+        $this->assertEquals($original, $result);
+        $result = $encryptor->decrypt($original);
+        $this->assertEquals($original, $result);
+    }
+
+    public function testEncryptorTamperDetection(): void
+    {
+        $encryptor = new SaTokenEncryptor(true, 'test-key');
+        $original = 'secret-data';
+        $encrypted = $encryptor->encrypt($original);
+
+        $tampered = substr($encrypted, 0, -4) . base64_encode('XXXX');
+        $result = $encryptor->decrypt($tampered);
+        $this->assertEquals($tampered, $result);
     }
 }

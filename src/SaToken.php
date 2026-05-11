@@ -78,11 +78,12 @@ class SaToken
         } elseif (is_array($config)) {
             self::$config = new SaTokenConfig($config);
         } else {
-            // 自动加载 config/sa_token.php
             self::$config = self::loadConfigFile();
         }
 
-        self::$event = new SaTokenEvent();
+        if (self::$event === null) {
+            self::$event = new SaTokenEvent();
+        }
         self::$stpLogicMap = [];
         self::$initialized = true;
     }
@@ -276,5 +277,11 @@ class SaToken
         self::$stpLogicMap = [];
         self::$action = null;
         self::$initialized = false;
+    }
+
+    public static function clearContext(): void
+    {
+        \SaToken\Util\SaTokenContext::clear();
+        SaRouter::clearContext();
     }
 }

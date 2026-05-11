@@ -110,10 +110,15 @@ class SaSsoHandle
         }
 
         $data = [
-            'ticket'       => $ticket,
-            'client_id'    => $this->config->getClientId(),
-            'client_secret' => $this->config->getClientSecret(),
+            'ticket'    => $ticket,
+            'client_id' => $this->config->getClientId(),
+            'timestamp' => (string) time(),
         ];
+
+        $clientSecret = $this->config->getClientSecret();
+        if ($clientSecret !== '') {
+            $data = $this->template->signParams($data, $clientSecret);
+        }
 
         try {
             $response = $this->template->post($checkUrl, $data);

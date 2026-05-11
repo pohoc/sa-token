@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SaToken;
 
 use SaToken\Util\SaFoxUtil;
+use SaToken\Util\SaTokenEncryptor;
 
 /**
  * 会话管理类
@@ -35,13 +36,12 @@ class SaSession
      */
     protected bool $loaded = false;
 
-    /**
-     * @param string $id       Session ID
-     * @param bool   $skipLoad 是否跳过自动加载（内部使用）
-     */
-    public function __construct(string $id, bool $skipLoad = false)
+    protected ?int $timeout = null;
+
+    public function __construct(string $id, bool $skipLoad = false, ?int $timeout = null)
     {
         $this->id = $id;
+        $this->timeout = $timeout;
         if (!$skipLoad) {
             $this->loadData();
         }
@@ -61,8 +61,11 @@ class SaSession
             return null;
         }
 
+        $encryptor = self::getEncryptor();
+        $decrypted = $encryptor->decrypt($json);
+
         $session = new static($sessionId, true);
-        $session->dataMap = SaFoxUtil::fromJson($json) ?: [];
+        $session->dataMap = SaFoxUtil::fromJson($decrypted) ?: [];
         $session->loaded = true;
         return $session;
     }
@@ -188,7 +191,9 @@ class SaSession
 
         $json = SaToken::getDao()->get($this->id);
         if ($json !== null) {
-            $data = SaFoxUtil::fromJson($json);
+            $encryptor = self::getEncryptor();
+            $decrypted = $encryptor->decrypt($json);
+            $data = SaFoxUtil::fromJson($decrypted);
             $this->dataMap = is_array($data) ? $data : [];
         }
         $this->loaded = true;
@@ -202,7 +207,18 @@ class SaSession
     protected function saveData(): void
     {
         $json = SaFoxUtil::toJson($this->dataMap);
-        // Session 永不过期，由 Token 的过期机制控制
-        SaToken::getDao()->set($this->id, $json);
+        $encryptor = self::getEncryptor();
+        $encrypted = $encryptor->encrypt($json);
+        SaToken::getDao()->set($this->id, $encrypted, $this->timeout);
+    }
+
+    protected static function getEncryptor(): SaTokenEncryptor
+    {
+        $config = SaToken::getConfig();
+        $key = $config->getTokenEncryptKey() ?: $config->getAesKey();
+        if ($config->getCryptoType() === 'sm') {
+            $key = $config->getTokenEncryptKey() ?: $config->getSm4Key();
+        }
+        return new SaTokenEncryptor($config->isTokenEncrypt(), $key, $config->getCryptoType());
     }
 }

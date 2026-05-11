@@ -101,13 +101,11 @@ class SaOAuth2Handle
      */
     public function exchangeTokenByCode(string $code, string $clientId, string $clientSecret, string $redirectUri = ''): SaOAuth2AccessToken
     {
-        // 获取授权码
-        $codeData = $this->getAuthorizationCode($code);
+        $codeData = $this->consumeAuthorizationCode($code);
         if ($codeData === null) {
             throw new SaTokenException('无效的授权码');
         }
 
-        // 验证授权码
         if ($codeData->isUsed()) {
             throw new SaTokenException('授权码已使用');
         }
@@ -118,19 +116,12 @@ class SaOAuth2Handle
             throw new SaTokenException('客户端 ID 不匹配');
         }
 
-        // 验证客户端
         $client = $this->validateClientWithSecret($clientId, $clientSecret);
 
-        // 验证回调地址
         if ($redirectUri !== '' && $codeData->getRedirectUri() !== $redirectUri) {
             throw new SaTokenException('回调地址不匹配');
         }
 
-        // 标记授权码已使用
-        $codeData->markUsed();
-        $this->getDao()->delete($this->buildCodeKey($code));
-
-        // 生成访问令牌
         return $this->generateAccessToken($clientId, $codeData->getLoginId(), $codeData->getScope());
     }
 
@@ -317,6 +308,21 @@ class SaOAuth2Handle
     protected function getAuthorizationCode(string $code): ?SaOAuth2AuthorizationCode
     {
         $json = $this->getDao()->get($this->buildCodeKey($code));
+        if ($json === null) {
+            return null;
+        }
+
+        $data = SaFoxUtil::fromJson($json);
+        if (!is_array($data)) {
+            return null;
+        }
+
+        return new SaOAuth2AuthorizationCode($data);
+    }
+
+    protected function consumeAuthorizationCode(string $code): ?SaOAuth2AuthorizationCode
+    {
+        $json = $this->getDao()->getAndDelete($this->buildCodeKey($code));
         if ($json === null) {
             return null;
         }

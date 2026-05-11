@@ -7,29 +7,20 @@ namespace SaToken\Dao;
 use Psr\SimpleCache\CacheInterface;
 use Psr\SimpleCache\InvalidArgumentException;
 
-/**
- * PSR-16 Cache 适配器
- *
- * 将框架的 PSR-16 Cache 适配为 SaTokenDaoInterface，优先使用此适配器对接框架缓存
- *
- * 使用示例：
- *   $psr16Cache = new SomeFrameworkCache(); // 实现了 CacheInterface
- *   $dao = new SaTokenDaoPsr16($psr16Cache);
- *   $dao->set('key', 'value', 3600);
- */
 class SaTokenDaoPsr16 implements SaTokenDaoInterface
 {
-    /**
-     * @param CacheInterface $cache PSR-16 缓存实现
-     */
-    public function __construct(
-        protected CacheInterface $cache
-    ) {
+    protected CacheInterface $cache;
+
+    protected array $ttlMap = [];
+
+    protected int $createdAt;
+
+    public function __construct(CacheInterface $cache)
+    {
+        $this->cache = $cache;
+        $this->createdAt = time();
     }
 
-    /**
-     * @inheritdoc
-     */
     public function get(string $key): ?string
     {
         try {
@@ -40,21 +31,19 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface
         }
     }
 
-    /**
-     * @inheritdoc
-     */
     public function set(string $key, string $value, ?int $timeout = null): void
     {
         try {
             $this->cache->set($key, $value, $timeout);
+            if ($timeout !== null && $timeout > 0) {
+                $this->ttlMap[$key] = time() + $timeout;
+            } else {
+                unset($this->ttlMap[$key]);
+            }
         } catch (InvalidArgumentException) {
-            // ignore
         }
     }
 
-    /**
-     * @inheritdoc
-     */
     public function update(string $key, string $value): void
     {
         $ttl = $this->getTimeout($key);
@@ -65,36 +54,32 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface
         $this->set($key, $value, $timeout);
     }
 
-    /**
-     * @inheritdoc
-     */
     public function delete(string $key): void
     {
         try {
             $this->cache->delete($key);
+            unset($this->ttlMap[$key]);
         } catch (InvalidArgumentException) {
-            // ignore
         }
     }
 
-    /**
-     * @inheritdoc
-     *
-     * 注意：PSR-16 不提供获取剩余 TTL 的标准方法，此实现返回近似值
-     */
     public function getTimeout(string $key): int
     {
+        if (isset($this->ttlMap[$key])) {
+            $remaining = $this->ttlMap[$key] - time();
+            if ($remaining <= 0) {
+                unset($this->ttlMap[$key]);
+                return -2;
+            }
+            return $remaining;
+        }
+
         if (!$this->exists($key)) {
             return -2;
         }
-        // PSR-16 无法获取剩余 TTL，默认返回 -1（永不过期）
-        // 子类可重写此方法以提供更精确的实现
         return -1;
     }
 
-    /**
-     * @inheritdoc
-     */
     public function expire(string $key, int $timeout): void
     {
         $value = $this->get($key);
@@ -103,9 +88,6 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface
         }
     }
 
-    /**
-     * @inheritdoc
-     */
     public function getAndExpire(string $key, int $timeout): ?string
     {
         $value = $this->get($key);
@@ -115,9 +97,15 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface
         return $value;
     }
 
-    /**
-     * @inheritdoc
-     */
+    public function getAndDelete(string $key): ?string
+    {
+        $value = $this->get($key);
+        if ($value !== null) {
+            $this->delete($key);
+        }
+        return $value;
+    }
+
     public function exists(string $key): bool
     {
         try {
@@ -127,11 +115,6 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface
         }
     }
 
-    /**
-     * @inheritdoc
-     *
-     * 注意：PSR-16 不提供统计总数的方法，此实现返回 -1 表示不支持
-     */
     public function size(): int
     {
         return -1;

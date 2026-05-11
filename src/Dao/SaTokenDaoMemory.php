@@ -113,6 +113,22 @@ class SaTokenDaoMemory implements SaTokenDaoInterface
     /**
      * @inheritdoc
      */
+    public function getAndDelete(string $key): ?string
+    {
+        $this->checkExpired($key);
+
+        if (!isset($this->dataMap[$key])) {
+            return null;
+        }
+
+        $value = $this->dataMap[$key]['value'];
+        unset($this->dataMap[$key]);
+        return $value;
+    }
+
+    /**
+     * @inheritdoc
+     */
     public function exists(string $key): bool
     {
         $this->checkExpired($key);
