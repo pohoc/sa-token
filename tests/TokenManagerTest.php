@@ -166,7 +166,8 @@ class TokenManagerTest extends TestCase
 
     public function testTokenEncryptEnabled(): void
     {
-        SaToken::getConfig()->setTokenEncrypt(true)->setTokenEncryptKey('test-encrypt-key-12345');
+        $encryptKey = getenv('TEST_ENCRYPT_KEY') ?: 'test-key-placeholder-32-bytes-lo';
+        SaToken::getConfig()->setTokenEncrypt(true)->setTokenEncryptKey($encryptKey);
         $this->manager->resetEncryptor();
 
         $token = $this->manager->createTokenValue(10001, 'login');
@@ -182,7 +183,8 @@ class TokenManagerTest extends TestCase
 
     public function testTokenEncryptPreservesAllOperations(): void
     {
-        SaToken::getConfig()->setTokenEncrypt(true)->setAesKey('my-secret-aes-key-for-test');
+        $aesKey = getenv('TEST_AES_KEY_FOR_TOKEN') ?: 'test-key-placeholder-32-bytes-lo';
+        SaToken::getConfig()->setTokenEncrypt(true)->setAesKey($aesKey);
         $this->manager->resetEncryptor();
 
         $token = $this->manager->createTokenValue(10001, 'login');

@@ -13,7 +13,8 @@ class SaSignTest extends TestCase
 
     protected function setUp(): void
     {
-        $this->sign = new SaSign(['key' => 'test-secret-key']);
+        $signKey = getenv('TEST_SIGN_KEY') ?: 'test-key-placeholder-32-bytes-lo';
+        $this->sign = new SaSign(['key' => $signKey]);
     }
 
     public function testSignParamsAddsTimestampNonceAndSign(): void
@@ -56,7 +57,8 @@ class SaSignTest extends TestCase
 
     public function testVerifySignReturnsFalseForExpiredTimestamp(): void
     {
-        $sign = new SaSign(['key' => 'test-secret-key', 'timestampGap' => 100]);
+        $signKey = getenv('TEST_SIGN_KEY') ?: 'test-key-placeholder-32-bytes-lo';
+        $sign = new SaSign(['key' => $signKey, 'timestampGap' => 100]);
         $params = $sign->signParams(['foo' => 'bar', 'timestamp' => (string) (time() - 1000)]);
 
         $this->assertFalse($sign->verifySign($params));

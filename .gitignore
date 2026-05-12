@@ -13,3 +13,6 @@ composer.lock
 coverage/
 build/
 .DS_Store
+
+# Environment variables
+.env

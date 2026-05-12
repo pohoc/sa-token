@@ -14,7 +14,8 @@ class SaTokenJwtTest extends TestCase
 
     protected function setUp(): void
     {
-        $this->jwt = new SaTokenJwt(['jwtSecretKey' => 'test-jwt-secret-key-for-testing-purpose-32b']);
+        $secretKey = getenv('TEST_JWT_SECRET_KEY') ?: 'test-key-placeholder-32-bytes-lo';
+        $this->jwt = new SaTokenJwt(['jwtSecretKey' => $secretKey]);
     }
 
     // ---- Create Token ----

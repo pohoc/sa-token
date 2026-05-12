@@ -97,6 +97,7 @@ class StpLogicAdvancedTest extends TestCase
 
     public function testLoginWithTokenEncryptStoresEncryptedLoginId(): void
     {
+        $aesKey = getenv('TEST_AES_KEY_32') ?: 'test-key-placeholder-32-bytes-lo';
         SaToken::setConfig(new SaTokenConfig([
             'tokenName'       => 'satoken',
             'timeout'         => 86400,
@@ -110,7 +111,7 @@ class StpLogicAdvancedTest extends TestCase
             'isWriteCookie'   => false,
             'isWriteHeader'   => false,
             'tokenEncrypt'    => true,
-            'aesKey'          => 'test-aes-key-32-bytes-long-xxxx',
+            'aesKey'          => $aesKey,
         ]));
 
         $logic = new StpLogic('login');

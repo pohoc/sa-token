@@ -147,11 +147,11 @@ class SaTokenEncryptor
     protected function deriveSm4Key(string $key): string
     {
         if ($key === '') {
-            return substr(hash_hkdf('sha256', 'sa-token-default-sm4-key', 32, 'token-encrypt-sm4', ''), 0, 32);
+            return substr(bin2hex(hash_hkdf('sha256', 'sa-token-default-sm4-key', 32, 'token-encrypt-sm4', '')), 0, 32);
         }
         if (strlen($key) >= 32 && ctype_xdigit($key)) {
             return substr($key, 0, 32);
         }
-        return substr(hash_hkdf('sha256', $key, 32, 'sa-token-sm4-encrypt', ''), 0, 32);
+        return substr(bin2hex(hash_hkdf('sha256', $key, 32, 'sa-token-sm4-encrypt', '')), 0, 32);
     }
 }

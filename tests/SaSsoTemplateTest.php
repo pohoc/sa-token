@@ -28,7 +28,7 @@ class SaSsoTemplateTest extends TestCase
     {
         $template = new SaSsoTemplate('intl');
         $params = ['appId' => 'app-1', 'timestamp' => '1700000000', 'nonce' => 'abc123'];
-        $clientSecret = 'my-client-secret';
+        $clientSecret = getenv('TEST_SSO_CLIENT_SECRET') ?: 'test-key-placeholder-32-bytes-lo';
 
         $signed = $template->signParams($params, $clientSecret);
 
@@ -44,7 +44,7 @@ class SaSsoTemplateTest extends TestCase
 
         $template = new SaSsoTemplate('sm');
         $params = ['appId' => 'app-1', 'timestamp' => '1700000000', 'nonce' => 'abc123'];
-        $clientSecret = 'my-client-secret';
+        $clientSecret = getenv('TEST_SSO_CLIENT_SECRET') ?: 'my-client-secret';
 
         $signed = $template->signParams($params, $clientSecret);
 
@@ -56,7 +56,7 @@ class SaSsoTemplateTest extends TestCase
     {
         $template = new SaSsoTemplate('intl');
         $params = ['appId' => 'app-1', 'timestamp' => '1700000000', 'nonce' => 'abc123'];
-        $clientSecret = 'my-client-secret';
+        $clientSecret = getenv('TEST_SSO_CLIENT_SECRET') ?: 'my-client-secret';
 
         $signed = $template->signParams($params, $clientSecret);
         $result = $template->verifySign($signed, $clientSecret);
@@ -72,7 +72,7 @@ class SaSsoTemplateTest extends TestCase
 
         $template = new SaSsoTemplate('sm');
         $params = ['appId' => 'app-1', 'timestamp' => '1700000000', 'nonce' => 'abc123'];
-        $clientSecret = 'my-client-secret';
+        $clientSecret = getenv('TEST_SSO_CLIENT_SECRET') ?: 'my-client-secret';
 
         $signed = $template->signParams($params, $clientSecret);
         $result = $template->verifySign($signed, $clientSecret);
@@ -84,7 +84,7 @@ class SaSsoTemplateTest extends TestCase
     {
         $template = new SaSsoTemplate('intl');
         $params = ['appId' => 'app-1', 'timestamp' => '1700000000', 'nonce' => 'abc123'];
-        $clientSecret = 'my-client-secret';
+        $clientSecret = getenv('TEST_SSO_CLIENT_SECRET') ?: 'my-client-secret';
 
         $signed = $template->signParams($params, $clientSecret);
         $signed['appId'] = 'tampered-app';

@@ -20,6 +20,7 @@ class SaOAuth2OpenIdTest extends TestCase
     protected SaOAuth2Handle $handle;
     protected SaOAuth2Config $config;
     protected SaOAuth2Client $testClient;
+    protected string $clientSecret;
 
     protected function setUp(): void
     {
@@ -48,9 +49,10 @@ class SaOAuth2OpenIdTest extends TestCase
 
         $this->handle = new SaOAuth2Handle($this->config);
 
+        $this->clientSecret = getenv('TEST_OAUTH2_CLIENT_SECRET') ?: 'test-key-placeholder-32-bytes-lo';
         $this->testClient = new SaOAuth2Client([
             'clientId'     => 'test-client',
-            'clientSecret' => 'mock-client-secret-for-testing',
+            'clientSecret' => $this->clientSecret,
             'clientName'   => 'Test Client',
             'redirectUris' => ['https://example.com/callback'],
             'grantTypes'   => ['authorization_code', 'password', 'client_credentials'],
@@ -121,7 +123,7 @@ class SaOAuth2OpenIdTest extends TestCase
         $accessToken = $this->handle->exchangeTokenByCode(
             $code->getCode(),
             'test-client',
-            'mock-client-secret-for-testing',
+            $this->clientSecret,
             'https://example.com/callback'
         );
 
@@ -159,7 +161,7 @@ class SaOAuth2OpenIdTest extends TestCase
         $accessToken = $this->handle->exchangeTokenByCode(
             $code->getCode(),
             'test-client',
-            'mock-client-secret-for-testing',
+            $this->clientSecret,
             'https://example.com/callback'
         );
 
@@ -180,7 +182,7 @@ class SaOAuth2OpenIdTest extends TestCase
         $accessToken = $this->handle->exchangeTokenByCode(
             $code->getCode(),
             'test-client',
-            'mock-client-secret-for-testing',
+            $this->clientSecret,
             'https://example.com/callback'
         );
 

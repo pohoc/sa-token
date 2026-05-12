@@ -35,8 +35,9 @@ class SaTokenJwtSmTest extends TestCase
     {
         $this->skipIfSmUnavailable();
 
+        $secretKey = getenv('TEST_JWT_SM_SECRET_KEY') ?: 'test-key-placeholder-32-bytes-lo';
         $jwt = new SaTokenJwt([
-            'jwtSecretKey' => 'sm-secret-key-for-testing-at-least-32b',
+            'jwtSecretKey' => $secretKey,
             'cryptoType' => 'sm',
         ]);
 
@@ -57,8 +58,9 @@ class SaTokenJwtSmTest extends TestCase
     {
         $this->skipIfSmUnavailable();
 
+        $secretKey = getenv('TEST_JWT_SM_SECRET_KEY') ?: 'sm-secret-key-for-testing-at-least-32b';
         $jwt = new SaTokenJwt([
-            'jwtSecretKey' => 'sm-secret-key-for-testing-at-least-32b',
+            'jwtSecretKey' => $secretKey,
             'cryptoType' => 'sm',
         ]);
 
@@ -74,8 +76,9 @@ class SaTokenJwtSmTest extends TestCase
     {
         $this->skipIfSmUnavailable();
 
+        $secretKey = getenv('TEST_JWT_SM_SECRET_KEY') ?: 'sm-secret-key-for-testing-at-least-32b';
         $jwt = new SaTokenJwt([
-            'jwtSecretKey' => 'sm-secret-key-for-testing-at-least-32b',
+            'jwtSecretKey' => $secretKey,
             'cryptoType' => 'sm',
         ]);
 
@@ -89,8 +92,9 @@ class SaTokenJwtSmTest extends TestCase
     {
         $this->skipIfSmUnavailable();
 
+        $secretKey = getenv('TEST_JWT_SM_SECRET_KEY') ?: 'sm-secret-key-for-testing-at-least-32b';
         $jwt = new SaTokenJwt([
-            'jwtSecretKey' => 'sm-secret-key-for-testing-at-least-32b',
+            'jwtSecretKey' => $secretKey,
             'cryptoType' => 'sm',
         ]);
 
@@ -106,8 +110,9 @@ class SaTokenJwtSmTest extends TestCase
     {
         $this->skipIfSmUnavailable();
 
+        $secretKey = getenv('TEST_JWT_SM_SECRET_KEY') ?: 'sm-secret-key-for-testing-at-least-32b';
         $jwt = new SaTokenJwt([
-            'jwtSecretKey' => 'sm-secret-key-for-testing-at-least-32b',
+            'jwtSecretKey' => $secretKey,
             'cryptoType' => 'sm',
         ]);
 
@@ -124,8 +129,9 @@ class SaTokenJwtSmTest extends TestCase
     {
         $this->skipIfSmUnavailable();
 
+        $secretKey = getenv('TEST_JWT_SM_SECRET_KEY') ?: 'sm-secret-key-for-testing-at-least-32b';
         $jwt = new SaTokenJwt([
-            'jwtSecretKey' => 'sm-secret-key-for-testing-at-least-32b',
+            'jwtSecretKey' => $secretKey,
             'cryptoType' => 'sm',
         ]);
 

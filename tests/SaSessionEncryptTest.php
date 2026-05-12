@@ -38,9 +38,10 @@ class SaSessionEncryptTest extends TestCase
 
     public function testTokenEncryptEncryptsDataInDao(): void
     {
+        $encryptKey = getenv('TEST_ENCRYPT_KEY_SESSION') ?: 'test-key-placeholder-32-bytes-lo';
         $config = new SaTokenConfig([
             'tokenEncrypt' => true,
-            'tokenEncryptKey' => 'test-encrypt-key-for-session',
+            'tokenEncryptKey' => $encryptKey,
         ]);
         SaToken::setConfig($config);
 
@@ -58,9 +59,10 @@ class SaSessionEncryptTest extends TestCase
 
     public function testEncryptedSessionCanBeReadBack(): void
     {
+        $encryptKey = getenv('TEST_ENCRYPT_KEY_SESSION') ?: 'test-key-placeholder-32-bytes-lo';
         $config = new SaTokenConfig([
             'tokenEncrypt' => true,
-            'tokenEncryptKey' => 'test-encrypt-key-for-session',
+            'tokenEncryptKey' => $encryptKey,
         ]);
         SaToken::setConfig($config);
 
@@ -83,10 +85,11 @@ class SaSessionEncryptTest extends TestCase
             $this->markTestSkipped('CryptoSm SM4 extension not available');
         }
 
+        $encryptKey = getenv('TEST_SM4_ENCRYPT_KEY') ?: 'test-key-placeholder-32-bytes-lo';
         $config = new SaTokenConfig([
             'tokenEncrypt' => true,
             'cryptoType' => 'sm',
-            'tokenEncryptKey' => 'aa112233445566778899aabbccddeeff',
+            'tokenEncryptKey' => $encryptKey,
         ]);
         SaToken::setConfig($config);
 

@@ -14,9 +14,11 @@ class SaTokenCryptoTest extends TestCase
 
     protected function setUp(): void
     {
+        $aesKey = getenv('TEST_AES_KEY_32') ?: 'test-key-placeholder-32-bytes-lo';
+        $hmacKey = getenv('TEST_HMAC_KEY') ?: 'test-key-placeholder-32-bytes-lo';
         $this->crypto = new SaTokenCrypto([
-            'aesKey'  => 'test-aes-key-32-bytes-long-xxxx',
-            'hmacKey' => 'test-hmac-secret-key',
+            'aesKey'  => $aesKey,
+            'hmacKey' => $hmacKey,
         ]);
     }
 

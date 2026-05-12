@@ -10,13 +10,19 @@ use SaToken\Util\SaTokenEncryptor;
 
 class SaTokenEncryptorTest extends TestCase
 {
-    private function createAesEncryptor(bool $enabled = true, string $key = 'PLACEHOLDER_AES_KEY'): SaTokenEncryptor
+    private function createAesEncryptor(bool $enabled = true, string $key = ''): SaTokenEncryptor
     {
+        if ($key === '') {
+            $key = getenv('TEST_AES_KEY') ?: 'test-key-placeholder-32-bytes-lo';
+        }
         return new SaTokenEncryptor($enabled, $key, 'intl');
     }
 
-    private function createSm4Encryptor(bool $enabled = true, string $key = 'PLACEHOLDER_SM4_KEY'): SaTokenEncryptor
+    private function createSm4Encryptor(bool $enabled = true, string $key = ''): SaTokenEncryptor
     {
+        if ($key === '') {
+            $key = getenv('TEST_SM4_KEY') ?: 'test-key-placeholder-32-bytes-lo';
+        }
         return new SaTokenEncryptor($enabled, $key, 'sm');
     }
 
@@ -149,8 +155,8 @@ class SaTokenEncryptorTest extends TestCase
 
     public function testAesDifferentKeysCannotDecrypt(): void
     {
-        $e1 = new SaTokenEncryptor(true, 'PLACEHOLDER_KEY_ONE', 'intl');
-        $e2 = new SaTokenEncryptor(true, 'PLACEHOLDER_KEY_TWO', 'intl');
+        $e1 = new SaTokenEncryptor(true, str_repeat('1', 32), 'intl');
+        $e2 = new SaTokenEncryptor(true, str_repeat('2', 32), 'intl');
         $encrypted = $e1->encrypt('secret');
         $decrypted = $e2->decrypt($encrypted);
         $this->assertNotEquals('secret', $decrypted);
@@ -265,14 +271,17 @@ class SaTokenEncryptorTest extends TestCase
         $this->assertEquals(32, strlen($this->getDerivedKey($e1)));
     }
 
-    public function testSm4KeyDerivationEmptyKeyThrowsOnEncrypt(): void
+    public function testSm4KeyDerivationEmptyKeyDerivesValidKey(): void
     {
         if (!class_exists(Sm4::class)) {
             $this->markTestSkipped('CryptoSm SM4 extension not available');
         }
         $encryptor = new SaTokenEncryptor(true, '', 'sm');
-        $this->expectException(\SaToken\Exception\SaTokenException::class);
-        $encryptor->encrypt('test');
+        $derivedKey = $this->getDerivedKey($encryptor);
+        $this->assertEquals(32, strlen($derivedKey));
+        $this->assertTrue(ctype_xdigit($derivedKey));
+        $encrypted = $encryptor->encrypt('test');
+        $this->assertEquals('test', $encryptor->decrypt($encrypted));
     }
 
     public function testSm4KeyDerivationShortKey(): void
@@ -286,14 +295,17 @@ class SaTokenEncryptorTest extends TestCase
         $this->assertEquals(32, strlen($this->getDerivedKey($e1)));
     }
 
-    public function testSm4KeyDerivationShortKeyThrowsOnEncrypt(): void
+    public function testSm4KeyDerivationShortKeyDerivesValidKey(): void
     {
         if (!class_exists(Sm4::class)) {
             $this->markTestSkipped('CryptoSm SM4 extension not available');
         }
         $encryptor = new SaTokenEncryptor(true, 'short', 'sm');
-        $this->expectException(\SaToken\Exception\SaTokenException::class);
-        $encryptor->encrypt('test');
+        $derivedKey = $this->getDerivedKey($encryptor);
+        $this->assertEquals(32, strlen($derivedKey));
+        $this->assertTrue(ctype_xdigit($derivedKey));
+        $encrypted = $encryptor->encrypt('test');
+        $this->assertEquals('test', $encryptor->decrypt($encrypted));
     }
 
     public function testSm4KeyDerivationLongHexKey(): void
@@ -301,7 +313,7 @@ class SaTokenEncryptorTest extends TestCase
         if (!class_exists(Sm4::class)) {
             $this->markTestSkipped('CryptoSm SM4 extension not available');
         }
-        $longHexKey = 'PLACEHOLDER_SM4_KEYPLACEHOLDER_SM4_KEY';
+        $longHexKey = str_repeat('a', 64);
         $encryptor = new SaTokenEncryptor(true, $longHexKey, 'sm');
         $this->assertEquals(substr($longHexKey, 0, 32), $this->getDerivedKey($encryptor));
         $encrypted = $encryptor->encrypt('test');
@@ -320,15 +332,18 @@ class SaTokenEncryptorTest extends TestCase
         $this->assertEquals(32, strlen($this->getDerivedKey($e1)));
     }
 
-    public function testSm4KeyDerivationLongNonHexKeyThrowsOnEncrypt(): void
+    public function testSm4KeyDerivationLongNonHexKeyDerivesValidKey(): void
     {
         if (!class_exists(Sm4::class)) {
             $this->markTestSkipped('CryptoSm SM4 extension not available');
         }
         $longNonHexKey = str_repeat('z', 64);
         $encryptor = new SaTokenEncryptor(true, $longNonHexKey, 'sm');
-        $this->expectException(\SaToken\Exception\SaTokenException::class);
-        $encryptor->encrypt('test');
+        $derivedKey = $this->getDerivedKey($encryptor);
+        $this->assertEquals(32, strlen($derivedKey));
+        $this->assertTrue(ctype_xdigit($derivedKey));
+        $encrypted = $encryptor->encrypt('test');
+        $this->assertEquals('test', $encryptor->decrypt($encrypted));
     }
 
     public function testSm4DifferentKeysCannotDecrypt(): void
