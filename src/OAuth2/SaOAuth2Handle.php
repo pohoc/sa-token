@@ -545,7 +545,7 @@ class SaOAuth2Handle
         if ($jwtSecretKey !== '') {
             return $jwtSecretKey;
         }
-        return $this->config->getIssuer() . '-sa-token-oauth2-id-token-secret';
+        throw new SaTokenException('OAuth2 ID Token 签名需要配置 jwtSecretKey');
     }
 
     protected function base64UrlEncode(string $data): string

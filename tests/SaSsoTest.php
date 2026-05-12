@@ -84,8 +84,9 @@ class SaSsoTest extends TestCase
     public function testBuildLoginUrlWithRedirect(): void
     {
         $config = new SaSsoConfig([
-            'loginUrl'  => 'https://auth.example.com/login',
-            'clientId'  => 'app-1',
+            'loginUrl'     => 'https://auth.example.com/login',
+            'clientId'     => 'app-1',
+            'allowDomains' => ['app.example.com'],
         ]);
 
         $handle = new SaSsoHandle($config);
@@ -99,9 +100,10 @@ class SaSsoTest extends TestCase
     public function testBuildLoginUrlWithoutRedirect(): void
     {
         $config = new SaSsoConfig([
-            'loginUrl' => 'https://auth.example.com/login',
-            'backUrl'  => 'https://app.example.com/callback',
-            'clientId' => 'app-1',
+            'loginUrl'     => 'https://auth.example.com/login',
+            'backUrl'      => 'https://app.example.com/callback',
+            'clientId'     => 'app-1',
+            'allowDomains' => ['app.example.com'],
         ]);
 
         $handle = new SaSsoHandle($config);
@@ -114,8 +116,9 @@ class SaSsoTest extends TestCase
     public function testBuildLoginUrlWithExistingQueryParams(): void
     {
         $config = new SaSsoConfig([
-            'loginUrl' => 'https://auth.example.com/login?theme=dark',
-            'clientId' => 'app-1',
+            'loginUrl'     => 'https://auth.example.com/login?theme=dark',
+            'clientId'     => 'app-1',
+            'allowDomains' => ['app.example.com'],
         ]);
 
         $handle = new SaSsoHandle($config);
@@ -129,7 +132,8 @@ class SaSsoTest extends TestCase
     public function testBuildLoginUrlWithoutClientId(): void
     {
         $config = new SaSsoConfig([
-            'loginUrl' => 'https://auth.example.com/login',
+            'loginUrl'     => 'https://auth.example.com/login',
+            'allowDomains' => ['app.example.com'],
         ]);
 
         $handle = new SaSsoHandle($config);
@@ -231,8 +235,9 @@ class SaSsoTest extends TestCase
     public function testManagerBuildLoginUrl(): void
     {
         $manager = new SaSsoManager([
-            'loginUrl' => 'https://auth.example.com/login',
-            'clientId' => 'app-1',
+            'loginUrl'     => 'https://auth.example.com/login',
+            'clientId'     => 'app-1',
+            'allowDomains' => ['app.example.com'],
         ]);
 
         $url = $manager->buildLoginUrl('https://app.example.com/home');

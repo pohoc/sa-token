@@ -34,6 +34,7 @@ class SaOAuth2OpenIdTest extends TestCase
             'isReadBody'      => false,
             'isWriteCookie'   => false,
             'isWriteHeader'   => false,
+            'jwtSecretKey'    => 'test-jwt-secret-key-for-oauth2-id-token-32b',
         ]));
         SaToken::setDao(new SaTokenDaoMemory());
 

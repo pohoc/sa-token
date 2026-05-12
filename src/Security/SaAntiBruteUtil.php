@@ -92,6 +92,17 @@ class SaAntiBruteUtil
             $info['firstFailureTime'] = time();
         }
 
+        $config = SaToken::getConfig();
+        $maxFailures = $config->getAntiBruteMaxFailures();
+        $lockDuration = $config->getAntiBruteLockDuration();
+
+        if ($maxFailures > 0 && $info['failCount'] >= $maxFailures && $lockDuration > 0) {
+            $info['lockedUntil'] = time() + $lockDuration;
+            $jsonStr = json_encode($info);
+            $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', $lockDuration + 60);
+            return;
+        }
+
         $jsonStr = json_encode($info);
         $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', 86400);
     }

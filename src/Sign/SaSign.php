@@ -10,7 +10,7 @@ class SaSign
 
     protected int $timestampGap = 600;
 
-    protected string $signAlg = 'md5';
+    protected string $signAlg = 'sha256';
 
     /** @var callable(string): bool|null */
     protected $nonceValidator = null;
@@ -24,8 +24,8 @@ class SaSign
         $this->key = is_string($key) ? $key : '';
         $timestampGap = $config['timestampGap'] ?? 600;
         $this->timestampGap = is_int($timestampGap) ? $timestampGap : 600;
-        $signAlg = $config['signAlg'] ?? 'md5';
-        $this->signAlg = is_string($signAlg) ? $signAlg : 'md5';
+        $signAlg = $config['signAlg'] ?? 'sha256';
+        $this->signAlg = is_string($signAlg) ? $signAlg : 'sha256';
     }
 
     /**

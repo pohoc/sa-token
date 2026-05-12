@@ -246,7 +246,7 @@ class SaSsoHandle
     {
         $allowDomains = $this->config->getAllowDomains();
         if (empty($allowDomains)) {
-            return true;
+            return false;
         }
 
         $host = parse_url($url, PHP_URL_HOST);
