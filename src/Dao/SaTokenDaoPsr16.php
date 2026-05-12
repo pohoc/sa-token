@@ -11,6 +11,7 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface
 {
     protected CacheInterface $cache;
 
+    /** @var array<string, int> */
     protected array $ttlMap = [];
 
     protected int $createdAt;
@@ -25,7 +26,16 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface
     {
         try {
             $value = $this->cache->get($key);
-            return $value === null ? null : (string) $value;
+            if ($value === null) {
+                return null;
+            }
+            if (is_string($value)) {
+                return $value;
+            }
+            if (is_scalar($value)) {
+                return (string) $value;
+            }
+            return null;
         } catch (InvalidArgumentException) {
             return null;
         }

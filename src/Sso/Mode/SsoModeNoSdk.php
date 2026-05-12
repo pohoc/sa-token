@@ -40,6 +40,9 @@ class SsoModeNoSdk
         return $loginId;
     }
 
+    /**
+     * @return array{loginId: mixed, redirect: ?string}
+     */
     public function doLoginByTicket(string $ticket): array
     {
         $loginId = $this->validateTicket($ticket);

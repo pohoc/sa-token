@@ -40,8 +40,7 @@ class SaTokenCrypto
     protected string $hmacKey = '';
 
     /**
-     * @param  array            $config 配置数组（aesKey/rsaPrivateKey/rsaPublicKey/hmacKey）
-     * @throws SaTokenException OpenSSL 不可用时
+     * @param array<string, mixed> $config
      */
     public function __construct(array $config = [])
     {
@@ -49,10 +48,14 @@ class SaTokenCrypto
             throw new SaTokenException('国际加密插件需要 OpenSSL 扩展');
         }
 
-        $this->aesKey = $config['aesKey'] ?? '';
-        $this->rsaPrivateKey = $config['rsaPrivateKey'] ?? '';
-        $this->rsaPublicKey = $config['rsaPublicKey'] ?? '';
-        $this->hmacKey = $config['hmacKey'] ?? '';
+        $aesKey = $config['aesKey'] ?? '';
+        $this->aesKey = is_string($aesKey) ? $aesKey : '';
+        $rsaPrivateKey = $config['rsaPrivateKey'] ?? '';
+        $this->rsaPrivateKey = is_string($rsaPrivateKey) ? $rsaPrivateKey : '';
+        $rsaPublicKey = $config['rsaPublicKey'] ?? '';
+        $this->rsaPublicKey = is_string($rsaPublicKey) ? $rsaPublicKey : '';
+        $hmacKey = $config['hmacKey'] ?? '';
+        $this->hmacKey = is_string($hmacKey) ? $hmacKey : '';
     }
 
     /**
@@ -70,7 +73,11 @@ class SaTokenCrypto
             throw new SaTokenException('AES 密钥未配置');
         }
 
-        $iv = random_bytes(openssl_cipher_iv_length('AES-256-CBC') ?: 16);
+        $ivLength = openssl_cipher_iv_length('AES-256-CBC') ?: 16;
+        if ($ivLength <= 0) {
+            throw new SaTokenException('AES 加密失败：无法获取 IV 长度');
+        }
+        $iv = random_bytes($ivLength);
         $paddedKey = $this->padAesKey($key);
 
         $encrypted = openssl_encrypt($data, 'AES-256-CBC', $paddedKey, OPENSSL_RAW_DATA, $iv);
@@ -140,7 +147,7 @@ class SaTokenCrypto
             throw new SaTokenException('RSA 签名失败');
         }
 
-        return base64_encode($signature);
+        return base64_encode(is_string($signature) ? $signature : '');
     }
 
     /**
@@ -269,7 +276,11 @@ class SaTokenCrypto
     protected function loadRsaPrivateKey(string $privateKey): \OpenSSLAsymmetricKey|false
     {
         if (file_exists($privateKey)) {
-            $privateKey = file_get_contents($privateKey);
+            $content = file_get_contents($privateKey);
+            if ($content === false) {
+                return false;
+            }
+            $privateKey = $content;
         }
         return openssl_pkey_get_private($privateKey);
     }
@@ -283,7 +294,11 @@ class SaTokenCrypto
     protected function loadRsaPublicKey(string $publicKey): \OpenSSLAsymmetricKey|false
     {
         if (file_exists($publicKey)) {
-            $publicKey = file_get_contents($publicKey);
+            $content = file_get_contents($publicKey);
+            if ($content === false) {
+                return false;
+            }
+            $publicKey = $content;
         }
         return openssl_pkey_get_public($publicKey);
     }

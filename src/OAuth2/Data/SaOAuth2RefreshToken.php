@@ -17,6 +17,9 @@ class SaOAuth2RefreshToken
     protected int $expiresIn = -1;
     protected int $createTime = 0;
 
+    /**
+     * @param array<string, mixed> $data
+     */
     public function __construct(array $data = [])
     {
         foreach ($data as $key => $value) {
@@ -25,13 +28,11 @@ class SaOAuth2RefreshToken
                 $this->$method($value);
             }
         }
-        $this->createTime = $data['createTime'] ?? time();
+        $this->createTime = is_int($data['createTime'] ?? null) ? $data['createTime'] : time();
     }
 
     /**
-     * 转换为数组（用于序列化存储）
-     *
-     * @return array
+     * @return array<string, mixed>
      */
     public function toArray(): array
     {

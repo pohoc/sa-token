@@ -23,19 +23,21 @@ class SaIpAnomalyDetector
 
     public static function getKey(string $loginId, string $loginType = 'login'): string
     {
-        return self::$keyPrefix . $loginType . ':' . md5((string) $loginId);
+        return self::$keyPrefix . $loginType . ':' . md5($loginId);
     }
 
-    public static function getHistoryKey(string $loginId, string $loginType = 'login'): string
+    public static function getHistoryKey(mixed $loginId, string $loginType = 'login'): string
     {
-        return self::$historyPrefix . $loginType . ':' . md5((string) $loginId);
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        return self::$historyPrefix . $loginType . ':' . md5($loginIdStr);
     }
 
     public static function recordLoginIp(mixed $loginId, string $ip, string $loginType = 'login'): void
     {
         $dao = SaToken::getDao();
-        $key = self::getKey($loginId, $loginType);
-        $historyKey = self::getHistoryKey($loginId, $loginType);
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $key = self::getKey($loginIdStr, $loginType);
+        $historyKey = self::getHistoryKey($loginIdStr, $loginType);
 
         $now = time();
         $data = $dao->get($key);
@@ -53,27 +55,38 @@ class SaIpAnomalyDetector
 
         $historyData = $dao->get($historyKey);
         if ($historyData !== null) {
-            $history = @json_decode($historyData, true) ?? [];
+            $decodedHistory = @json_decode($historyData, true);
+            if (is_array($decodedHistory)) {
+                /** @var array<array{ip: string, time: int}> $decodedHistory */
+                $history = $decodedHistory;
+            }
         }
 
-        $isAnomaly = self::detectAnomaly($info['currentIp'] ?? '', $ip, $history);
+        $lastIp = is_string($info['currentIp'] ?? null) ? $info['currentIp'] : '';
+        $isAnomaly = self::detectAnomaly($lastIp, $ip, $history);
         if ($isAnomaly) {
-            $info['anomalyCount'] = ($info['anomalyCount'] ?? 0) + 1;
+            $anomalyCount = $info['anomalyCount'] ?? 0;
+            $info['anomalyCount'] = (is_int($anomalyCount) ? $anomalyCount : 0) + 1;
         }
 
         $info['currentIp'] = $ip;
         $info['lastLoginTime'] = $now;
         $info['lastLoginIp'] = $info['lastLoginIp'] ?? null;
 
-        $dao->set($key, json_encode($info), 2592000);
+        $jsonStr = json_encode($info);
+        $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', 2592000);
 
         $history[] = ['ip' => $ip, 'time' => $now];
         if (count($history) > 20) {
             $history = array_slice($history, -20);
         }
-        $dao->set($historyKey, json_encode($history), 2592000);
+        $historyJson = json_encode($history);
+        $dao->set($historyKey, $historyJson !== false ? $historyJson : '[]', 2592000);
     }
 
+    /**
+     * @param array<array{ip: string, time: int}> $history
+     */
     protected static function detectAnomaly(string $lastIp, string $currentIp, array $history): bool
     {
         if ($lastIp === '' || $currentIp === '') {
@@ -148,7 +161,8 @@ class SaIpAnomalyDetector
     public static function getAnomalyCount(mixed $loginId, string $loginType = 'login'): int
     {
         $dao = SaToken::getDao();
-        $key = self::getKey($loginId, $loginType);
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $key = self::getKey($loginIdStr, $loginType);
         $data = $dao->get($key);
 
         if ($data === null) {
@@ -156,13 +170,22 @@ class SaIpAnomalyDetector
         }
 
         $info = @json_decode($data, true);
-        return $info['anomalyCount'] ?? 0;
+        if (!is_array($info)) {
+            return 0;
+        }
+
+        $anomalyCount = $info['anomalyCount'] ?? 0;
+        return is_int($anomalyCount) ? $anomalyCount : 0;
     }
 
+    /**
+     * @return array<array{ip: string, time: int}>
+     */
     public static function getIpHistory(mixed $loginId, string $loginType = 'login'): array
     {
         $dao = SaToken::getDao();
-        $key = self::getHistoryKey($loginId, $loginType);
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $key = self::getHistoryKey($loginIdStr, $loginType);
         $data = $dao->get($key);
 
         if ($data === null) {
@@ -170,13 +193,18 @@ class SaIpAnomalyDetector
         }
 
         $history = @json_decode($data, true);
-        return is_array($history) ? $history : [];
+        if (!is_array($history)) {
+            return [];
+        }
+        /** @var array<array{ip: string, time: int}> $history */
+        return $history;
     }
 
     public static function getCurrentIp(mixed $loginId, string $loginType = 'login'): ?string
     {
         $dao = SaToken::getDao();
-        $key = self::getKey($loginId, $loginType);
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $key = self::getKey($loginIdStr, $loginType);
         $data = $dao->get($key);
 
         if ($data === null) {
@@ -184,13 +212,22 @@ class SaIpAnomalyDetector
         }
 
         $info = @json_decode($data, true);
-        return $info['currentIp'] ?? null;
+        if (!is_array($info)) {
+            return null;
+        }
+
+        $currentIp = $info['currentIp'] ?? null;
+        return is_string($currentIp) ? $currentIp : null;
     }
 
+    /**
+     * @return array{currentIp: ?string, lastLoginIp: ?string, lastLoginTime: ?int, anomalyCount: int}
+     */
     public static function getLoginInfo(mixed $loginId, string $loginType = 'login'): array
     {
         $dao = SaToken::getDao();
-        $key = self::getKey($loginId, $loginType);
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $key = self::getKey($loginIdStr, $loginType);
         $data = $dao->get($key);
 
         if ($data === null) {
@@ -198,19 +235,28 @@ class SaIpAnomalyDetector
         }
 
         $info = @json_decode($data, true);
+        if (!is_array($info)) {
+            return ['currentIp' => null, 'lastLoginIp' => null, 'lastLoginTime' => null, 'anomalyCount' => 0];
+        }
+
+        $currentIp = $info['currentIp'] ?? null;
+        $lastLoginIp = $info['lastLoginIp'] ?? null;
+        $lastLoginTime = $info['lastLoginTime'] ?? null;
+        $anomalyCount = $info['anomalyCount'] ?? 0;
         return [
-            'currentIp' => $info['currentIp'] ?? null,
-            'lastLoginIp' => $info['lastLoginIp'] ?? null,
-            'lastLoginTime' => $info['lastLoginTime'] ?? null,
-            'anomalyCount' => $info['anomalyCount'] ?? 0,
+            'currentIp' => is_string($currentIp) ? $currentIp : null,
+            'lastLoginIp' => is_string($lastLoginIp) ? $lastLoginIp : null,
+            'lastLoginTime' => is_int($lastLoginTime) ? $lastLoginTime : null,
+            'anomalyCount' => is_int($anomalyCount) ? $anomalyCount : 0,
         ];
     }
 
     public static function clearHistory(mixed $loginId, string $loginType = 'login'): void
     {
         $dao = SaToken::getDao();
-        $dao->delete(self::getKey($loginId, $loginType));
-        $dao->delete(self::getHistoryKey($loginId, $loginType));
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $dao->delete(self::getKey($loginIdStr, $loginType));
+        $dao->delete(self::getHistoryKey($loginIdStr, $loginType));
     }
 
     public static function reset(): void

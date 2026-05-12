@@ -234,7 +234,7 @@ class SaOAuth2Handle
         if (!is_array($data)) {
             return null;
         }
-
+        /** @var array<string, mixed> $data */
         return new SaOAuth2AccessToken($data);
     }
 
@@ -358,6 +358,7 @@ class SaOAuth2Handle
             return null;
         }
 
+        /** @var array<string, mixed> $data */
         return new SaOAuth2AuthorizationCode($data);
     }
 
@@ -373,6 +374,7 @@ class SaOAuth2Handle
             return null;
         }
 
+        /** @var array<string, mixed> $data */
         return new SaOAuth2AuthorizationCode($data);
     }
 
@@ -391,6 +393,7 @@ class SaOAuth2Handle
             return null;
         }
 
+        /** @var array<string, mixed> $data */
         return new SaOAuth2RefreshToken($data);
     }
 
@@ -479,9 +482,11 @@ class SaOAuth2Handle
         $now = time();
         $expiresAt = $now + $this->config->getAccessTokenTimeout();
 
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+
         $payload = [
             'iss' => $this->config->getIssuer(),
-            'sub' => (string) $loginId,
+            'sub' => $loginIdStr,
             'aud' => $clientId,
             'iat' => $now,
             'exp' => $expiresAt,
@@ -491,7 +496,7 @@ class SaOAuth2Handle
 
         return new SaOAuth2IdToken([
             'idToken'  => $jwtStr,
-            'subject'  => (string) $loginId,
+            'subject'  => $loginIdStr,
             'audience' => $clientId,
             'issuedAt' => $now,
             'expiresAt' => $expiresAt,
@@ -503,9 +508,15 @@ class SaOAuth2Handle
     protected function scopeContainsOpenid(string $scope): bool
     {
         $scopes = preg_split('/\s+/', $scope);
+        if ($scopes === false) {
+            return false;
+        }
         return in_array('openid', $scopes, true);
     }
 
+    /**
+     * @param array<string, mixed> $payload
+     */
     protected function signJwt(array $payload): string
     {
         $header = [
@@ -513,14 +524,19 @@ class SaOAuth2Handle
             'alg' => 'HS256',
         ];
 
-        $headerB64 = $this->base64UrlEncode(json_encode($header, JSON_UNESCAPED_UNICODE));
-        $payloadB64 = $this->base64UrlEncode(json_encode($payload, JSON_UNESCAPED_UNICODE));
+        $headerB64 = $this->base64UrlEncode(json_encode($header, JSON_UNESCAPED_UNICODE) ?: '');
+        $payloadB64 = $this->base64UrlEncode(json_encode($payload, JSON_UNESCAPED_UNICODE) ?: '');
         $signingInput = $headerB64 . '.' . $payloadB64;
 
         $secretKey = $this->getClientSecretForSigning();
         $signature = hash_hmac('sha256', $signingInput, $secretKey);
 
-        return $signingInput . '.' . $this->base64UrlEncode(hex2bin($signature));
+        $signatureBin = hex2bin($signature);
+        if ($signatureBin === false) {
+            throw new SaTokenException('JWT 签名失败');
+        }
+
+        return $signingInput . '.' . $this->base64UrlEncode($signatureBin);
     }
 
     protected function getClientSecretForSigning(): string

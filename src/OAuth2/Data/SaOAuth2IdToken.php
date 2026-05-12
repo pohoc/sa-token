@@ -12,8 +12,12 @@ class SaOAuth2IdToken
     protected int $issuedAt = 0;
     protected int $expiresAt = 0;
     protected string $issuer = '';
+    /** @var array<string, mixed> */
     protected array $claims = [];
 
+    /**
+     * @param array<string, mixed> $data
+     */
     public function __construct(array $data = [])
     {
         foreach ($data as $key => $value) {
@@ -24,6 +28,9 @@ class SaOAuth2IdToken
         }
     }
 
+    /**
+     * @return array<string, mixed>
+     */
     public function toArray(): array
     {
         return [
@@ -103,11 +110,17 @@ class SaOAuth2IdToken
         return $this;
     }
 
+    /**
+     * @return array<string, mixed>
+     */
     public function getClaims(): array
     {
         return $this->claims;
     }
 
+    /**
+     * @param array<string, mixed> $claims
+     */
     public function setClaims(array $claims): static
     {
         $this->claims = $claims;

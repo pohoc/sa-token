@@ -14,14 +14,21 @@ class SaApiKey
 
     protected string $secretHeaderName;
 
+    /** @var callable(string, string): mixed|null */
     protected $validator = null;
 
+    /** @var array<string, array{secret: string, loginId: mixed}> */
     protected array $keyRegistry = [];
 
+    /**
+     * @param array<string, mixed> $config
+     */
     public function __construct(array $config = [])
     {
-        $this->keyHeaderName = $config['headerName'] ?? 'api-key';
-        $this->secretHeaderName = $config['secretHeaderName'] ?? 'api-secret';
+        $keyHeaderName = $config['headerName'] ?? null;
+        $this->keyHeaderName = is_string($keyHeaderName) ? $keyHeaderName : 'api-key';
+        $secretHeaderName = $config['secretHeaderName'] ?? null;
+        $this->secretHeaderName = is_string($secretHeaderName) ? $secretHeaderName : 'api-secret';
     }
 
     public function checkApiKey(): void
@@ -67,6 +74,9 @@ class SaApiKey
         ];
     }
 
+    /**
+     * @param array<string, array{secret: string, loginId: mixed}> $registry
+     */
     public function setKeyRegistry(array $registry): static
     {
         $this->keyRegistry = $registry;

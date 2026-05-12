@@ -42,7 +42,9 @@ class SaSsoConfig
     // SSO Client Secret
     protected string $clientSecret = '';
 
-    // SSO 允许的回调域名列表
+    /**
+     * @var array<string>
+     */
     protected array $allowDomains = [];
 
     // 参数防丢 Cookie/Query 参数名
@@ -54,6 +56,9 @@ class SaSsoConfig
     // 跨 Redis ticket 校验地址
     protected string $crossRedisCheckUrl = '';
 
+    /**
+     * @param array<string, mixed> $config
+     */
     public function __construct(array $config = [])
     {
         foreach ($config as $key => $value) {
@@ -152,11 +157,17 @@ class SaSsoConfig
         return $this;
     }
 
+    /**
+     * @return array<string>
+     */
     public function getAllowDomains(): array
     {
         return $this->allowDomains;
     }
 
+    /**
+     * @param array<string> $allowDomains
+     */
     public function setAllowDomains(array $allowDomains): static
     {
         $this->allowDomains = $allowDomains;

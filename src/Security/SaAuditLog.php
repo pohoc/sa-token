@@ -34,6 +34,9 @@ class SaAuditLog
         self::$ttlDays = $days;
     }
 
+    /**
+     * @param array<string, mixed> $extra
+     */
     public static function log(
         string $event,
         mixed $loginId = null,
@@ -55,7 +58,7 @@ class SaAuditLog
         $entry = [
             'id' => $id,
             'event' => $event,
-            'loginId' => $loginId !== null ? (string) $loginId : null,
+            'loginId' => $loginId !== null ? (is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '')) : null,
             'loginType' => $loginType,
             'action' => $action,
             'tokenValue' => $tokenValue !== null ? substr($tokenValue, 0, 32) . '...' : null,
@@ -67,7 +70,8 @@ class SaAuditLog
         ];
 
         $key = self::$keyPrefix . $loginType . ':' . $id;
-        $dao->set($key, json_encode($entry), self::$ttlDays * 86400);
+        $jsonStr = json_encode($entry);
+        $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', self::$ttlDays * 86400);
 
         self::trimOldEntries($loginType);
 
@@ -101,7 +105,8 @@ class SaAuditLog
 
     public static function logSwitchTo(mixed $loginId, mixed $targetLoginId, string $loginType = 'login'): ?string
     {
-        return self::log('switch', $loginId, $loginType, '身份切换到 ' . $targetLoginId, null, null, null, ['targetLoginId' => (string) $targetLoginId]);
+        $targetLoginIdStr = is_string($targetLoginId) ? $targetLoginId : (is_scalar($targetLoginId) ? (string) $targetLoginId : '');
+        return self::log('switch', $loginId, $loginType, '身份切换到 ' . $targetLoginIdStr, null, null, null, ['targetLoginId' => $targetLoginIdStr]);
     }
 
     public static function logPermissionCheck(mixed $loginId, string $permission, bool $result, string $loginType = 'login'): ?string
@@ -109,6 +114,9 @@ class SaAuditLog
         return self::log('permission_check', $loginId, $loginType, '权限校验: ' . $permission, null, null, null, ['permission' => $permission, 'result' => $result]);
     }
 
+    /**
+     * @return array<string, mixed>|null
+     */
     public static function getLog(string $id, string $loginType = 'login'): ?array
     {
         $dao = SaToken::getDao();
@@ -119,9 +127,17 @@ class SaAuditLog
             return null;
         }
 
-        return @json_decode($data, true);
+        $result = @json_decode($data, true);
+        if (!is_array($result)) {
+            return null;
+        }
+        /** @var array<string, mixed> $result */
+        return $result;
     }
 
+    /**
+     * @return array<array<string, mixed>>
+     */
     public static function getRecentLogs(string $loginType = 'login', int $limit = 50): array
     {
         $dao = SaToken::getDao();
@@ -139,17 +155,26 @@ class SaAuditLog
             }
         }
 
-        usort($logs, fn ($a, $b) => ($b['time'] ?? 0) - ($a['time'] ?? 0));
+        usort($logs, function ($a, $b) {
+            $timeA = isset($a['time']) && is_int($a['time']) ? $a['time'] : 0;
+            $timeB = isset($b['time']) && is_int($b['time']) ? $b['time'] : 0;
+            return $timeB - $timeA;
+        });
+        /** @var array<array<string, mixed>> $logs */
         return $logs;
     }
 
+    /**
+     * @return array<array<string, mixed>>
+     */
     public static function getLogsByLoginId(mixed $loginId, string $loginType = 'login', int $limit = 50): array
     {
         $logs = self::getRecentLogs($loginType, $limit * 2);
         $result = [];
 
         foreach ($logs as $log) {
-            if (($log['loginId'] ?? '') === (string) $loginId) {
+            $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+            if (($log['loginId'] ?? '') === $loginIdStr) {
                 $result[] = $log;
                 if (count($result) >= $limit) {
                     break;
@@ -160,6 +185,9 @@ class SaAuditLog
         return $result;
     }
 
+    /**
+     * @return array<array<string, mixed>>
+     */
     public static function getLogsByEvent(string $event, string $loginType = 'login', int $limit = 50): array
     {
         $logs = self::getRecentLogs($loginType, $limit * 2);
@@ -177,6 +205,9 @@ class SaAuditLog
         return $result;
     }
 
+    /**
+     * @return array<array<string, mixed>>
+     */
     public static function getLogsByIp(string $ip, string $loginType = 'login', int $limit = 50): array
     {
         $dao = SaToken::getDao();
@@ -200,6 +231,7 @@ class SaAuditLog
             }
         }
 
+        /** @var array<array<string, mixed>> $result */
         return $result;
     }
 
@@ -226,7 +258,7 @@ class SaAuditLog
                 continue;
             }
             $id = $decoded['id'] ?? '';
-            if ($id !== '') {
+            if ($id !== '' && is_string($id)) {
                 $dao->delete(self::$keyPrefix . $loginType . ':' . $id);
             }
         }
@@ -254,12 +286,16 @@ class SaAuditLog
             $entries[] = $decoded;
         }
 
-        usort($entries, fn ($a, $b) => ($b['time'] ?? 0) - ($a['time'] ?? 0));
+        usort($entries, function ($a, $b) {
+            $timeA = isset($a['time']) && is_int($a['time']) ? $a['time'] : 0;
+            $timeB = isset($b['time']) && is_int($b['time']) ? $b['time'] : 0;
+            return $timeB - $timeA;
+        });
 
         $toDelete = array_slice($entries, self::$maxEntries);
         foreach ($toDelete as $entry) {
             $id = $entry['id'] ?? '';
-            if ($id !== '') {
+            if ($id !== '' && is_string($id)) {
                 $dao->delete(self::$keyPrefix . $loginType . ':' . $id);
             }
         }
@@ -274,26 +310,29 @@ class SaAuditLog
 
         if ($request instanceof \Psr\Http\Message\ServerRequestInterface) {
             $serverParams = $request->getServerParams();
-            return $serverParams['REMOTE_ADDR'] ?? null;
+            $addr = $serverParams['REMOTE_ADDR'] ?? null;
+            return is_string($addr) ? $addr : null;
         }
 
-        if (method_exists($request, 'getHeaderLine')) {
+        if (is_object($request) && method_exists($request, 'getHeaderLine')) {
             $ip = $request->getHeaderLine('X-Forwarded-For');
-            if (!empty($ip)) {
-                return explode(',', $ip)[0];
+            if (is_string($ip) && $ip !== '') {
+                $parts = explode(',', $ip);
+                return trim($parts[0]);
             }
             $ip = $request->getHeaderLine('X-Real-IP');
-            if (!empty($ip)) {
-                return $ip;
+            if (is_string($ip) && $ip !== '') {
+                return trim($ip);
             }
         }
 
         if (function_exists('apache_request_headers')) {
             $headers = apache_request_headers();
-            if (isset($headers['X-Forwarded-For'])) {
-                return explode(',', $headers['X-Forwarded-For'])[0];
+            if (isset($headers['X-Forwarded-For']) && is_string($headers['X-Forwarded-For'])) {
+                $parts = explode(',', $headers['X-Forwarded-For']);
+                return trim($parts[0]);
             }
-            if (isset($headers['X-Real-IP'])) {
+            if (isset($headers['X-Real-IP']) && is_string($headers['X-Real-IP'])) {
                 return $headers['X-Real-IP'];
             }
         }

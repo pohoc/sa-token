@@ -91,9 +91,10 @@ class TokenManager
             $tokenValue = $jwt->createMixedToken($loginId, $loginType, $effectiveTimeout);
         }
 
-        $this->getDao()->set(self::TOKEN_PREFIX . $tokenValue, $this->encryptValue((string) $loginId), $effectiveTimeout);
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $this->getDao()->set(self::TOKEN_PREFIX . $tokenValue, $this->encryptValue($loginIdStr), $effectiveTimeout);
 
-        $loginIdKey = self::LOGIN_ID_PREFIX . $loginType . ':' . $loginId;
+        $loginIdKey = self::LOGIN_ID_PREFIX . $loginType . ':' . $loginIdStr;
         $existingTokens = $this->getTokenListByLoginId($loginId, $loginType);
         $tokenData = [
             'tokenValue' => $tokenValue,
@@ -113,7 +114,9 @@ class TokenManager
             $replaced = false;
             if ($deviceType !== '') {
                 foreach ($existingTokens as $i => $item) {
-                    if ($item['deviceType'] === $deviceType && !$this->isTokenValid($item['tokenValue'])) {
+                    $itemDeviceType = is_string($item['deviceType'] ?? null) ? $item['deviceType'] : '';
+                    $itemTokenValue = is_string($item['tokenValue'] ?? null) ? $item['tokenValue'] : '';
+                    if ($itemDeviceType === $deviceType && !$this->isTokenValid($itemTokenValue)) {
                         $existingTokens[$i] = $tokenData;
                         $replaced = true;
                         break;
@@ -154,23 +157,32 @@ class TokenManager
         return null;
     }
 
+    /**
+     * @return array<array<string, mixed>>
+     */
     public function getTokenListByLoginId(mixed $loginId, string $loginType): array
     {
-        $loginIdKey = self::LOGIN_ID_PREFIX . $loginType . ':' . $loginId;
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $loginIdKey = self::LOGIN_ID_PREFIX . $loginType . ':' . $loginIdStr;
         $json = $this->getDao()->get($loginIdKey);
         if ($json === null) {
             return [];
         }
         $decrypted = $this->decryptValue($json);
         $list = SaFoxUtil::fromJson($decrypted);
-        return is_array($list) ? $list : [];
+        if (!is_array($list)) {
+            return [];
+        }
+        /** @var array<array<string, mixed>> $list */
+        return $list;
     }
 
     public function deleteToken(string $tokenValue, mixed $loginId, string $loginType): void
     {
         $this->getDao()->delete(self::TOKEN_PREFIX . $tokenValue);
 
-        $loginIdKey = self::LOGIN_ID_PREFIX . $loginType . ':' . $loginId;
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $loginIdKey = self::LOGIN_ID_PREFIX . $loginType . ':' . $loginIdStr;
         $existingTokens = $this->getTokenListByLoginId($loginId, $loginType);
         $newTokens = array_values(array_filter($existingTokens, fn ($item) => $item['tokenValue'] !== $tokenValue));
 
@@ -188,21 +200,28 @@ class TokenManager
         $this->getDao()->delete(self::TOKEN_SESSION_PREFIX . $tokenValue);
     }
 
+    /**
+     * @return array<string>
+     */
     public function deleteAllTokenByLoginId(mixed $loginId, string $loginType): array
     {
         $tokens = $this->getTokenListByLoginId($loginId, $loginType);
         $deletedTokens = [];
 
         foreach ($tokens as $item) {
-            $tokenValue = $item['tokenValue'];
+            $tokenValue = is_string($item['tokenValue'] ?? null) ? $item['tokenValue'] : '';
+            if ($tokenValue === '') {
+                continue;
+            }
             $this->getDao()->delete(self::TOKEN_PREFIX . $tokenValue);
             $this->getDao()->delete(self::LAST_ACTIVE_PREFIX . $tokenValue);
             $this->getDao()->delete(self::TOKEN_SESSION_PREFIX . $tokenValue);
             $deletedTokens[] = $tokenValue;
         }
 
-        $this->getDao()->delete(self::LOGIN_ID_PREFIX . $loginType . ':' . $loginId);
-        $this->getDao()->delete(self::SESSION_PREFIX . $loginType . ':' . $loginId);
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $this->getDao()->delete(self::LOGIN_ID_PREFIX . $loginType . ':' . $loginIdStr);
+        $this->getDao()->delete(self::SESSION_PREFIX . $loginType . ':' . $loginIdStr);
 
         return $deletedTokens;
     }
@@ -251,7 +270,8 @@ class TokenManager
 
     public function disable(mixed $loginId, string $service, int $level, int $time, string $loginType): void
     {
-        $key = self::DISABLE_PREFIX . $loginType . ':' . $loginId . ':' . $service;
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $key = self::DISABLE_PREFIX . $loginType . ':' . $loginIdStr . ':' . $service;
         $data = SaFoxUtil::toJson([
             'level'   => $level,
             'disable' => true,
@@ -262,35 +282,46 @@ class TokenManager
 
     public function isDisable(mixed $loginId, string $service, string $loginType): bool
     {
-        $key = self::DISABLE_PREFIX . $loginType . ':' . $loginId . ':' . $service;
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $key = self::DISABLE_PREFIX . $loginType . ':' . $loginIdStr . ':' . $service;
         $json = $this->getDao()->get($key);
         if ($json === null) {
             return false;
         }
         $data = SaFoxUtil::fromJson($this->decryptValue($json));
+        if (!is_array($data)) {
+            return false;
+        }
         return isset($data['disable']) && $data['disable'] === true;
     }
 
     public function getDisableLevel(mixed $loginId, string $service, string $loginType): int
     {
-        $key = self::DISABLE_PREFIX . $loginType . ':' . $loginId . ':' . $service;
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $key = self::DISABLE_PREFIX . $loginType . ':' . $loginIdStr . ':' . $service;
         $json = $this->getDao()->get($key);
         if ($json === null) {
             return -1;
         }
         $data = SaFoxUtil::fromJson($this->decryptValue($json));
-        return $data['level'] ?? -1;
+        if (!is_array($data)) {
+            return -1;
+        }
+        $level = $data['level'] ?? -1;
+        return is_int($level) ? $level : -1;
     }
 
     public function getDisableTime(mixed $loginId, string $service, string $loginType): int
     {
-        $key = self::DISABLE_PREFIX . $loginType . ':' . $loginId . ':' . $service;
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $key = self::DISABLE_PREFIX . $loginType . ':' . $loginIdStr . ':' . $service;
         return $this->getDao()->getTimeout($key);
     }
 
     public function untieDisable(mixed $loginId, string $service, string $loginType): void
     {
-        $key = self::DISABLE_PREFIX . $loginType . ':' . $loginId . ':' . $service;
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $key = self::DISABLE_PREFIX . $loginType . ':' . $loginIdStr . ':' . $service;
         $this->getDao()->delete($key);
     }
 
@@ -339,16 +370,25 @@ class TokenManager
         $this->getDao()->delete($key);
     }
 
+    /**
+     * @return array<string>
+     */
     public function searchTokenValue(string $keyword, int $start, int $size): array
     {
         return $this->getDao()->search(self::TOKEN_PREFIX, $keyword, $start, $size);
     }
 
+    /**
+     * @return array<string>
+     */
     public function searchSessionId(string $keyword, int $start, int $size): array
     {
         return $this->getDao()->search(self::SESSION_PREFIX, $keyword, $start, $size);
     }
 
+    /**
+     * @return array<string>
+     */
     public function searchTokenSessionId(string $keyword, int $start, int $size): array
     {
         return $this->getDao()->search(self::TOKEN_SESSION_PREFIX, $keyword, $start, $size);

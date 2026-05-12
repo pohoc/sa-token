@@ -12,6 +12,9 @@ class SaTokenDaoRedis implements SaTokenDaoInterface
 
     protected int $database = 0;
 
+    /**
+     * @param array<string, mixed>|string $config
+     */
     public function __construct(array|string $config = [], ?\Redis $client = null)
     {
         if ($client !== null) {
@@ -20,27 +23,44 @@ class SaTokenDaoRedis implements SaTokenDaoInterface
         }
 
         $config = is_string($config) ? ['url' => $config] : $config;
-        $this->database = (int) ($config['database'] ?? 0);
+        $database = $config['database'] ?? 0;
+        $this->database = is_int($database) ? $database : (is_numeric($database) ? (int) $database : 0);
 
         $this->client = new \Redis();
         $host = $config['host'] ?? '127.0.0.1';
-        $port = (int) ($config['port'] ?? 6379);
+        $port = $config['port'] ?? 6379;
         $timeout = $config['timeout'] ?? 0;
 
-        $this->client->connect($host, $port, $timeout);
+        $this->client->connect(is_string($host) ? $host : '127.0.0.1', is_int($port) ? $port : (is_numeric($port) ? (int) $port : 6379), is_numeric($timeout) ? (float) $timeout : 0.0);
 
         if (!empty($config['password'])) {
-            $this->client->auth($config['password']);
+            $password = $config['password'];
+            if (is_string($password)) {
+                $this->client->auth($password);
+            } elseif (is_array($password)) {
+                /** @var array<string> $password */
+                $this->client->auth($password);
+            }
         }
         if (isset($config['database'])) {
-            $this->client->select((int) $config['database']);
+            $db = $config['database'];
+            $this->client->select(is_int($db) ? $db : (is_numeric($db) ? (int) $db : 0));
         }
     }
 
     public function get(string $key): ?string
     {
         $value = ($this->saRedis ?? $this->client)->get($key);
-        return $value === false ? null : (string) $value;
+        if ($value === false) {
+            return null;
+        }
+        if (is_string($value)) {
+            return $value;
+        }
+        if (is_scalar($value)) {
+            return (string) $value;
+        }
+        return null;
     }
 
     public function set(string $key, string $value, ?int $timeout = null): void
@@ -95,7 +115,16 @@ end
 return value
 LUA;
         $result = ($this->saRedis ?? $this->client)->eval($script, array_merge([$key], [$timeout]), 1);
-        return $result === false ? null : (string) $result;
+        if ($result === false) {
+            return null;
+        }
+        if (is_string($result)) {
+            return $result;
+        }
+        if (is_scalar($result)) {
+            return (string) $result;
+        }
+        return null;
     }
 
     public function getAndDelete(string $key): ?string
@@ -108,7 +137,16 @@ end
 return value
 LUA;
         $result = ($this->saRedis ?? $this->client)->eval($script, [$key], 1);
-        return $result === false ? null : (string) $result;
+        if ($result === false) {
+            return null;
+        }
+        if (is_string($result)) {
+            return $result;
+        }
+        if (is_scalar($result)) {
+            return (string) $result;
+        }
+        return null;
     }
 
     public function exists(string $key): bool
@@ -130,7 +168,8 @@ LUA;
 
         $dbInfo = $info[$dbKey];
         if (is_array($dbInfo) && isset($dbInfo['keys'])) {
-            return (int) $dbInfo['keys'];
+            $keys = $dbInfo['keys'];
+            return is_int($keys) ? $keys : (is_numeric($keys) ? (int) $keys : 0);
         }
         if (is_string($dbInfo)) {
             preg_match('/keys=(\d+)/', $dbInfo, $matches);
@@ -165,7 +204,11 @@ LUA;
 
         foreach ($results as $value) {
             if ($value !== false && $value !== null) {
-                $values[] = (string) $value;
+                if (is_string($value)) {
+                    $values[] = $value;
+                } elseif (is_scalar($value)) {
+                    $values[] = (string) $value;
+                }
             }
         }
 
@@ -182,22 +225,33 @@ LUA;
         $this->saRedis = $redis;
     }
 
+    /**
+     * @param array<string, mixed> $mainConfig
+     * @param array<string, mixed> $separateConfig
+     */
     public static function createWithSeparateRedis(array $mainConfig, array $separateConfig): self
     {
         $instance = new self($mainConfig);
 
         $saRedis = new \Redis();
         $host = $separateConfig['host'] ?? '127.0.0.1';
-        $port = (int) ($separateConfig['port'] ?? 6379);
+        $port = $separateConfig['port'] ?? 6379;
         $timeout = $separateConfig['timeout'] ?? 0;
 
-        $saRedis->connect($host, $port, $timeout);
+        $saRedis->connect(is_string($host) ? $host : '127.0.0.1', is_int($port) ? $port : (is_numeric($port) ? (int) $port : 6379), is_numeric($timeout) ? (float) $timeout : 0.0);
 
         if (!empty($separateConfig['password'])) {
-            $saRedis->auth($separateConfig['password']);
+            $password = $separateConfig['password'];
+            if (is_string($password)) {
+                $saRedis->auth($password);
+            } elseif (is_array($password)) {
+                /** @var array<string> $password */
+                $saRedis->auth($password);
+            }
         }
         if (isset($separateConfig['db'])) {
-            $saRedis->select((int) $separateConfig['db']);
+            $db = $separateConfig['db'];
+            $saRedis->select(is_int($db) ? $db : (is_numeric($db) ? (int) $db : 0));
         }
 
         $instance->setSaRedis($saRedis);

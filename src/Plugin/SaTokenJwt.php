@@ -13,12 +13,20 @@ class SaTokenJwt
 
     protected string $cryptoType = 'intl';
 
+    /**
+     * @param array<string, mixed> $config
+     */
     public function __construct(array $config = [])
     {
-        $this->secretKey = $config['jwtSecretKey'] ?? '';
-        $this->cryptoType = $config['cryptoType'] ?? 'intl';
+        $secretKey = $config['jwtSecretKey'] ?? '';
+        $this->secretKey = is_string($secretKey) ? $secretKey : '';
+        $cryptoType = $config['cryptoType'] ?? 'intl';
+        $this->cryptoType = is_string($cryptoType) ? $cryptoType : 'intl';
     }
 
+    /**
+     * @param array<string, mixed> $extraClaims
+     */
     public function createToken(mixed $loginId, string $loginType, ?int $timeout = null, array $extraClaims = []): string
     {
         if ($this->secretKey === '') {
@@ -34,7 +42,7 @@ class SaTokenJwt
         $payload = [
             'iat'  => $now,
             'jti'  => bin2hex(random_bytes(16)),
-            'sub'  => (string) $loginId,
+            'sub'  => is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : ''),
             'type' => $loginType,
         ];
 
@@ -44,8 +52,10 @@ class SaTokenJwt
 
         $payload = array_merge($payload, $extraClaims);
 
-        $headerB64 = $this->base64UrlEncode(json_encode($header, JSON_UNESCAPED_UNICODE));
-        $payloadB64 = $this->base64UrlEncode(json_encode($payload, JSON_UNESCAPED_UNICODE));
+        $headerJson = json_encode($header, JSON_UNESCAPED_UNICODE);
+        $payloadJson = json_encode($payload, JSON_UNESCAPED_UNICODE);
+        $headerB64 = $this->base64UrlEncode(is_string($headerJson) ? $headerJson : '');
+        $payloadB64 = $this->base64UrlEncode(is_string($payloadJson) ? $payloadJson : '');
         $signingInput = $headerB64 . '.' . $payloadB64;
 
         if ($this->cryptoType === 'sm') {
@@ -57,9 +67,17 @@ class SaTokenJwt
             $signature = hash_hmac('sha256', $signingInput, $this->secretKey);
         }
 
-        return $signingInput . '.' . $this->base64UrlEncode(hex2bin($signature));
+        $signatureBin = hex2bin($signature);
+        if ($signatureBin === false) {
+            throw new SaTokenException('JWT 签名失败');
+        }
+
+        return $signingInput . '.' . $this->base64UrlEncode($signatureBin);
     }
 
+    /**
+     * @param array<string, mixed> $extraClaims
+     */
     public function createMixedToken(mixed $loginId, string $loginType, ?int $timeout = null, array $extraClaims = []): string
     {
         if ($this->secretKey === '') {
@@ -75,6 +93,9 @@ class SaTokenJwt
         return $this->createToken($loginId, $loginType, $timeout, $mixedClaims);
     }
 
+    /**
+     * @return array<string, mixed>
+     */
     public function parseToken(string $token): array
     {
         if ($this->secretKey === '') {
@@ -120,6 +141,7 @@ class SaTokenJwt
             throw new SaTokenException('JWT Token 已过期');
         }
 
+        /** @var array<string, mixed> $payload */
         return $payload;
     }
 
@@ -127,7 +149,8 @@ class SaTokenJwt
     {
         try {
             $payload = $this->parseToken($token);
-            return $payload['sub'] ?? null;
+            $sub = $payload['sub'] ?? null;
+            return is_string($sub) ? $sub : null;
         } catch (SaTokenException) {
             return null;
         }
@@ -137,7 +160,8 @@ class SaTokenJwt
     {
         try {
             $payload = $this->parseToken($token);
-            return $payload['type'] ?? '';
+            $type = $payload['type'] ?? '';
+            return is_string($type) ? $type : '';
         } catch (SaTokenException) {
             return '';
         }
@@ -150,10 +174,14 @@ class SaTokenJwt
         return array_diff_key($payload, array_flip($standardKeys));
     }
 
+    /**
+     * @param array<string, mixed> $extraClaims
+     */
     public function createStatelessToken(mixed $loginId, string $loginType, ?int $timeout = null, array $extraClaims = []): string
     {
         $sessionData = [];
-        $sessionId = \SaToken\TokenManager::SESSION_PREFIX . $loginType . ':' . $loginId;
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $sessionId = \SaToken\TokenManager::SESSION_PREFIX . $loginType . ':' . $loginIdStr;
         $session = \SaToken\SaSession::getBySessionId($sessionId);
         if ($session !== null) {
             $sessionData = $session->getDataMap();
@@ -164,6 +192,9 @@ class SaTokenJwt
         return $this->createToken($loginId, $loginType, $timeout, $statelessClaims);
     }
 
+    /**
+     * @return array<string, mixed>|null
+     */
     public function validateStatelessToken(string $token): ?array
     {
         try {
@@ -185,6 +216,7 @@ class SaTokenJwt
         if ($remainder !== 0) {
             $data .= str_repeat('=', 4 - $remainder);
         }
-        return base64_decode(strtr($data, '-_', '+/'), true);
+        $decoded = base64_decode(strtr($data, '-_', '+/'), true);
+        return $decoded !== false ? $decoded : '';
     }
 }

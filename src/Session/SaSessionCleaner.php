@@ -63,14 +63,14 @@ class SaSessionCleaner
                 continue;
             }
             $expireAt = $data['expireAt'] ?? null;
-            if ($expireAt !== null && $expireAt > 0 && $expireAt < time()) {
+            if ($expireAt !== null && is_int($expireAt) && $expireAt > 0 && $expireAt < time()) {
                 $token = $data['tokenValue'] ?? '';
-                if ($token !== '') {
+                if ($token !== '' && is_string($token)) {
                     $key = $pattern . $token;
                     $dao->delete($key);
                     $loginId = $data['loginId'] ?? null;
-                    if ($loginId !== null) {
-                        $dao->delete('satoken:login:token:list:' . $loginId . ':' . $token);
+                    if ($loginId !== null && (is_string($loginId) || is_int($loginId))) {
+                        $dao->delete('satoken:login:token:list:' . (string) $loginId . ':' . $token);
                     }
                     $cleaned++;
                 }
@@ -95,9 +95,9 @@ class SaSessionCleaner
                 continue;
             }
             $expireAt = $data['expireAt'] ?? null;
-            if ($expireAt !== null && $expireAt > 0 && $expireAt < time()) {
+            if ($expireAt !== null && is_int($expireAt) && $expireAt > 0 && $expireAt < time()) {
                 $sessionId = $data['id'] ?? '';
-                if ($sessionId !== '') {
+                if ($sessionId !== '' && is_string($sessionId)) {
                     $dao->delete($pattern . $sessionId);
                     $cleaned++;
                 }
@@ -122,9 +122,9 @@ class SaSessionCleaner
                 continue;
             }
             $expireAt = $data['expireAt'] ?? null;
-            if ($expireAt !== null && $expireAt > 0 && $expireAt < time()) {
+            if ($expireAt !== null && is_int($expireAt) && $expireAt > 0 && $expireAt < time()) {
                 $sessionId = $data['id'] ?? '';
-                if ($sessionId !== '') {
+                if ($sessionId !== '' && is_string($sessionId)) {
                     $dao->delete($pattern . $sessionId);
                     $cleaned++;
                 }

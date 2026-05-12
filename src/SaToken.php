@@ -77,15 +77,15 @@ class SaToken
 
     /**
      * 初始化 Sa-Token
-     *
-     * @param  array|SaTokenConfig|null $config 配置数组或 SaTokenConfig 实例，null 则自动加载
-     * @return void
+     /**
+     * @param array<string, mixed>|SaTokenConfig|null $config
      */
     public static function init(array|SaTokenConfig|null $config = null): void
     {
         if ($config instanceof SaTokenConfig) {
             self::$config = $config;
         } elseif (is_array($config)) {
+            /** @var array<string, mixed> $config */
             self::$config = new SaTokenConfig($config);
         } else {
             self::$config = self::loadConfigFile();
@@ -124,6 +124,7 @@ class SaToken
             if (file_exists($path)) {
                 $config = require $path;
                 if (is_array($config)) {
+                    /** @var array<string, mixed> $config */
                     return new SaTokenConfig($config);
                 }
             }
@@ -160,6 +161,9 @@ class SaToken
     {
         if (self::$config === null) {
             self::init();
+        }
+        if (self::$config === null) {
+            self::$config = new SaTokenConfig();
         }
         return self::$config;
     }

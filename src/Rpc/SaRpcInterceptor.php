@@ -53,6 +53,10 @@ class SaRpcInterceptor
         }
     }
 
+    /**
+     * @param  array<string, string> $headers
+     * @return array<string, string>
+     */
     public function handleOutgoing(array $headers = []): array
     {
         return SaRpcContext::attachToHeaders($headers);

@@ -24,7 +24,8 @@ class SaLoginDeviceManager
 
     public static function getKey(mixed $loginId, string $loginType = 'login'): string
     {
-        return self::$keyPrefix . $loginType . ':' . md5((string) $loginId);
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        return self::$keyPrefix . $loginType . ':' . md5($loginIdStr);
     }
 
     public static function registerDevice(mixed $loginId, string $loginType = 'login', ?SaLoginDevice $device = null, ?string $tokenValue = null): SaLoginDevice
@@ -55,11 +56,15 @@ class SaLoginDeviceManager
         $key = self::getKey($loginId, $loginType);
         $key .= ':' . $device->getDeviceId();
 
-        $dao->set($key, json_encode($device->toArray()), $timeout > 0 ? $timeout + 60 : null);
+        $jsonStr = json_encode($device->toArray());
+        $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', $timeout > 0 ? $timeout + 60 : null);
 
         return $device;
     }
 
+    /**
+     * @return array<SaLoginDevice>
+     */
     public static function getDeviceList(mixed $loginId, string $loginType = 'login'): array
     {
         $dao = SaToken::getDao();
@@ -75,6 +80,7 @@ class SaLoginDeviceManager
             if (!is_array($data)) {
                 continue;
             }
+            /** @var array<string, mixed> $data */
             $devices[] = new SaLoginDevice($data);
         }
 
@@ -125,6 +131,7 @@ class SaLoginDeviceManager
             return null;
         }
 
+        /** @var array<string, mixed> $decoded */
         return new SaLoginDevice($decoded);
     }
 
@@ -138,7 +145,8 @@ class SaLoginDeviceManager
         $device->setLastActiveTime(time());
         $dao = SaToken::getDao();
         $key = self::getKey($loginId, $loginType) . ':' . $deviceId;
-        $dao->set($key, json_encode($device->toArray()), null);
+        $jsonStr = json_encode($device->toArray());
+        $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', null);
     }
 
     protected static function detectDeviceType(): string

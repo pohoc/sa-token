@@ -19,6 +19,9 @@ class SaSsoTemplate
         $this->cryptoType = $cryptoType ?? SaToken::getConfig()->getCryptoType();
     }
 
+    /**
+     * @param array<string, string> $params
+     */
     public function get(string $url, array $params = []): string
     {
         if (!empty($params)) {
@@ -26,13 +29,17 @@ class SaSsoTemplate
         }
 
         $response = $this->doRequest('GET', $url);
-        if ($response === false) {
-            throw new SaTokenException("SSO HTTP 请求失败：{$url}" . ($this->lastError ? ' - ' . $this->lastError : ''));
+        if ($response === false || $response === '') {
+            $errorMsg = $this->lastError ?? 'SSO HTTP 请求失败';
+            throw new SaTokenException("SSO HTTP 请求失败：{$url} - {$errorMsg}");
         }
 
         return $response;
     }
 
+    /**
+     * @param array<string, string> $data
+     */
     public function post(string $url, array $data = []): string
     {
         $response = $this->doRequest('POST', $url, $data);
@@ -43,6 +50,10 @@ class SaSsoTemplate
         return $response;
     }
 
+    /**
+     * @param  array<string, string> $params
+     * @return array<string, string>
+     */
     public function signParams(array $params, string $clientSecret): array
     {
         unset($params['sign']);
@@ -58,6 +69,9 @@ class SaSsoTemplate
         return $params;
     }
 
+    /**
+     * @param array<string, string> $params
+     */
     public function verifySign(array $params, string $clientSecret): bool
     {
         $sign = $params['sign'] ?? '';
@@ -74,6 +88,9 @@ class SaSsoTemplate
         return hash_equals($expected, $sign);
     }
 
+    /**
+     * @param array<string, string> $data
+     */
     protected function doRequest(string $method, string $url, array $data = []): string|false
     {
         $this->lastError = null;
@@ -84,36 +101,47 @@ class SaSsoTemplate
         return $this->fileGetContentsRequest($method, $url, $data);
     }
 
+    /**
+     * @param array<string, string> $data
+     */
     protected function curlRequest(string $method, string $url, array $data = []): string|false
     {
         $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $url);
+        $nonEmptyUrl = $url !== '' ? $url : 'http://localhost';
+        curl_setopt($ch, CURLOPT_URL, $nonEmptyUrl);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_TIMEOUT, 10);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
 
         if ($method === 'POST') {
             curl_setopt($ch, CURLOPT_POST, true);
-            curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($data));
+            $postFields = http_build_query($data);
+            if ($postFields !== '') {
+                curl_setopt($ch, CURLOPT_POSTFIELDS, $postFields);
+            }
         }
 
+        /** @var string|false $response */
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
 
         if ($response === false) {
-            $this->lastError = curl_error($ch);
+            $this->lastError = 'Curl request failed';
+            return false;
         }
-
-        curl_close($ch);
 
         if ($httpCode >= 400) {
             $this->lastError = "HTTP {$httpCode}";
             return false;
         }
 
-        return $response !== false ? $response : false;
+        return $response;
     }
 
+    /**
+     * @param array<string, string> $data
+     */
     protected function fileGetContentsRequest(string $method, string $url, array $data = []): string|false
     {
         $context = [

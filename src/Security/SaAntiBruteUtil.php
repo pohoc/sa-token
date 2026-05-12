@@ -65,7 +65,7 @@ class SaAntiBruteUtil
         }
 
         $lockedUntil = $info['lockedUntil'] ?? 0;
-        if ($lockedUntil > time()) {
+        if (is_int($lockedUntil) && $lockedUntil > time()) {
             return $lockedUntil - time();
         }
 
@@ -86,12 +86,14 @@ class SaAntiBruteUtil
             }
         }
 
-        $info['failCount'] = ($info['failCount'] ?? 0) + 1;
+        $failCount = $info['failCount'] ?? 0;
+        $info['failCount'] = (is_int($failCount) ? $failCount : 0) + 1;
         if ($info['firstFailureTime'] === 0) {
             $info['firstFailureTime'] = time();
         }
 
-        $dao->set($key, json_encode($info), 86400);
+        $jsonStr = json_encode($info);
+        $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', 86400);
     }
 
     public static function checkAndThrow(string $account, string $loginType = 'login'): void
@@ -120,7 +122,8 @@ class SaAntiBruteUtil
             }
         }
 
-        $dao->set($key, json_encode($info), $durationSeconds + 60);
+        $jsonStr = json_encode($info);
+        $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', $durationSeconds + 60);
     }
 
     public static function unlock(string $account, string $loginType = 'login'): void
@@ -152,7 +155,8 @@ class SaAntiBruteUtil
         if (count($remainingKeys) === 1 && $remainingKeys[0] === 'lockedUntil') {
             $dao->delete($key);
         } else {
-            $dao->set($key, json_encode($info), 86400);
+            $jsonStr = json_encode($info);
+            $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', 86400);
         }
     }
 
@@ -167,9 +171,17 @@ class SaAntiBruteUtil
         }
 
         $info = @json_decode($data, true);
-        return $info['failCount'] ?? 0;
+        if (!is_array($info)) {
+            return 0;
+        }
+
+        $failCount = $info['failCount'] ?? 0;
+        return is_int($failCount) ? $failCount : 0;
     }
 
+    /**
+     * @return array{failCount: int, isLocked: bool, remainingLockTime: int, firstFailureTime: int, lockedUntil: int}
+     */
     public static function getSecurityInfo(string $account, string $loginType = 'login'): array
     {
         $dao = SaToken::getDao();
@@ -177,20 +189,24 @@ class SaAntiBruteUtil
         $data = $dao->get($key);
 
         if ($data === null) {
-            return ['failCount' => 0, 'isLocked' => false, 'remainingLockTime' => 0];
+            return ['failCount' => 0, 'isLocked' => false, 'remainingLockTime' => 0, 'firstFailureTime' => 0, 'lockedUntil' => 0];
         }
 
         $info = @json_decode($data, true);
         if (!is_array($info)) {
-            return ['failCount' => 0, 'isLocked' => false, 'remainingLockTime' => 0];
+            return ['failCount' => 0, 'isLocked' => false, 'remainingLockTime' => 0, 'firstFailureTime' => 0, 'lockedUntil' => 0];
         }
 
+        $failCount = $info['failCount'] ?? 0;
+        $firstFailureTime = $info['firstFailureTime'] ?? 0;
+        $lockedUntil = $info['lockedUntil'] ?? 0;
+
         return [
-            'failCount' => $info['failCount'] ?? 0,
+            'failCount' => is_int($failCount) ? $failCount : 0,
             'isLocked' => self::isAccountLocked($account, $loginType),
             'remainingLockTime' => self::getRemainingLockTime($account, $loginType),
-            'firstFailureTime' => $info['firstFailureTime'] ?? 0,
-            'lockedUntil' => $info['lockedUntil'] ?? 0,
+            'firstFailureTime' => is_int($firstFailureTime) ? $firstFailureTime : 0,
+            'lockedUntil' => is_int($lockedUntil) ? $lockedUntil : 0,
         ];
     }
 

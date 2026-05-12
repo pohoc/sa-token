@@ -10,6 +10,7 @@ class SaRouter
 {
     protected static string $mode = 'match';
 
+    /** @var array<string> */
     protected static array $patterns = [];
 
     protected static bool $isMatch = false;
@@ -18,18 +19,24 @@ class SaRouter
 
     protected static ?string $currentPath = null;
 
+    /** @var array<string, array{mode: string, patterns: array<string>, isMatch: bool, isStop: bool}> */
     protected static array $contextMap = [];
 
     protected static function getContextId(): string
     {
-        if (class_exists(\Hyperf\Coroutine\Coroutine::class)
-            && \Hyperf\Coroutine\Coroutine::id() > 0) {
-            return 'router_' . \Hyperf\Coroutine\Coroutine::id();
+        if (class_exists(\Hyperf\Coroutine\Coroutine::class)) {
+            $coroutineId = \Hyperf\Coroutine\Coroutine::id();
+            if (is_int($coroutineId) && $coroutineId > 0) {
+                return 'router_' . $coroutineId;
+            }
         }
         $ctxId = SaTokenContext::getContextId();
         return 'router_' . $ctxId;
     }
 
+    /**
+     * @return array{mode: string, patterns: array<string>, isMatch: bool, isStop: bool}
+     */
     protected static function &getState(): array
     {
         $id = self::getContextId();
@@ -89,21 +96,39 @@ class SaRouter
         }
 
         $request = SaTokenContext::getRequest();
+        if ($request === null) {
+            if (isset($_SERVER['REQUEST_URI']) && is_string($_SERVER['REQUEST_URI'])) {
+                $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+                self::$currentPath = is_string($uri) ? $uri : '/';
+            } else {
+                self::$currentPath = '/';
+            }
+            return self::$currentPath;
+        }
         if ($request instanceof \Psr\Http\Message\ServerRequestInterface) {
             $uri = $request->getUri();
             self::$currentPath = $uri->getPath();
-        } elseif ($request !== null && method_exists($request, 'getPathInfo')) {
-            self::$currentPath = $request->getPathInfo();
-        } elseif ($request !== null && method_exists($request, 'path')) {
-            self::$currentPath = $request->path();
-        } elseif (isset($_SERVER['REQUEST_URI'])) {
+        } elseif (is_object($request)) {
+            if (method_exists($request, 'getPathInfo')) {
+                $pathInfo = $request->getPathInfo();
+                self::$currentPath = is_string($pathInfo) ? $pathInfo : '/';
+            } elseif (method_exists($request, 'path')) {
+                $path = $request->path();
+                self::$currentPath = is_string($path) ? $path : '/';
+            } elseif (isset($_SERVER['REQUEST_URI']) && is_string($_SERVER['REQUEST_URI'])) {
+                $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+                self::$currentPath = is_string($uri) ? $uri : '/';
+            } else {
+                self::$currentPath = '/';
+            }
+        } elseif (isset($_SERVER['REQUEST_URI']) && is_string($_SERVER['REQUEST_URI'])) {
             $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-            self::$currentPath = $uri ?: '/';
+            self::$currentPath = is_string($uri) ? $uri : '/';
         } else {
             self::$currentPath = '/';
         }
 
-        return self::$currentPath;
+        return self::$currentPath ?? '/';
     }
 
     public static function setCurrentPath(string $path): void
@@ -111,6 +136,9 @@ class SaRouter
         self::$currentPath = $path;
     }
 
+    /**
+     * @param array<string> $patterns
+     */
     protected static function checkPatterns(array $patterns): bool
     {
         $path = self::getCurrentPath();

@@ -21,6 +21,9 @@ class SaOAuth2Manager
     protected PasswordStrategy $passwordStrategy;
     protected ClientCredentialsStrategy $clientCredentialsStrategy;
 
+    /**
+     * @param SaOAuth2Config|array<string, mixed>|null $config
+     */
     public function __construct(SaOAuth2Config|array|null $config = null)
     {
         if ($config instanceof SaOAuth2Config) {

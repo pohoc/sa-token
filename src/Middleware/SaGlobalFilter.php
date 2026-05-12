@@ -8,10 +8,13 @@ use SaToken\Util\SaTokenContext;
 
 class SaGlobalFilter
 {
+    /** @var array<callable(): void> */
     protected array $beforeFilters = [];
 
+    /** @var array<callable(): void> */
     protected array $afterFilters = [];
 
+    /** @var array<string, mixed> */
     protected array $corsConfig = [];
 
     public function addBeforeFilter(callable $filter): static
@@ -26,6 +29,9 @@ class SaGlobalFilter
         return $this;
     }
 
+    /**
+     * @param array<string, mixed> $config
+     */
     public function setCors(array $config): static
     {
         $this->corsConfig = $config;
@@ -57,19 +63,24 @@ class SaGlobalFilter
     public function applyCorsHeaders(): void
     {
         if (isset($this->corsConfig['allowOrigin'])) {
-            SaTokenContext::setHeader('Access-Control-Allow-Origin', $this->corsConfig['allowOrigin']);
+            $allowOrigin = $this->corsConfig['allowOrigin'];
+            SaTokenContext::setHeader('Access-Control-Allow-Origin', is_string($allowOrigin) ? $allowOrigin : '');
         }
         if (isset($this->corsConfig['allowMethods'])) {
-            SaTokenContext::setHeader('Access-Control-Allow-Methods', $this->corsConfig['allowMethods']);
+            $allowMethods = $this->corsConfig['allowMethods'];
+            SaTokenContext::setHeader('Access-Control-Allow-Methods', is_string($allowMethods) ? $allowMethods : '');
         }
         if (isset($this->corsConfig['allowHeaders'])) {
-            SaTokenContext::setHeader('Access-Control-Allow-Headers', $this->corsConfig['allowHeaders']);
+            $allowHeaders = $this->corsConfig['allowHeaders'];
+            SaTokenContext::setHeader('Access-Control-Allow-Headers', is_string($allowHeaders) ? $allowHeaders : '');
         }
         if (isset($this->corsConfig['exposeHeaders'])) {
-            SaTokenContext::setHeader('Access-Control-Expose-Headers', $this->corsConfig['exposeHeaders']);
+            $exposeHeaders = $this->corsConfig['exposeHeaders'];
+            SaTokenContext::setHeader('Access-Control-Expose-Headers', is_string($exposeHeaders) ? $exposeHeaders : '');
         }
         if (isset($this->corsConfig['maxAge'])) {
-            SaTokenContext::setHeader('Access-Control-Max-Age', (string) $this->corsConfig['maxAge']);
+            $maxAge = $this->corsConfig['maxAge'];
+            SaTokenContext::setHeader('Access-Control-Max-Age', is_int($maxAge) ? (string) $maxAge : '');
         }
         if (isset($this->corsConfig['allowCredentials'])) {
             $value = $this->corsConfig['allowCredentials'] ? 'true' : 'false';
@@ -85,14 +96,18 @@ class SaGlobalFilter
         }
 
         $request = SaTokenContext::getRequest();
+        if ($request === null) {
+            if (isset($_SERVER['REQUEST_METHOD'])) {
+                return $_SERVER['REQUEST_METHOD'] === 'OPTIONS';
+            }
+            return false;
+        }
         if ($request instanceof \Psr\Http\Message\ServerRequestInterface) {
             return $request->getMethod() === 'OPTIONS';
         }
-        if ($request !== null && method_exists($request, 'getMethod')) {
-            return strtoupper($request->getMethod()) === 'OPTIONS';
-        }
-        if (isset($_SERVER['REQUEST_METHOD'])) {
-            return $_SERVER['REQUEST_METHOD'] === 'OPTIONS';
+        if (is_object($request) && method_exists($request, 'getMethod')) {
+            $m = $request->getMethod();
+            return is_string($m) && strtoupper($m) === 'OPTIONS';
         }
 
         return false;
@@ -103,10 +118,13 @@ class SaGlobalFilter
         $this->applyCorsHeaders();
 
         $response = SaTokenContext::getResponse();
+        if ($response === null) {
+            return;
+        }
         if ($response instanceof \Psr\Http\Message\ResponseInterface) {
             $response = $response->withStatus(204);
             SaTokenContext::setResponse($response);
-        } elseif ($response !== null && method_exists($response, 'status')) {
+        } elseif (is_object($response) && method_exists($response, 'status')) {
             $response->status(204);
         }
     }

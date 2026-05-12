@@ -42,13 +42,16 @@ class SaTokenSmCrypto
     protected string $sm4Key = '';
 
     /**
-     * @param array $config 配置数组（sm2PrivateKey/sm2PublicKey/sm4Key）
+     * @param array<string, mixed> $config
      */
     public function __construct(array $config = [])
     {
-        $this->sm2PrivateKey = $config['sm2PrivateKey'] ?? '';
-        $this->sm2PublicKey = $config['sm2PublicKey'] ?? '';
-        $this->sm4Key = $config['sm4Key'] ?? '';
+        $sm2PrivateKey = $config['sm2PrivateKey'] ?? '';
+        $this->sm2PrivateKey = is_string($sm2PrivateKey) ? $sm2PrivateKey : '';
+        $sm2PublicKey = $config['sm2PublicKey'] ?? '';
+        $this->sm2PublicKey = is_string($sm2PublicKey) ? $sm2PublicKey : '';
+        $sm4Key = $config['sm4Key'] ?? '';
+        $this->sm4Key = is_string($sm4Key) ? $sm4Key : '';
     }
 
     /**

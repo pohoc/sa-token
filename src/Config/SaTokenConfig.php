@@ -117,7 +117,9 @@ class SaTokenConfig
     // 是否启用独立 Redis
     protected bool $separateRedis = false;
 
-    // 独立 Redis 连接配置（host, port, db, password, timeout）
+    /**
+     * @var array<string, mixed>
+     */
     protected array $separateRedisConfig = [];
 
     // 签名密钥
@@ -152,7 +154,9 @@ class SaTokenConfig
     // 审计日志保留天数
     protected int $auditLogTtlDays = 30;
 
-    // SSO 配置
+    /**
+     * @var array<string, mixed>
+     */
     protected array $sso = [
         'loginUrl'          => '',
         'authUrl'           => '',
@@ -167,7 +171,9 @@ class SaTokenConfig
         'crossRedisCheckUrl' => '',
     ];
 
-    // OAuth2 配置
+    /**
+     * @var array<string, mixed>
+     */
     protected array $oauth2 = [
         'grantTypes'           => ['authorization_code'],
         'codeTimeout'          => 60,
@@ -187,7 +193,7 @@ class SaTokenConfig
     protected mixed $sensitiveVerifyCallback = null;
 
     /**
-     * @param array $config 配置数组
+     * @param array<string, mixed> $config
      */
     public function __construct(array $config = [])
     {
@@ -197,7 +203,7 @@ class SaTokenConfig
     /**
      * 从数组初始化配置
      *
-     * @param  array  $config 配置数组
+     * @param  array<string, mixed> $config
      * @return static
      */
     public function initFromArray(array $config): static
@@ -212,9 +218,7 @@ class SaTokenConfig
     }
 
     /**
-     * 转换为数组
-     *
-     * @return array
+     * @return array<string, mixed>
      */
     public function toArray(): array
     {
@@ -647,11 +651,17 @@ class SaTokenConfig
         return $this;
     }
 
+    /**
+     * @return array<string, mixed>
+     */
     public function getSeparateRedisConfig(): array
     {
         return $this->separateRedisConfig;
     }
 
+    /**
+     * @param array<string, mixed> $separateRedisConfig
+     */
     public function setSeparateRedisConfig(array $separateRedisConfig): static
     {
         $this->separateRedisConfig = $separateRedisConfig;
@@ -691,6 +701,9 @@ class SaTokenConfig
         return $this;
     }
 
+    /**
+     * @return array<string, mixed>
+     */
     public function getSso(): array
     {
         return $this->sso;
@@ -698,7 +711,9 @@ class SaTokenConfig
 
     public function setSso(array $sso): static
     {
-        $this->sso = array_merge($this->sso, $sso);
+        /** @var array<string, mixed> $merged */
+        $merged = array_merge($this->sso, $sso);
+        $this->sso = $merged;
         return $this;
     }
 
@@ -714,6 +729,9 @@ class SaTokenConfig
         return $this->sso[$key] ?? $default;
     }
 
+    /**
+     * @return array<string, mixed>
+     */
     public function getOauth2(): array
     {
         return $this->oauth2;
@@ -721,7 +739,9 @@ class SaTokenConfig
 
     public function setOauth2(array $oauth2): static
     {
-        $this->oauth2 = array_merge($this->oauth2, $oauth2);
+        /** @var array<string, mixed> $merged */
+        $merged = array_merge($this->oauth2, $oauth2);
+        $this->oauth2 = $merged;
         return $this;
     }
 

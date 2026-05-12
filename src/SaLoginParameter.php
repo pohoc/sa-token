@@ -20,6 +20,9 @@ class SaLoginParameter
 
     protected ?SaLoginDevice $device = null;
 
+    /**
+     * @param array<string, mixed> $data
+     */
     public function __construct(array $data = [])
     {
         foreach ($data as $key => $value) {

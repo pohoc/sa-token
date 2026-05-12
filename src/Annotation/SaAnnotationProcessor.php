@@ -12,6 +12,9 @@ class SaAnnotationProcessor
 {
     public static function process(string $class, string $method): void
     {
+        if (!class_exists($class)) {
+            return;
+        }
         $reflectionClass = new ReflectionClass($class);
         $reflectionMethod = $reflectionClass->getMethod($method);
 
@@ -35,6 +38,9 @@ class SaAnnotationProcessor
         foreach ($allAttributes as $attr) {
             $instance = $attr->newInstance();
             $loginType = method_exists($instance, 'getLoginType') ? $instance->getLoginType() : 'login';
+            if (!is_string($loginType)) {
+                $loginType = 'login';
+            }
             $stpLogic = SaToken::getStpLogic($loginType);
 
             if ($instance instanceof SaCheckLogin) {
@@ -62,7 +68,7 @@ class SaAnnotationProcessor
                 if ($service === 'otp' || str_starts_with($service, 'verify:')) {
                     $stpLogic->checkSafe($service);
                 } elseif ($loginId !== null) {
-                    if (!SaSensitiveVerify::isVerified($service, $loginId, $loginType)) {
+                    if (!SaSensitiveVerify::isVerified($service, is_scalar($loginId) ? (string) $loginId : '', $loginType)) {
                         $stpLogic->checkSafe($service);
                     }
                 } else {
@@ -81,8 +87,14 @@ class SaAnnotationProcessor
     {
     }
 
+    /**
+     * @return array<object>
+     */
     public static function getMethodAttributes(string $class, string $method): array
     {
+        if (!class_exists($class)) {
+            return [];
+        }
         $reflectionClass = new ReflectionClass($class);
         $reflectionMethod = $reflectionClass->getMethod($method);
 

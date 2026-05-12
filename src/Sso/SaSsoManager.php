@@ -18,6 +18,9 @@ class SaSsoManager
 
     protected SsoModeSameDomain|SsoModeCrossDomain|SsoModeFrontSeparate|SsoModeNoSdk|null $modeHandler = null;
 
+    /**
+     * @param SaSsoConfig|array<string, mixed>|null $config
+     */
     public function __construct(SaSsoConfig|array|null $config = null)
     {
         if ($config instanceof SaSsoConfig) {
@@ -47,6 +50,10 @@ class SaSsoManager
 
     public function getModeHandler(): SsoModeSameDomain|SsoModeCrossDomain|SsoModeFrontSeparate|SsoModeNoSdk
     {
+        if ($this->modeHandler === null) {
+            $this->initModeHandler();
+        }
+        assert($this->modeHandler !== null);
         return $this->modeHandler;
     }
 

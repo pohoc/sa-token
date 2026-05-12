@@ -160,8 +160,8 @@ class SaSsoHandle
             $response = $this->template->post($checkUrl, $data);
             $data = json_decode($response, true);
 
-            if (is_array($data) && isset($data['loginId'])) {
-                return (string) $data['loginId'];
+            if (is_array($data) && isset($data['loginId']) && is_string($data['loginId'])) {
+                return $data['loginId'];
             }
             return null;
         } catch (SaTokenException) {

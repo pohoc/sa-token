@@ -53,10 +53,11 @@ class SaTokenContext
      */
     public static function getContextId(): string
     {
-        // Hyperf 协程上下文支持
-        if (class_exists(\Hyperf\Coroutine\Coroutine::class)
-            && \Hyperf\Coroutine\Coroutine::id() > 0) {
-            return (string) \Hyperf\Coroutine\Coroutine::id();
+        if (class_exists(\Hyperf\Coroutine\Coroutine::class)) {
+            $coroutineId = \Hyperf\Coroutine\Coroutine::id();
+            if (is_int($coroutineId) && $coroutineId > 0) {
+                return (string) $coroutineId;
+            }
         }
         return self::$contextId;
     }
@@ -134,14 +135,14 @@ class SaTokenContext
         }
 
         // 数组式访问
-        if (method_exists($request, 'header')) {
-            return $request->header($name);
+        if (is_object($request) && method_exists($request, 'header')) {
+            $value = $request->header($name);
+            return is_string($value) && $value !== '' ? $value : null;
         }
 
-        // 通用方法
-        if (method_exists($request, 'getHeaderLine')) {
+        if (is_object($request) && method_exists($request, 'getHeaderLine')) {
             $value = $request->getHeaderLine($name);
-            return $value !== '' ? $value : null;
+            return is_string($value) && $value !== '' ? $value : null;
         }
 
         return null;
@@ -163,12 +164,13 @@ class SaTokenContext
         // PSR-7
         if ($request instanceof \Psr\Http\Message\ServerRequestInterface) {
             $cookies = $request->getCookieParams();
-            return $cookies[$name] ?? null;
+            $value = $cookies[$name] ?? null;
+            return is_string($value) ? $value : null;
         }
 
-        // 通用方法
-        if (method_exists($request, 'cookie')) {
-            return $request->cookie($name);
+        if (is_object($request) && method_exists($request, 'cookie')) {
+            $value = $request->cookie($name);
+            return is_string($value) && $value !== '' ? $value : null;
         }
 
         return null;
@@ -190,22 +192,24 @@ class SaTokenContext
         // PSR-7
         if ($request instanceof \Psr\Http\Message\ServerRequestInterface) {
             $params = $request->getQueryParams();
-            if (isset($params[$name])) {
-                return (string) $params[$name];
+            if (isset($params[$name]) && is_string($params[$name])) {
+                return $params[$name];
             }
             $body = $request->getParsedBody();
-            if (is_array($body) && isset($body[$name])) {
-                return (string) $body[$name];
+            if (is_array($body) && isset($body[$name]) && is_string($body[$name])) {
+                return $body[$name];
             }
             return null;
         }
 
         // 通用方法
-        if (method_exists($request, 'input')) {
-            return $request->input($name);
+        if (is_object($request) && method_exists($request, 'input')) {
+            $value = $request->input($name);
+            return is_string($value) ? $value : null;
         }
-        if (method_exists($request, 'param')) {
-            return $request->param($name);
+        if (is_object($request) && method_exists($request, 'param')) {
+            $value = $request->param($name);
+            return is_string($value) ? $value : null;
         }
 
         return null;
@@ -233,7 +237,7 @@ class SaTokenContext
         }
 
         // 通用方法
-        if (method_exists($response, 'header')) {
+        if (is_object($response) && method_exists($response, 'header')) {
             $response->header($name, $value);
         }
     }
@@ -266,7 +270,6 @@ class SaTokenContext
             return;
         }
 
-        // PSR-7：通过 Set-Cookie Header 设置
         if ($response instanceof \Psr\Http\Message\ResponseInterface) {
             $cookieStr = self::buildCookieString($name, $value, $timeout, $path, $domain, $secure, $httpOnly, $sameSite);
             $newResponse = $response->withAddedHeader('Set-Cookie', $cookieStr);
@@ -274,8 +277,7 @@ class SaTokenContext
             return;
         }
 
-        // 通用方法
-        if (method_exists($response, 'cookie')) {
+        if (is_object($response) && method_exists($response, 'cookie')) {
             $response->cookie($name, $value, $timeout > 0 ? time() + $timeout : 0, $path, $domain, $secure, $httpOnly);
         }
     }

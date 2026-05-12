@@ -17,18 +17,22 @@ class SaLoginDevice
     protected ?int $expireAt;
     protected string $loginType;
 
+    /**
+     * @param array<string, mixed> $data
+     */
     public function __construct(array $data = [])
     {
-        $this->tokenValue = $data['tokenValue'] ?? '';
-        $this->deviceType = $data['deviceType'] ?? 'unknown';
-        $this->deviceName = $data['deviceName'] ?? '未知设备';
-        $this->ip = $data['ip'] ?? '0.0.0.0';
-        $this->os = $data['os'] ?? 'unknown';
-        $this->browser = $data['browser'] ?? 'unknown';
-        $this->loginTime = (int) ($data['loginTime'] ?? time());
-        $this->lastActiveTime = isset($data['lastActiveTime']) ? (int) $data['lastActiveTime'] : null;
-        $this->expireAt = isset($data['expireAt']) ? (int) $data['expireAt'] : null;
-        $this->loginType = $data['loginType'] ?? 'login';
+        $this->tokenValue = is_string($data['tokenValue'] ?? null) ? $data['tokenValue'] : '';
+        $this->deviceType = is_string($data['deviceType'] ?? null) ? $data['deviceType'] : 'unknown';
+        $this->deviceName = is_string($data['deviceName'] ?? null) ? $data['deviceName'] : '未知设备';
+        $this->ip = is_string($data['ip'] ?? null) ? $data['ip'] : '0.0.0.0';
+        $this->os = is_string($data['os'] ?? null) ? $data['os'] : 'unknown';
+        $this->browser = is_string($data['browser'] ?? null) ? $data['browser'] : 'unknown';
+        $loginTime = $data['loginTime'] ?? time();
+        $this->loginTime = is_int($loginTime) ? $loginTime : time();
+        $this->lastActiveTime = isset($data['lastActiveTime']) && is_int($data['lastActiveTime']) ? $data['lastActiveTime'] : null;
+        $this->expireAt = isset($data['expireAt']) && is_int($data['expireAt']) ? $data['expireAt'] : null;
+        $this->loginType = is_string($data['loginType'] ?? null) ? $data['loginType'] : 'login';
     }
 
     public function getTokenValue(): string
@@ -123,6 +127,9 @@ class SaLoginDevice
         return $this;
     }
 
+    /**
+     * @return array<string, mixed>
+     */
     public function toArray(): array
     {
         return [

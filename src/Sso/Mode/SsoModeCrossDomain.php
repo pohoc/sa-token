@@ -49,6 +49,9 @@ class SsoModeCrossDomain
         return $this->handle->doLoginCallback($ticket);
     }
 
+    /**
+     * @return array{loginId: mixed, redirect: ?string}
+     */
     public function doLoginCallbackWithRedirect(string $ticket): array
     {
         $loginId = $this->handle->doLoginCallback($ticket);

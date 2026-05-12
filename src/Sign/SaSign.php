@@ -12,15 +12,26 @@ class SaSign
 
     protected string $signAlg = 'md5';
 
+    /** @var callable(string): bool|null */
     protected $nonceValidator = null;
 
+    /**
+     * @param array<string, mixed> $config
+     */
     public function __construct(array $config = [])
     {
-        $this->key = $config['key'] ?? '';
-        $this->timestampGap = $config['timestampGap'] ?? 600;
-        $this->signAlg = $config['signAlg'] ?? 'md5';
+        $key = $config['key'] ?? '';
+        $this->key = is_string($key) ? $key : '';
+        $timestampGap = $config['timestampGap'] ?? 600;
+        $this->timestampGap = is_int($timestampGap) ? $timestampGap : 600;
+        $signAlg = $config['signAlg'] ?? 'md5';
+        $this->signAlg = is_string($signAlg) ? $signAlg : 'md5';
     }
 
+    /**
+     * @param  array<string, string|int> $params
+     * @return array<string, string|int>
+     */
     public function signParams(array $params): array
     {
         if (!isset($params['timestamp'])) {
@@ -33,6 +44,9 @@ class SaSign
         return $params;
     }
 
+    /**
+     * @param array<string, string|int> $params
+     */
     public function verifySign(array $params): bool
     {
         $sign = $params['sign'] ?? null;
@@ -46,14 +60,15 @@ class SaSign
             }
         }
 
-        if ($this->nonceValidator !== null && isset($params['nonce'])) {
-            if (!($this->nonceValidator)($params['nonce'])) {
+        if ($this->nonceValidator !== null && array_key_exists('nonce', $params)) {
+            $nonce = $params['nonce'];
+            if ($nonce !== null && !($this->nonceValidator)((string) $nonce)) {
                 return false;
             }
         }
 
         $expectedSign = $this->createSign($params);
-        return hash_equals($expectedSign, $sign);
+        return hash_equals($expectedSign, (string) $sign);
     }
 
     public function setNonceValidator(callable $validator): static
@@ -68,13 +83,16 @@ class SaSign
         return $this;
     }
 
+    /**
+     * @param array<string, string|int> $params
+     */
     protected function createSign(array $params): string
     {
         unset($params['sign']);
         ksort($params);
         $parts = [];
         foreach ($params as $k => $v) {
-            if ($v === '' || $v === null) {
+            if ($v === '') {
                 continue;
             }
             $parts[] = $k . '=' . $v;

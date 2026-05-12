@@ -228,7 +228,10 @@ class StpLogic
     {
         $tokens = $this->tokenManager->getTokenListByLoginId($loginId, $this->loginType);
         foreach ($tokens as $item) {
-            $tokenValue = $item['tokenValue'];
+            $tokenValue = is_string($item['tokenValue'] ?? null) ? $item['tokenValue'] : '';
+            if ($tokenValue === '') {
+                continue;
+            }
             $this->tokenManager->kickout($tokenValue, $loginId, $this->loginType);
             $this->getEvent()->onKickout($this->loginType, $loginId, $tokenValue);
         }
@@ -362,7 +365,7 @@ class StpLogic
         // 1. 从 Header 读取
         if ($config->isReadHeader()) {
             $tokenValue = SaTokenContext::getHeader($tokenName);
-            if (SaFoxUtil::isNotEmpty($tokenValue)) {
+            if ($tokenValue !== null && SaFoxUtil::isNotEmpty($tokenValue)) {
                 return $this->formatTokenValue($tokenValue);
             }
         }
@@ -370,7 +373,7 @@ class StpLogic
         // 2. 从 Cookie 读取
         if ($config->isReadCookie()) {
             $tokenValue = SaTokenContext::getCookie($tokenName);
-            if (SaFoxUtil::isNotEmpty($tokenValue)) {
+            if ($tokenValue !== null && SaFoxUtil::isNotEmpty($tokenValue)) {
                 return $this->formatTokenValue($tokenValue);
             }
         }
@@ -378,7 +381,7 @@ class StpLogic
         // 3. 从请求参数读取
         if ($config->isReadBody()) {
             $tokenValue = SaTokenContext::getParam($tokenName);
-            if (SaFoxUtil::isNotEmpty($tokenValue)) {
+            if ($tokenValue !== null && SaFoxUtil::isNotEmpty($tokenValue)) {
                 return $this->formatTokenValue($tokenValue);
             }
         }
@@ -612,7 +615,11 @@ class StpLogic
     public function getSession(): SaSession
     {
         $loginId = $this->getLoginIdAsNotNull();
-        return $this->getSessionByLoginId($loginId);
+        $session = $this->getSessionByLoginId($loginId);
+        if ($session === null) {
+            throw new SaTokenException('会话不存在');
+        }
+        return $session;
     }
 
     /**
@@ -624,7 +631,7 @@ class StpLogic
      */
     public function getSessionByLoginId(mixed $loginId, bool $isCreate = true): ?SaSession
     {
-        $sessionId = TokenManager::SESSION_PREFIX . $this->loginType . ':' . $loginId;
+        $sessionId = TokenManager::SESSION_PREFIX . $this->loginType . ':' . (is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : ''));
         $session = SaSession::getBySessionId($sessionId);
 
         if ($session === null && $isCreate) {
@@ -867,8 +874,10 @@ class StpLogic
 
         $tokens = $this->tokenManager->getTokenListByLoginId($loginId, $this->loginType);
         foreach ($tokens as $item) {
-            if ($item['tokenValue'] === $tokenValue) {
-                return $item['deviceType'];
+            $itemTokenValue = is_string($item['tokenValue'] ?? null) ? $item['tokenValue'] : '';
+            if ($itemTokenValue === $tokenValue) {
+                $deviceType = $item['deviceType'] ?? '';
+                return is_string($deviceType) ? $deviceType : '';
             }
         }
 
@@ -886,15 +895,21 @@ class StpLogic
         $tokens = $this->tokenManager->getTokenListByLoginId($loginId, $this->loginType);
         $result = [];
         foreach ($tokens as $item) {
+            $deviceType = $item['deviceType'] ?? '';
+            $itemTokenValue = $item['tokenValue'] ?? '';
+            $createTime = $item['createTime'] ?? 0;
             $result[] = new SaTerminalInfo([
-                'deviceType' => $item['deviceType'] ?? '',
-                'tokenValue' => $item['tokenValue'] ?? '',
-                'createTime' => $item['createTime'] ?? 0,
+                'deviceType' => is_string($deviceType) ? $deviceType : '',
+                'tokenValue' => is_string($itemTokenValue) ? $itemTokenValue : '',
+                'createTime' => is_int($createTime) ? $createTime : 0,
             ]);
         }
         return $result;
     }
 
+    /**
+     * @return array<SaLoginDevice>
+     */
     public function getDeviceList(mixed $loginId): array
     {
         return SaLoginDeviceManager::getDeviceList($loginId, $this->loginType);
@@ -1026,8 +1041,10 @@ class StpLogic
     {
         $tokens = $this->tokenManager->getTokenListByLoginId($loginId, $this->loginType);
         foreach ($tokens as $item) {
-            if ($item['deviceType'] === $deviceType && $this->tokenManager->isTokenValid($item['tokenValue'])) {
-                return $item['tokenValue'];
+            $itemDeviceType = is_string($item['deviceType'] ?? null) ? $item['deviceType'] : '';
+            $itemTokenValue = is_string($item['tokenValue'] ?? null) ? $item['tokenValue'] : '';
+            if ($itemDeviceType === $deviceType && $this->tokenManager->isTokenValid($itemTokenValue)) {
+                return $itemTokenValue;
             }
         }
         return null;
@@ -1037,9 +1054,11 @@ class StpLogic
     {
         $tokens = $this->tokenManager->getTokenListByLoginId($loginId, $this->loginType);
         foreach ($tokens as $item) {
-            if ($item['deviceType'] === $deviceType && $this->tokenManager->isTokenValid($item['tokenValue'])) {
-                $this->tokenManager->kickout($item['tokenValue'], $loginId, $this->loginType);
-                $this->getEvent()->onReplaced($this->loginType, $loginId, $item['tokenValue']);
+            $itemDeviceType = is_string($item['deviceType'] ?? null) ? $item['deviceType'] : '';
+            $itemTokenValue = is_string($item['tokenValue'] ?? null) ? $item['tokenValue'] : '';
+            if ($itemDeviceType === $deviceType && $this->tokenManager->isTokenValid($itemTokenValue)) {
+                $this->tokenManager->kickout($itemTokenValue, $loginId, $this->loginType);
+                $this->getEvent()->onReplaced($this->loginType, $loginId, $itemTokenValue);
             }
         }
     }
@@ -1060,7 +1079,7 @@ class StpLogic
         }
 
         $tokens = $this->tokenManager->getTokenListByLoginId($loginId, $this->loginType);
-        $validTokens = array_filter($tokens, fn ($item) => $this->tokenManager->isTokenValid($item['tokenValue']));
+        $validTokens = array_filter($tokens, fn ($item) => is_string($item['tokenValue'] ?? null) && $this->tokenManager->isTokenValid($item['tokenValue']));
 
         // 不包含当前新 Token，需要检查数量限制
         $currentExists = false;
@@ -1072,13 +1091,15 @@ class StpLogic
         }
 
         if (!$currentExists && count($validTokens) >= $maxLoginCount) {
-            // 循环踢出最早的 Token，直到数量低于限制
             $validTokens = array_values($validTokens);
             while (count($validTokens) >= $maxLoginCount) {
                 $toKick = array_shift($validTokens);
                 if ($toKick !== null) {
-                    $this->tokenManager->kickout($toKick['tokenValue'], $loginId, $this->loginType);
-                    $this->getEvent()->onReplaced($this->loginType, $loginId, $toKick['tokenValue']);
+                    $kickTokenValue = is_string($toKick['tokenValue'] ?? null) ? $toKick['tokenValue'] : '';
+                    if ($kickTokenValue !== '') {
+                        $this->tokenManager->kickout($kickTokenValue, $loginId, $this->loginType);
+                        $this->getEvent()->onReplaced($this->loginType, $loginId, $kickTokenValue);
+                    }
                 }
             }
         }
@@ -1181,7 +1202,7 @@ class StpLogic
             return;
         }
 
-        SaAntiBruteUtil::clearFailures((string) $loginId, $this->loginType);
+        SaAntiBruteUtil::clearFailures(is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : ''), $this->loginType);
     }
 
     public function isAccountLocked(string $account): bool
@@ -1199,6 +1220,9 @@ class StpLogic
         SaAntiBruteUtil::unlock($account, $this->loginType);
     }
 
+    /**
+     * @return array{failCount: int, isLocked: bool, remainingLockTime: int, firstFailureTime: int, lockedUntil: int}
+     */
     public function getAntiBruteInfo(string $account): array
     {
         return SaAntiBruteUtil::getSecurityInfo($account, $this->loginType);
@@ -1209,11 +1233,17 @@ class StpLogic
         return SaIpAnomalyDetector::getAnomalyCount($loginId, $this->loginType);
     }
 
+    /**
+     * @return array<array<string, mixed>>
+     */
     public function getIpHistory(mixed $loginId): array
     {
         return SaIpAnomalyDetector::getIpHistory($loginId, $this->loginType);
     }
 
+    /**
+     * @return array{currentIp: ?string, lastLoginIp: ?string, lastLoginTime: ?int, anomalyCount: int}
+     */
     public function getLoginInfo(mixed $loginId): array
     {
         return SaIpAnomalyDetector::getLoginInfo($loginId, $this->loginType);

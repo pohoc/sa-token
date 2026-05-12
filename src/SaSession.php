@@ -65,7 +65,10 @@ class SaSession
         $decrypted = $encryptor->decrypt($json);
 
         $session = new static($sessionId, true);
-        $session->dataMap = SaFoxUtil::fromJson($decrypted) ?: [];
+        $dataMap = SaFoxUtil::fromJson($decrypted);
+        /** @var array<string, mixed> $dataMap */
+        $dataMap = is_array($dataMap) ? $dataMap : [];
+        $session->dataMap = $dataMap;
         $session->loaded = true;
         return $session;
     }
@@ -194,6 +197,7 @@ class SaSession
             $encryptor = self::getEncryptor();
             $decrypted = $encryptor->decrypt($json);
             $data = SaFoxUtil::fromJson($decrypted);
+            /** @var array<string, mixed> $data */
             $this->dataMap = is_array($data) ? $data : [];
         }
         $this->loaded = true;

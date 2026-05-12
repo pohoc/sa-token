@@ -102,11 +102,7 @@ class SaFoxUtil
     }
 
     /**
-     * 判断数组中是否包含指定元素
-     *
-     * @param  array $array 数组
-     * @param  mixed $value 值
-     * @return bool
+     * @param array<mixed> $array
      */
     public static function inArray(array $array, mixed $value): bool
     {
@@ -134,9 +130,16 @@ class SaFoxUtil
             return '';
         }
         if (is_array($value)) {
-            return json_encode($value, JSON_UNESCAPED_UNICODE);
+            $encoded = json_encode($value, JSON_UNESCAPED_UNICODE);
+            if ($encoded !== false) {
+                return $encoded;
+            }
+            return '[]';
         }
-        return (string) $value;
+        if (is_object($value) && method_exists($value, '__toString')) {
+            return (string) $value;
+        }
+        return '';
     }
 
     /**
@@ -147,7 +150,8 @@ class SaFoxUtil
      */
     public static function toJson(mixed $value): string
     {
-        return json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $encoded = json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        return $encoded !== false ? $encoded : '';
     }
 
     /**
@@ -187,6 +191,12 @@ class SaFoxUtil
         if ($value === null) {
             return null;
         }
-        return (int) $value;
+        if (is_int($value)) {
+            return $value;
+        }
+        if (is_string($value) || is_float($value) || is_bool($value)) {
+            return (int) $value;
+        }
+        return null;
     }
 }

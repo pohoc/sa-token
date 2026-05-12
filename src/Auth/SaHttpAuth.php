@@ -10,8 +10,10 @@ use SaToken\Util\SaTokenContext;
 
 class SaHttpAuth
 {
+    /** @var callable(string, string): mixed|null */
     protected $basicValidator = null;
 
+    /** @var callable(string): mixed|null */
     protected $digestValidator = null;
 
     public function checkBasic(string $realm = 'Sa-Token'): void
@@ -89,20 +91,19 @@ class SaHttpAuth
 
         $request = SaTokenContext::getRequest();
         $method = 'GET';
-        if ($request !== null) {
-            if (method_exists($request, 'getMethod')) {
-                $method = strtoupper($request->getMethod());
-            } elseif ($request instanceof \Psr\Http\Message\ServerRequestInterface) {
-                $method = strtoupper($request->getMethod());
-            }
+        if (is_object($request) && method_exists($request, 'getMethod')) {
+            $m = $request->getMethod();
+            $method = is_string($m) ? strtoupper($m) : 'GET';
         }
 
         $ha2 = md5($method . ':' . $uri);
 
+        $ha1Str = is_string($ha1) ? $ha1 : (is_scalar($ha1) ? (string) $ha1 : '');
+
         if ($qop !== null && ($qop === 'auth' || $qop === 'auth-int')) {
-            $expected = md5($ha1 . ':' . $nonce . ':' . $nc . ':' . $cnonce . ':' . $qop . ':' . $ha2);
+            $expected = md5($ha1Str . ':' . $nonce . ':' . $nc . ':' . $cnonce . ':' . $qop . ':' . $ha2);
         } else {
-            $expected = md5($ha1 . ':' . $nonce . ':' . $ha2);
+            $expected = md5($ha1Str . ':' . $nonce . ':' . $ha2);
         }
 
         if (!hash_equals($expected, $response)) {
@@ -146,17 +147,23 @@ class SaHttpAuth
         return md5(uniqid((string) mt_rand(), true) . ':' . time());
     }
 
+    /**
+     * @return array<string, string>
+     */
     public function parseDigestHeader(string $header): array
     {
-        $header = substr($header, 7);
+        $headerPart = substr($header, 7) ?: '';
+        if ($headerPart === '') {
+            return [];
+        }
 
         $result = [];
 
-        preg_match_all('/(\w+)=(?:"([^"]*)"|([\w=\/+]+))/', $header, $matches, PREG_SET_ORDER);
+        preg_match_all('/(\w+)=(?:"([^"]*)"|([\w=\/+]+))/', $headerPart, $matches, PREG_SET_ORDER);
 
         foreach ($matches as $match) {
             $key = $match[1];
-            $value = $match[2] !== '' ? $match[2] : ($match[3] ?? '');
+            $value = ($match[2] ?? '') !== '' ? $match[2] : ($match[3] ?? '');
             $result[$key] = $value;
         }
 

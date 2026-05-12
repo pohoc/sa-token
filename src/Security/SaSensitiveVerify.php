@@ -32,7 +32,8 @@ class SaSensitiveVerify
 
     public static function getKey(string $scene, mixed $loginId, string $loginType = 'login'): string
     {
-        return self::$keyPrefix . $loginType . ':' . $scene . ':' . md5((string) $loginId);
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        return self::$keyPrefix . $loginType . ':' . $scene . ':' . md5($loginIdStr);
     }
 
     public static function generateCode(string $scene, mixed $loginId, string $loginType = 'login'): string
@@ -50,7 +51,8 @@ class SaSensitiveVerify
             'verified' => false,
         ];
 
-        $dao->set($key, json_encode($data), self::$validSeconds + 60);
+        $jsonStr = json_encode($data);
+        $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', self::$validSeconds + 60);
 
         return $code;
     }
@@ -78,7 +80,7 @@ class SaSensitiveVerify
         $config = SaToken::getConfig();
         $sendCallback = $config->getSensitiveVerifyCallback();
 
-        if ($sendCallback !== null) {
+        if ($sendCallback !== null && is_callable($sendCallback)) {
             call_user_func($sendCallback, $scene, $code, $loginId);
         }
     }
@@ -108,21 +110,27 @@ class SaSensitiveVerify
             return false;
         }
 
-        $attempts = ($info['attempts'] ?? 0) + 1;
-        if ($attempts > self::$maxAttempts) {
+        $attempts = $info['attempts'] ?? 0;
+        $attemptsInt = is_int($attempts) ? $attempts : 0;
+        $attemptsInt = $attemptsInt + 1;
+        if ($attemptsInt > self::$maxAttempts) {
             $dao->delete($key);
             throw new SaTokenException('验证码尝试次数过多，请重新获取', -1);
         }
 
-        if (!hash_equals((string) ($info['code'] ?? ''), $code)) {
-            $info['attempts'] = $attempts;
-            $dao->set($key, json_encode($info), $expiresAt > 0 ? $expiresAt - time() + 60 : null);
+        $codeStr = $info['code'] ?? '';
+        if (!hash_equals(is_string($codeStr) ? $codeStr : (is_scalar($codeStr) ? (string) $codeStr : ''), $code)) {
+            $info['attempts'] = $attemptsInt;
+            $jsonStr = json_encode($info);
+            $expiresAtInt = is_int($expiresAt) ? $expiresAt : 0;
+            $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', $expiresAtInt > 0 ? ($expiresAtInt - time() + 60) : null);
             return false;
         }
 
         $info['verified'] = true;
         $info['verifiedAt'] = time();
-        $dao->set($key, json_encode($info), 60);
+        $jsonStr = json_encode($info);
+        $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', 60);
 
         return true;
     }
@@ -145,6 +153,10 @@ class SaSensitiveVerify
         }
 
         $info = @json_decode($data, true);
+        if (!is_array($info)) {
+            return false;
+        }
+
         return ($info['verified'] ?? false) === true;
     }
 
@@ -166,32 +178,39 @@ class SaSensitiveVerify
         }
 
         $info = @json_decode($data, true);
+        if (!is_array($info)) {
+            return self::$maxAttempts;
+        }
+
         $attempts = $info['attempts'] ?? 0;
-        return max(0, self::$maxAttempts - $attempts);
+        return max(0, self::$maxAttempts - (is_int($attempts) ? $attempts : 0));
     }
 
     public static function createSafeToken(string $scene, mixed $loginId, string $loginType = 'login', int $validSeconds = 600): string
     {
         $token = bin2hex(random_bytes(32));
-        $key = self::$keyPrefix . $loginType . ':safe-token:' . $scene . ':' . md5((string) $loginId) . ':' . substr($token, 0, 16);
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $key = self::$keyPrefix . $loginType . ':safe-token:' . $scene . ':' . md5($loginIdStr) . ':' . substr($token, 0, 16);
 
         $dao = SaToken::getDao();
         $data = [
             'scene' => $scene,
-            'loginId' => (string) $loginId,
+            'loginId' => $loginIdStr,
             'loginType' => $loginType,
             'createdAt' => time(),
             'expiresAt' => time() + $validSeconds,
         ];
 
-        $dao->set($key, json_encode($data), $validSeconds + 60);
+        $jsonStr = json_encode($data);
+        $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', $validSeconds + 60);
 
         return $token;
     }
 
     public static function verifySafeToken(string $scene, string $token, mixed $loginId, string $loginType = 'login'): bool
     {
-        $key = self::$keyPrefix . $loginType . ':safe-token:' . $scene . ':' . md5((string) $loginId) . ':' . substr($token, 0, 16);
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $key = self::$keyPrefix . $loginType . ':safe-token:' . $scene . ':' . md5($loginIdStr) . ':' . substr($token, 0, 16);
         $dao = SaToken::getDao();
         $data = $dao->get($key);
 

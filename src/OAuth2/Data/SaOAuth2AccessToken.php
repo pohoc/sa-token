@@ -19,6 +19,9 @@ class SaOAuth2AccessToken
     protected int $createTime = 0;
     protected string $idToken = '';
 
+    /**
+     * @param array<string, mixed> $data
+     */
     public function __construct(array $data = [])
     {
         foreach ($data as $key => $value) {
@@ -27,13 +30,11 @@ class SaOAuth2AccessToken
                 $this->$method($value);
             }
         }
-        $this->createTime = $data['createTime'] ?? time();
+        $this->createTime = is_int($data['createTime'] ?? null) ? $data['createTime'] : time();
     }
 
     /**
-     * 转换为数组（用于序列化存储）
-     *
-     * @return array
+     * @return array<string, mixed>
      */
     public function toArray(): array
     {
@@ -51,9 +52,7 @@ class SaOAuth2AccessToken
     }
 
     /**
-     * 转换为 OAuth2 标准响应格式
-     *
-     * @return array
+     * @return array<string, mixed>
      */
     public function toResponseArray(): array
     {

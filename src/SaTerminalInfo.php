@@ -38,6 +38,9 @@ class SaTerminalInfo
      */
     protected int $createTime = 0;
 
+    /**
+     * @param array<string, mixed> $data
+     */
     public function __construct(array $data = [])
     {
         foreach ($data as $key => $value) {
@@ -49,9 +52,7 @@ class SaTerminalInfo
     }
 
     /**
-     * 转换为数组
-     *
-     * @return array
+     * @return array<string, mixed>
      */
     public function toArray(): array
     {

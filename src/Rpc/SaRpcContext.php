@@ -25,6 +25,10 @@ class SaRpcContext
         return self::$tokenHeaderName;
     }
 
+    /**
+     * @param  array<string, string> $headers
+     * @return array<string, string>
+     */
     public static function attachToHeaders(array $headers = []): array
     {
         $tokenValue = StpUtil::getTokenValue();
@@ -33,7 +37,8 @@ class SaRpcContext
         }
         $loginId = StpUtil::getLoginId();
         if ($loginId !== null) {
-            $headers[self::$loginIdHeaderName] = (string) $loginId;
+            $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+            $headers[self::$loginIdHeaderName] = $loginIdStr;
         }
         $headers[self::$loginTypeHeaderName] = StpUtil::TYPE;
         return $headers;
@@ -47,7 +52,8 @@ class SaRpcContext
         }
         $loginId = StpUtil::getLoginId();
         if ($loginId !== null) {
-            $request = $request->withHeader(self::$loginIdHeaderName, (string) $loginId);
+            $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+            $request = $request->withHeader(self::$loginIdHeaderName, $loginIdStr);
         }
         $request = $request->withHeader(self::$loginTypeHeaderName, StpUtil::TYPE);
         return $request;

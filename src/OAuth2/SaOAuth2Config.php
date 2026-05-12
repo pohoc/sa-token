@@ -18,7 +18,7 @@ namespace SaToken\OAuth2;
  */
 class SaOAuth2Config
 {
-    // 支持的授权模式
+    /** @var array<string> */
     protected array $grantTypes = ['authorization_code'];
 
     // 授权码有效期（秒）
@@ -39,6 +39,9 @@ class SaOAuth2Config
     // id_token 签发者 URL
     protected string $issuer = '';
 
+    /**
+     * @param array<string, mixed> $config
+     */
     public function __construct(array $config = [])
     {
         foreach ($config as $key => $value) {
@@ -49,11 +52,17 @@ class SaOAuth2Config
         }
     }
 
+    /**
+     * @return array<string>
+     */
     public function getGrantTypes(): array
     {
         return $this->grantTypes;
     }
 
+    /**
+     * @param array<string> $grantTypes
+     */
     public function setGrantTypes(array $grantTypes): static
     {
         $this->grantTypes = $grantTypes;

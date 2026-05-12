@@ -14,10 +14,18 @@ class SaOAuth2Client
     protected string $clientId = '';
     protected string $clientSecret = '';
     protected string $clientName = '';
+    /** @var array<string> */
     protected array $redirectUris = [];
+
+    /** @var array<string> */
     protected array $grantTypes = ['authorization_code'];
+
+    /** @var array<string> */
     protected array $scopes = [];
 
+    /**
+     * @param array<string, mixed> $data
+     */
     public function __construct(array $data = [])
     {
         foreach ($data as $key => $value) {
@@ -66,28 +74,43 @@ class SaOAuth2Client
         return $this->redirectUris;
     }
 
+    /**
+     * @param array<string> $redirectUris
+     */
     public function setRedirectUris(array $redirectUris): static
     {
         $this->redirectUris = $redirectUris;
         return $this;
     }
 
+    /**
+     * @return array<string>
+     */
     public function getGrantTypes(): array
     {
         return $this->grantTypes;
     }
 
+    /**
+     * @param array<string> $grantTypes
+     */
     public function setGrantTypes(array $grantTypes): static
     {
         $this->grantTypes = $grantTypes;
         return $this;
     }
 
+    /**
+     * @return array<string>
+     */
     public function getScopes(): array
     {
         return $this->scopes;
     }
 
+    /**
+     * @param array<string> $scopes
+     */
     public function setScopes(array $scopes): static
     {
         $this->scopes = $scopes;
