@@ -27,3 +27,11 @@ if (file_exists($envFile)) {
         }
     }
 }
+
+// Mark as testing environment to suppress warnings
+putenv('PHPUNIT_TESTING=1');
+$_ENV['PHPUNIT_TESTING'] = '1';
+
+// Set default test keys to avoid warnings
+putenv('TEST_ENCRYPT_KEY=sa-token-test-encryption-key-32bytes-long');
+$_ENV['TEST_ENCRYPT_KEY'] = 'sa-token-test-encryption-key-32bytes-long';

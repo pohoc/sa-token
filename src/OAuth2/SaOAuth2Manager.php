@@ -8,18 +8,12 @@ use SaToken\OAuth2\Data\SaOAuth2AccessToken;
 use SaToken\OAuth2\Data\SaOAuth2AuthorizationCode;
 use SaToken\OAuth2\Data\SaOAuth2Client;
 use SaToken\OAuth2\Data\SaOAuth2IdToken;
-use SaToken\OAuth2\Strategy\AuthorizationCodeStrategy;
-use SaToken\OAuth2\Strategy\ClientCredentialsStrategy;
-use SaToken\OAuth2\Strategy\PasswordStrategy;
 use SaToken\SaToken;
 
 class SaOAuth2Manager
 {
     protected SaOAuth2Config $config;
     protected SaOAuth2Handle $handle;
-    protected AuthorizationCodeStrategy $authorizationCodeStrategy;
-    protected PasswordStrategy $passwordStrategy;
-    protected ClientCredentialsStrategy $clientCredentialsStrategy;
 
     /**
      * @param SaOAuth2Config|array<string, mixed>|null $config
@@ -36,9 +30,6 @@ class SaOAuth2Manager
         }
 
         $this->handle = new SaOAuth2Handle($this->config);
-        $this->authorizationCodeStrategy = new AuthorizationCodeStrategy($this->handle);
-        $this->passwordStrategy = new PasswordStrategy($this->handle);
-        $this->clientCredentialsStrategy = new ClientCredentialsStrategy($this->handle);
     }
 
     public function registerClient(SaOAuth2Client $client): void
@@ -46,29 +37,14 @@ class SaOAuth2Manager
         $this->handle->registerClient($client);
     }
 
-    public function getAuthorizationCodeStrategy(): AuthorizationCodeStrategy
-    {
-        return $this->authorizationCodeStrategy;
-    }
-
-    public function getPasswordStrategy(): PasswordStrategy
-    {
-        return $this->passwordStrategy;
-    }
-
-    public function getClientCredentialsStrategy(): ClientCredentialsStrategy
-    {
-        return $this->clientCredentialsStrategy;
-    }
-
     public function generateAuthorizationCode(string $clientId, mixed $loginId, string $redirectUri, string $scope = ''): SaOAuth2AuthorizationCode
     {
-        return $this->authorizationCodeStrategy->authorize($clientId, $loginId, $redirectUri, $scope);
+        return $this->handle->generateAuthorizationCode($clientId, $loginId, $redirectUri, $scope);
     }
 
     public function exchangeTokenByCode(string $code, string $clientId, string $clientSecret, string $redirectUri = ''): SaOAuth2AccessToken
     {
-        return $this->authorizationCodeStrategy->token($code, $clientId, $clientSecret, $redirectUri);
+        return $this->handle->exchangeTokenByCode($code, $clientId, $clientSecret, $redirectUri);
     }
 
     public function refreshToken(string $refreshToken, string $clientId, string $clientSecret): SaOAuth2AccessToken
@@ -78,12 +54,12 @@ class SaOAuth2Manager
 
     public function tokenByPassword(string $clientId, string $clientSecret, string $username, string $password, string $scope = ''): SaOAuth2AccessToken
     {
-        return $this->passwordStrategy->token($clientId, $clientSecret, $username, $password, $scope);
+        return $this->handle->tokenByPassword($clientId, $clientSecret, $username, $password, $scope);
     }
 
     public function tokenByClientCredentials(string $clientId, string $clientSecret, string $scope = ''): SaOAuth2AccessToken
     {
-        return $this->clientCredentialsStrategy->token($clientId, $clientSecret, $scope);
+        return $this->handle->tokenByClientCredentials($clientId, $clientSecret, $scope);
     }
 
     public function validateAccessToken(string $accessToken): ?SaOAuth2AccessToken

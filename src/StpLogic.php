@@ -10,7 +10,6 @@ use SaToken\Exception\NotLoginException;
 use SaToken\Exception\SaTokenException;
 use SaToken\Listener\SaTokenEvent;
 use SaToken\Plugin\SaTokenJwt;
-use SaToken\Security\SaAntiBruteUtil;
 use SaToken\Security\SaLoginDeviceManager;
 use SaToken\Util\SaFoxUtil;
 use SaToken\Util\SaTokenContext;

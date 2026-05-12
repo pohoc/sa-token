@@ -32,6 +32,11 @@
 - **敏感操作验证** — OTP 验证码、安全令牌、场景化验证
 - **审计日志** — 登录/登出/踢人/封禁/身份切换全链路记录
 - **RPC 上下文** — 微服务间 Token 透传与验证、拦截器模式
+- **健康检查工具** — DAO 连接、配置项、Token 状态一键检查
+- **性能指标收集** — 登录/登出/鉴权/查询性能指标
+- **Token 指纹绑定** — IP + User-Agent 哈希绑定，防止 Token 盗用
+- **Token 黑名单** — 手动拉黑 Token，无需等待过期
+- **配置构建器** — 链式调用 API 配置 SaToken
 
 ## 环境要求
 
@@ -83,7 +88,104 @@ SaToken::init([
 ]);
 ```
 
-### 3. 登录认证
+#### 使用配置构建器（推荐）
+
+链式调用 API 配置 SaToken，更具可读性和类型安全：
+
+```php
+use SaToken\Config\SaTokenConfigBuilder;
+
+$config = (new SaTokenConfigBuilder())
+    ->tokenName('my-token')
+    ->timeout(7200)
+    ->activityTimeout(1800)
+    ->concurrent(true)
+    ->maxLoginCount(12)
+    ->tokenEncrypt(true)
+    ->cryptoType('intl')
+    ->signAlg('sha256')
+    ->tokenFingerprint(true)
+    ->build();
+
+SaToken::init($config);
+```
+
+### 3. 健康检查与性能指标
+
+一键检查 SaToken 状态，收集性能指标：
+
+```php
+use SaToken\Util\SaHealthCheck;
+use SaToken\Util\SaMetrics;
+
+// 健康检查
+$health = SaHealthCheck::checkAll();
+// $health = [
+//     'dao_connected' => true,
+//     'config_valid' => true,
+//     'token_test' => true,
+//     'overall' => 'healthy'
+// ]
+
+// 性能指标收集
+// 在任意操作后
+SaMetrics::recordLogin(10001, 1.2); // 登录耗时 ms
+SaMetrics::recordCheckLogin(0.05);  // 鉴权耗时 ms
+SaMetrics::recordQuery(0.1);        // 查询耗时 ms
+SaMetrics::recordDelete(0.08);       // 删除操作耗时 ms
+
+// 获取统计数据
+$stats = SaMetrics::getStats();
+// $stats = [
+//     'login_count' => 100,
+//     'login_avg_ms' => 1.1,
+//     'check_login_count' => 2000,
+//     'check_login_avg_ms' => 0.04,
+//     ...
+// ]
+
+// 重置统计
+SaMetrics::reset();
+```
+
+### 4. Token 安全增强
+
+#### Token 指纹绑定（IP + User-Agent）
+
+防止 Token 被盗用，绑定客户端特征：
+
+```php
+// 配置开启
+$config = (new SaTokenConfigBuilder())
+    ->tokenFingerprint(true)
+    ->build();
+
+// 登录时自动记录当前 IP + User-Agent
+$result = StpUtil::login(10001);
+
+// 访问时自动验证指纹，不匹配则强制重新登录
+StpUtil::checkLogin(); // 指纹不匹配时抛出异常
+```
+
+#### Token 黑名单
+
+手动拉黑 Token，无需等待过期：
+
+```php
+// 拉黑指定 Token，有效期内无法使用
+StpUtil::addToBlacklist($tokenValue, 3600);
+
+// 检查是否在黑名单
+$isBlacklisted = StpUtil::isInBlacklist($tokenValue);
+
+// 从黑名单移除
+StpUtil::removeFromBlacklist($tokenValue);
+
+// 查询所有黑名单 Token
+$tokens = StpUtil::getBlacklistTokens();
+```
+
+### 5. 登录认证
 
 ```php
 use SaToken\StpUtil;
@@ -109,7 +211,7 @@ StpUtil::logout();
 StpUtil::logoutByLoginId(10001);
 ```
 
-### 4. 踢人下线
+### 6. 踢人下线
 
 ```php
 StpUtil::kickoutByTokenValue($tokenValue);
@@ -980,6 +1082,7 @@ try {
 | `cookieSecure` | bool | `false` | Cookie 仅 HTTPS 传输 |
 | `cookieHttpOnly` | bool | `false` | Cookie HttpOnly |
 | `cookieSameSite` | string | `'Lax'` | Cookie SameSite：`Strict` / `Lax` / `None` |
+| `tokenFingerprint` | bool | `false` | 是否启用 Token 指纹绑定（IP + User-Agent） |
 
 ### 加密配置
 
@@ -1004,7 +1107,7 @@ try {
 |--------|------|--------|------|
 | `signKey` | string | `''` | 参数签名密钥 |
 | `signTimestampGap` | int | `600` | 签名时间戳容差（秒） |
-| `signAlg` | string | `'md5'` | 签名算法：`md5` / `sha256` |
+| `signAlg` | string | `'sha256'` | 签名算法：`md5` / `sha256` |
 
 ### API Key 配置
 

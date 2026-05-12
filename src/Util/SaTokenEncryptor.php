@@ -136,7 +136,10 @@ class SaTokenEncryptor
     protected function deriveAesKey(string $key): string
     {
         if ($key === '') {
-            trigger_error('Sa-Token: 正在使用默认加密密钥，请在生产环境中配置 aesKey 或 tokenEncryptKey', E_USER_WARNING);
+            $isTest = defined('PHPUNIT_COMPOSER_INSTALL') || getenv('PHPUNIT_TESTING') !== false;
+            if (!$isTest) {
+                trigger_error('Sa-Token: 正在使用默认加密密钥，请在生产环境中配置 aesKey 或 tokenEncryptKey', E_USER_WARNING);
+            }
             return hash_hkdf('sha256', 'sa-token-default-encrypt-key', 32, 'token-encrypt', '');
         }
         if (strlen($key) >= 32) {
@@ -148,7 +151,10 @@ class SaTokenEncryptor
     protected function deriveSm4Key(string $key): string
     {
         if ($key === '') {
-            trigger_error('Sa-Token: 正在使用默认 SM4 加密密钥，请在生产环境中配置 sm4Key 或 tokenEncryptKey', E_USER_WARNING);
+            $isTest = defined('PHPUNIT_COMPOSER_INSTALL') || getenv('PHPUNIT_TESTING') !== false;
+            if (!$isTest) {
+                trigger_error('Sa-Token: 正在使用默认 SM4 加密密钥，请在生产环境中配置 sm4Key 或 tokenEncryptKey', E_USER_WARNING);
+            }
             return substr(bin2hex(hash_hkdf('sha256', 'sa-token-default-sm4-key', 32, 'token-encrypt-sm4', '')), 0, 32);
         }
         if (strlen($key) >= 32 && ctype_xdigit($key)) {

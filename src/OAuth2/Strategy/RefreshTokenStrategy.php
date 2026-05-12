@@ -10,9 +10,9 @@ use SaToken\OAuth2\Data\SaOAuth2AuthorizationCode;
 use SaToken\OAuth2\SaOAuth2Handle;
 
 /**
- * 密码模式策略
+ * 刷新令牌策略
  */
-class PasswordStrategy implements GrantTypeStrategyInterface
+class RefreshTokenStrategy implements GrantTypeStrategyInterface
 {
     protected SaOAuth2Handle $handle;
 
@@ -23,7 +23,7 @@ class PasswordStrategy implements GrantTypeStrategyInterface
 
     public function getGrantType(): string
     {
-        return 'password';
+        return 'refresh_token';
     }
 
     public function validateRequest(array $params): void
@@ -34,17 +34,14 @@ class PasswordStrategy implements GrantTypeStrategyInterface
         if (empty($params['client_secret'])) {
             throw new SaTokenException('缺少必需的参数: client_secret');
         }
-        if (empty($params['username'])) {
-            throw new SaTokenException('缺少必需的参数: username');
-        }
-        if (empty($params['password'])) {
-            throw new SaTokenException('缺少必需的参数: password');
+        if (empty($params['refresh_token'])) {
+            throw new SaTokenException('缺少必需的参数: refresh_token');
         }
     }
 
     public function generateAuthorizationCode(string $clientId, mixed $loginId, string $redirectUri, string $scope = ''): SaOAuth2AuthorizationCode
     {
-        throw new SaTokenException('密码模式不支持授权码');
+        throw new SaTokenException('刷新令牌模式不支持授权码');
     }
 
     public function execute(array $params): SaOAuth2AccessToken
@@ -53,13 +50,9 @@ class PasswordStrategy implements GrantTypeStrategyInterface
         $clientId = $params['client_id'];
         /** @var string $clientSecret */
         $clientSecret = $params['client_secret'];
-        /** @var string $username */
-        $username = $params['username'];
-        /** @var string $password */
-        $password = $params['password'];
-        /** @var string $scope */
-        $scope = $params['scope'] ?? '';
+        /** @var string $refreshToken */
+        $refreshToken = $params['refresh_token'];
 
-        return $this->handle->tokenByPassword($clientId, $clientSecret, $username, $password, $scope);
+        return $this->handle->refreshToken($refreshToken, $clientId, $clientSecret);
     }
 }

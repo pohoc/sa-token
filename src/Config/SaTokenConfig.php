@@ -129,7 +129,7 @@ class SaTokenConfig
     protected int $signTimestampGap = 600;
 
     // 签名算法（md5 / sha256）
-    protected string $signAlg = 'md5';
+    protected string $signAlg = 'sha256';
 
     // 连续登录失败最大次数，0 表示不限制
     protected int $antiBruteMaxFailures = 5;

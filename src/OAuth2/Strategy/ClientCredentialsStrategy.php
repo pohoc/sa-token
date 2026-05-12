@@ -4,16 +4,15 @@ declare(strict_types=1);
 
 namespace SaToken\OAuth2\Strategy;
 
+use SaToken\Exception\SaTokenException;
 use SaToken\OAuth2\Data\SaOAuth2AccessToken;
+use SaToken\OAuth2\Data\SaOAuth2AuthorizationCode;
 use SaToken\OAuth2\SaOAuth2Handle;
 
 /**
  * 客户端凭证模式策略
- *
- * 实现 OAuth2.0 客户端凭证模式（Client Credentials Grant）
- * 适用于服务器间通信，客户端以自己的名义请求访问令牌
  */
-class ClientCredentialsStrategy
+class ClientCredentialsStrategy implements GrantTypeStrategyInterface
 {
     protected SaOAuth2Handle $handle;
 
@@ -22,16 +21,35 @@ class ClientCredentialsStrategy
         $this->handle = $handle;
     }
 
-    /**
-     * 通过客户端凭证获取令牌
-     *
-     * @param  string              $clientId     客户端 ID
-     * @param  string              $clientSecret 客户端密钥
-     * @param  string              $scope        权限范围
-     * @return SaOAuth2AccessToken
-     */
-    public function token(string $clientId, string $clientSecret, string $scope = ''): SaOAuth2AccessToken
+    public function getGrantType(): string
     {
+        return 'client_credentials';
+    }
+
+    public function validateRequest(array $params): void
+    {
+        if (empty($params['client_id'])) {
+            throw new SaTokenException('缺少必需的参数: client_id');
+        }
+        if (empty($params['client_secret'])) {
+            throw new SaTokenException('缺少必需的参数: client_secret');
+        }
+    }
+
+    public function generateAuthorizationCode(string $clientId, mixed $loginId, string $redirectUri, string $scope = ''): SaOAuth2AuthorizationCode
+    {
+        throw new SaTokenException('客户端凭证模式不支持授权码');
+    }
+
+    public function execute(array $params): SaOAuth2AccessToken
+    {
+        /** @var string $clientId */
+        $clientId = $params['client_id'];
+        /** @var string $clientSecret */
+        $clientSecret = $params['client_secret'];
+        /** @var string $scope */
+        $scope = $params['scope'] ?? '';
+
         return $this->handle->tokenByClientCredentials($clientId, $clientSecret, $scope);
     }
 }
