@@ -61,7 +61,8 @@ class StpLogicIntegrationTest extends TestCase
 
     private function loginAndGetToken(mixed $loginId = 10001): string
     {
-        $token = $this->logic->login($loginId);
+        $loginResult = $this->logic->login($loginId);
+        $token = $loginResult->getAccessToken();
         // 将 token 注入请求上下文
         $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
         $request->method('getHeader')->with('satoken')->willReturn([$token]);
@@ -325,9 +326,9 @@ class StpLogicIntegrationTest extends TestCase
 
         $param2 = new SaLoginParameter();
         $param2->setDeviceType('APP');
-        $token2 = $this->logic->login(10001, $param2);
+        $loginResult2 = $this->logic->login(10001, $param2);
+        $token2 = $loginResult2->getAccessToken();
 
-        // 踢出 10001 的所有会话
         $this->logic->kickout(10001);
 
         $this->assertNull($this->tokenManager->getLoginIdByToken($token2));
@@ -403,11 +404,13 @@ class StpLogicIntegrationTest extends TestCase
 
         $param1 = new SaLoginParameter();
         $param1->setDeviceType('PC');
-        $token1 = $this->logic->login(10001, $param1);
+        $loginResult1 = $this->logic->login(10001, $param1);
+        $token1 = $loginResult1->getAccessToken();
 
         $param2 = new SaLoginParameter();
         $param2->setDeviceType('APP');
-        $token2 = $this->logic->login(10001, $param2);
+        $loginResult2 = $this->logic->login(10001, $param2);
+        $token2 = $loginResult2->getAccessToken();
 
         $this->logic->logoutByLoginId(10001);
 

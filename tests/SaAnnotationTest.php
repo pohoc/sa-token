@@ -169,7 +169,8 @@ class SaAnnotationTest extends TestCase
     private function loginAndGetToken(mixed $loginId = 10001, string $loginType = 'login'): string
     {
         $stpLogic = SaToken::getStpLogic($loginType);
-        $token = $stpLogic->login($loginId);
+        $loginResult = $stpLogic->login($loginId);
+        $token = $loginResult->getAccessToken();
         $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
         $request->method('getHeader')->with('satoken')->willReturn([$token]);
         SaTokenContext::setRequest($request);

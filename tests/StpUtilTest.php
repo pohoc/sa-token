@@ -44,7 +44,8 @@ class StpUtilTest extends TestCase
 
     public function testLoginAndCheckLogin(): void
     {
-        $token = StpUtil::login(10001);
+        $loginResult = StpUtil::login(10001);
+        $token = $loginResult->getAccessToken();
         $this->assertNotEmpty($token);
 
         // 验证 token -> loginId 映射
@@ -54,20 +55,20 @@ class StpUtilTest extends TestCase
 
     public function testLogout(): void
     {
-        $token = StpUtil::login(10001);
+        $loginResult = StpUtil::login(10001);
+        $token = $loginResult->getAccessToken();
 
-        // 确认 token 存在
         $this->assertNotNull($this->dao->get('satoken:login:token:' . $token));
 
         StpUtil::logoutByLoginId(10001);
 
-        // 验证 token 已删除
         $this->assertNull($this->dao->get('satoken:login:token:' . $token));
     }
 
     public function testKickout(): void
     {
-        $token = StpUtil::login(10001);
+        $loginResult = StpUtil::login(10001);
+        $token = $loginResult->getAccessToken();
 
         StpUtil::kickout(10001);
 
@@ -76,10 +77,12 @@ class StpUtilTest extends TestCase
 
     public function testMultiAccountSystem(): void
     {
-        $token1 = StpUtil::login(10001);
+        $loginResult1 = StpUtil::login(10001);
+        $token1 = $loginResult1->getAccessToken();
 
         $adminLogic = SaToken::getStpLogic('admin');
-        $token2 = $adminLogic->login(20001);
+        $loginResult2 = $adminLogic->login(20001);
+        $token2 = $loginResult2->getAccessToken();
 
         // 两个体系的 token 独立
         $this->assertNotNull($this->dao->get('satoken:login:token:' . $token1));
@@ -125,7 +128,8 @@ class StpUtilTest extends TestCase
             }
         });
 
-        $token = StpUtil::login(10001);
+        $loginResult = StpUtil::login(10001);
+        $token = $loginResult->getAccessToken();
         $logic = SaToken::getStpLogic('login');
 
         // 通过 TokenManager 直接操作来测试权限校验逻辑

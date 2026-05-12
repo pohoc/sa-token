@@ -53,7 +53,8 @@ class StpLogicFullTest extends TestCase
 
     private function loginAndGetToken(mixed $loginId = 10001, ?SaLoginParameter $param = null): string
     {
-        return $this->logic->login($loginId, $param);
+        $loginResult = $this->logic->login($loginId, $param);
+        return $loginResult->getAccessToken();
     }
 
     // ======== 权限校验 ========
@@ -200,7 +201,8 @@ class StpLogicFullTest extends TestCase
         $this->logic->disable(10001, 'login', 1, 3600);
 
         // 其他用户仍可登录
-        $token = $this->logic->login(20002);
+        $loginResult = $this->logic->login(20002);
+        $token = $loginResult->getAccessToken();
         $this->assertNotEmpty($token);
     }
 
@@ -209,7 +211,8 @@ class StpLogicFullTest extends TestCase
         $this->logic->disable(10001, 'comment', 1, 3600);
 
         // 'comment' 服务的封禁不影响 'login' 服务
-        $token = $this->logic->login(10001);
+        $loginResult = $this->logic->login(10001);
+        $token = $loginResult->getAccessToken();
         $this->assertNotEmpty($token);
     }
 
@@ -266,12 +269,13 @@ class StpLogicFullTest extends TestCase
     {
         $param1 = new SaLoginParameter();
         $param1->setDeviceType('PC');
-        $token1 = $this->logic->login(10001, $param1);
+        $loginResult1 = $this->logic->login(10001, $param1);
+        $token1 = $loginResult1->getAccessToken();
 
-        // 同设备类型再次登录，应复用 Token
         $param2 = new SaLoginParameter();
         $param2->setDeviceType('PC');
-        $token2 = $this->logic->login(10001, $param2);
+        $loginResult2 = $this->logic->login(10001, $param2);
+        $token2 = $loginResult2->getAccessToken();
 
         $this->assertEquals($token1, $token2);
     }
@@ -280,11 +284,13 @@ class StpLogicFullTest extends TestCase
     {
         $param1 = new SaLoginParameter();
         $param1->setDeviceType('PC');
-        $token1 = $this->logic->login(10001, $param1);
+        $loginResult1 = $this->logic->login(10001, $param1);
+        $token1 = $loginResult1->getAccessToken();
 
         $param2 = new SaLoginParameter();
         $param2->setDeviceType('APP');
-        $token2 = $this->logic->login(10001, $param2);
+        $loginResult2 = $this->logic->login(10001, $param2);
+        $token2 = $loginResult2->getAccessToken();
 
         $this->assertNotEquals($token1, $token2);
     }
@@ -295,11 +301,13 @@ class StpLogicFullTest extends TestCase
 
         $param1 = new SaLoginParameter();
         $param1->setDeviceType('PC');
-        $token1 = $this->logic->login(10001, $param1);
+        $loginResult1 = $this->logic->login(10001, $param1);
+        $token1 = $loginResult1->getAccessToken();
 
         $param2 = new SaLoginParameter();
         $param2->setDeviceType('PC');
-        $token2 = $this->logic->login(10001, $param2);
+        $loginResult2 = $this->logic->login(10001, $param2);
+        $token2 = $loginResult2->getAccessToken();
 
         $this->assertNotEquals($token1, $token2);
     }
@@ -308,10 +316,12 @@ class StpLogicFullTest extends TestCase
 
     public function testMultiAccountIsolation(): void
     {
-        $token1 = $this->logic->login(10001);
+        $loginResult1 = $this->logic->login(10001);
+        $token1 = $loginResult1->getAccessToken();
 
         $adminLogic = new StpLogic('admin');
-        $token2 = $adminLogic->login(20001);
+        $loginResult2 = $adminLogic->login(20001);
+        $token2 = $loginResult2->getAccessToken();
 
         // 两套体系的 Token 独立存储
         $this->assertNotNull($this->tokenManager->getLoginIdByToken($token1));
@@ -379,7 +389,8 @@ class StpLogicFullTest extends TestCase
     {
         SaToken::getConfig()->setTokenPrefix('Bearer');
 
-        $token = $this->logic->login(10001);
+        $loginResult = $this->logic->login(10001);
+        $token = $loginResult->getAccessToken();
         $this->assertNotEmpty($token);
         $this->assertStringNotContainsString('Bearer', $token);
     }
@@ -407,9 +418,8 @@ class StpLogicFullTest extends TestCase
 
     public function testGetTokenInfo(): void
     {
-        $token = $this->logic->login(10001);
-        // getTokenInfo 需要从请求上下文读取 token，这里无请求上下文所以 tokenValue 为空
-        // 直接验证 TokenManager
+        $loginResult = $this->logic->login(10001);
+        $token = $loginResult->getAccessToken();
         $loginId = $this->tokenManager->getLoginIdByToken($token);
         $this->assertEquals('10001', $loginId);
     }
@@ -429,7 +439,8 @@ class StpLogicFullTest extends TestCase
 
     public function testKickoutByTokenValue(): void
     {
-        $token = $this->logic->login(10001);
+        $loginResult = $this->logic->login(10001);
+        $token = $loginResult->getAccessToken();
         $this->assertNotNull($this->tokenManager->getLoginIdByToken($token));
 
         $this->logic->kickoutByTokenValue($token);
@@ -442,7 +453,8 @@ class StpLogicFullTest extends TestCase
     {
         $param = new SaLoginParameter();
         $param->setDeviceType('PC');
-        $token = $this->logic->login(10001, $param);
+        $loginResult = $this->logic->login(10001, $param);
+        $token = $loginResult->getAccessToken();
 
         // 无请求上下文时返回空
         $this->assertEquals('', $this->logic->getLoginDeviceType());

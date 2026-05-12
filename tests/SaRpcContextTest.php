@@ -61,7 +61,8 @@ class SaRpcContextTest extends TestCase
 
     public function testAttachToHeaders(): void
     {
-        $token = StpUtil::login(10001);
+        $loginResult = StpUtil::login(10001);
+        $token = $loginResult->getAccessToken();
 
         $request = $this->mockRequestWithHeaders(['satoken' => $token]);
         SaTokenContext::setRequest($request);
@@ -88,7 +89,8 @@ class SaRpcContextTest extends TestCase
 
     public function testExtractAndValidateWithValidToken(): void
     {
-        $token = StpUtil::login(10001);
+        $loginResult = StpUtil::login(10001);
+        $token = $loginResult->getAccessToken();
 
         $request = $this->mockRequestWithHeaders([
             'X-Sa-Token'      => $token,
@@ -158,7 +160,8 @@ class SaRpcContextTest extends TestCase
 
     public function testRpcInterceptorIncoming(): void
     {
-        $token = StpUtil::login(10001);
+        $loginResult = StpUtil::login(10001);
+        $token = $loginResult->getAccessToken();
 
         $request = $this->mockRequestWithHeaders([
             'X-Sa-Token'      => $token,
@@ -175,7 +178,8 @@ class SaRpcContextTest extends TestCase
 
     public function testRpcInterceptorOutgoing(): void
     {
-        $token = StpUtil::login(10001);
+        $loginResult = StpUtil::login(10001);
+        $token = $loginResult->getAccessToken();
 
         $request = $this->mockRequestWithHeaders(['satoken' => $token]);
         SaTokenContext::setRequest($request);

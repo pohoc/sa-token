@@ -57,7 +57,8 @@ class StpLogicPermissionRoleTest extends TestCase
 
     private function loginAndGetToken(mixed $loginId = 10001): string
     {
-        $token = $this->logic->login($loginId);
+        $loginResult = $this->logic->login($loginId);
+        $token = $loginResult->getAccessToken();
         // 将 token 注入请求上下文
         $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
         $request->method('getHeader')->with('satoken')->willReturn([$token]);

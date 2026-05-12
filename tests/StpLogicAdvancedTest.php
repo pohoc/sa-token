@@ -47,7 +47,8 @@ class StpLogicAdvancedTest extends TestCase
 
     private function loginAndInjectToken(mixed $loginId = 10001, ?SaLoginParameter $param = null): string
     {
-        $token = $this->logic->login($loginId, $param);
+        $loginResult = $this->logic->login($loginId, $param);
+        $token = $loginResult->getAccessToken();
         $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
         $request->method('getHeader')->with('satoken')->willReturn([$token]);
         SaTokenContext::setRequest($request);
@@ -71,10 +72,12 @@ class StpLogicAdvancedTest extends TestCase
         ]));
 
         $logic = new StpLogic('login');
-        $token1 = $logic->login(10001, new SaLoginParameter(['deviceType' => 'PC']));
+        $loginResult1 = $logic->login(10001, new SaLoginParameter(['deviceType' => 'PC']));
+        $token1 = $loginResult1->getAccessToken();
         $this->assertTrue($logic->getTokenManager()->isTokenValid($token1));
 
-        $token2 = $logic->login(10001, new SaLoginParameter(['deviceType' => 'PC']));
+        $loginResult2 = $logic->login(10001, new SaLoginParameter(['deviceType' => 'PC']));
+        $token2 = $loginResult2->getAccessToken();
         $this->assertFalse($logic->getTokenManager()->isTokenValid($token1));
         $this->assertTrue($logic->getTokenManager()->isTokenValid($token2));
     }
@@ -115,7 +118,8 @@ class StpLogicAdvancedTest extends TestCase
         ]));
 
         $logic = new StpLogic('login');
-        $token = $logic->login(10001);
+        $loginResult = $logic->login(10001);
+        $token = $loginResult->getAccessToken();
 
         $rawValue = $this->dao->get('satoken:login:token:' . $token);
         $this->assertNotNull($rawValue);
@@ -149,7 +153,8 @@ class StpLogicAdvancedTest extends TestCase
         ]));
 
         $logic = new StpLogic('login');
-        $token = $logic->login(10001);
+        $loginResult = $logic->login(10001);
+        $token = $loginResult->getAccessToken();
 
         $rawValue = $this->dao->get('satoken:login:token:' . $token);
         $this->assertNotNull($rawValue);
@@ -204,7 +209,8 @@ class StpLogicAdvancedTest extends TestCase
             'isWriteHeader'   => false,
         ]));
         $this->logic = new StpLogic('login');
-        $token = $this->logic->login(10001);
+        $loginResult = $this->logic->login(10001);
+        $token = $loginResult->getAccessToken();
 
         $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
         $request->method('getHeader')->with('satoken')->willReturn([$token]);

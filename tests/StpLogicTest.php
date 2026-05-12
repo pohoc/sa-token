@@ -48,9 +48,9 @@ class StpLogicTest extends TestCase
 
     public function testSafeAuth(): void
     {
-        $token = $this->logic->login(10001);
+        $loginResult = $this->logic->login(10001);
+        $token = $loginResult->getAccessToken();
 
-        // 未开启安全窗口
         $this->assertFalse($this->tokenManager->isSafe($token, 'default', 'login'));
 
         // 开启安全窗口
@@ -65,9 +65,9 @@ class StpLogicTest extends TestCase
 
     public function testSwitchTo(): void
     {
-        $token = $this->logic->login(10001);
+        $loginResult = $this->logic->login(10001);
+        $token = $loginResult->getAccessToken();
 
-        // 切换身份
         $this->tokenManager->setSwitchTo($token, 20001, 'login');
         $this->assertEquals('20001', $this->tokenManager->getSwitchTo($token, 'login'));
 
@@ -92,7 +92,8 @@ class StpLogicTest extends TestCase
         $param = new SaLoginParameter();
         $param->setDeviceType('PC');
 
-        $token = $this->logic->login(10001, $param);
+        $loginResult = $this->logic->login(10001, $param);
+        $token = $loginResult->getAccessToken();
 
         $terminals = $this->logic->getTerminalListByLoginId(10001);
         $this->assertCount(1, $terminals);
@@ -103,11 +104,13 @@ class StpLogicTest extends TestCase
     {
         $param1 = new SaLoginParameter();
         $param1->setDeviceType('PC');
-        $token1 = $this->logic->login(10001, $param1);
+        $loginResult1 = $this->logic->login(10001, $param1);
+        $token1 = $loginResult1->getAccessToken();
 
         $param2 = new SaLoginParameter();
         $param2->setDeviceType('APP');
-        $token2 = $this->logic->login(10001, $param2);
+        $loginResult2 = $this->logic->login(10001, $param2);
+        $token2 = $loginResult2->getAccessToken();
 
         $terminals = $this->logic->getTerminalListByLoginId(10001);
         $this->assertCount(2, $terminals);

@@ -59,7 +59,8 @@ class SaLoginDeviceManagerTest extends TestCase
         $param = new SaLoginParameter();
         $param->setDevice($device);
 
-        $token = $this->logic->login(10001, $param);
+        $loginResult = $this->logic->login(10001, $param);
+        $token = $loginResult->getAccessToken();
 
         $devices = $this->logic->getDeviceList(10001);
         $this->assertCount(1, $devices);
@@ -183,8 +184,10 @@ class SaLoginDeviceManagerTest extends TestCase
             'ip' => '192.168.1.11',
         ]);
 
-        $tokenToKeep = $this->logic->login(10001, (new SaLoginParameter())->setDevice($device1));
-        $tokenToRemove = $this->logic->login(10001, (new SaLoginParameter())->setDevice($device2));
+        $loginResult1 = $this->logic->login(10001, (new SaLoginParameter())->setDevice($device1));
+        $tokenToKeep = $loginResult1->getAccessToken();
+        $loginResult2 = $this->logic->login(10001, (new SaLoginParameter())->setDevice($device2));
+        $tokenToRemove = $loginResult2->getAccessToken();
 
         $this->assertNotEquals($tokenToKeep, $tokenToRemove);
 
@@ -253,7 +256,8 @@ class SaLoginDeviceManagerTest extends TestCase
         SaToken::getConfig()->setDeviceManagement(false);
         SaLoginDeviceManager::reset();
 
-        $token = $this->logic->login(10001);
+        $loginResult = $this->logic->login(10001);
+        $token = $loginResult->getAccessToken();
 
         $this->assertEquals(0, $this->logic->getDeviceCount(10001));
     }
