@@ -125,6 +125,13 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface
         }
     }
 
+    public function deleteMultiple(array $keys): void
+    {
+        foreach ($keys as $key) {
+            $this->delete($key);
+        }
+    }
+
     public function size(): int
     {
         return -1;

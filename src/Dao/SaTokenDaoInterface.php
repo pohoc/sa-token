@@ -106,4 +106,12 @@ interface SaTokenDaoInterface
      * @return array<string> 匹配的值列表
      */
     public function search(string $prefix, string $keyword, int $start, int $size): array;
+
+    /**
+     * 批量删除指定 key 列表
+     *
+     * @param  array<string> $keys 存储键列表
+     * @return void
+     */
+    public function deleteMultiple(array $keys): void;
 }

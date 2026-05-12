@@ -184,9 +184,15 @@ LUA;
         $pattern = $prefix . '*' . $keyword . '*';
         $keys = [];
         $iterator = null;
+        $maxIterations = 100;
+        $iterations = 0;
 
         while (($scanResult = $client->scan($iterator, $pattern, 100)) !== false) {
             $keys = array_merge($keys, $scanResult);
+            $iterations++;
+            if ($iterations >= $maxIterations || $iterator === 0) {
+                break;
+            }
         }
 
         $keys = array_unique($keys);
@@ -213,6 +219,15 @@ LUA;
         }
 
         return array_slice($values, $start, $size);
+    }
+
+    public function deleteMultiple(array $keys): void
+    {
+        if (empty($keys)) {
+            return;
+        }
+        $client = $this->saRedis ?? $this->client;
+        $client->del($keys);
     }
 
     public function getClient(): \Redis

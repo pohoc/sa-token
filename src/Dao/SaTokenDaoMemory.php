@@ -147,6 +147,13 @@ class SaTokenDaoMemory implements SaTokenDaoInterface
     /**
      * @inheritdoc
      */
+    public function deleteMultiple(array $keys): void
+    {
+        foreach ($keys as $key) {
+            unset($this->dataMap[$key]);
+        }
+    }
+
     public function search(string $prefix, string $keyword, int $start, int $size): array
     {
         $this->cleanExpired();
