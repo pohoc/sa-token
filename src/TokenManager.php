@@ -7,6 +7,7 @@ namespace SaToken;
 use SaToken\Config\SaTokenConfig;
 use SaToken\Plugin\SaTokenJwt;
 use SaToken\Util\SaFoxUtil;
+use SaToken\Util\SaTokenContext;
 use SaToken\Util\SaTokenEncryptor;
 
 class TokenManager
@@ -21,6 +22,8 @@ class TokenManager
     public const SWITCH_PREFIX = 'satoken:switch:';
     public const REFRESH_TOKEN_PREFIX = 'satoken:refresh:';
     public const REFRESH_TOKEN_MAP_PREFIX = 'satoken:refreshMap:';
+    public const FINGERPRINT_PREFIX = 'satoken:fingerprint:';
+    public const BLACKLIST_PREFIX = 'satoken:blacklist:';
 
     protected ?SaTokenEncryptor $encryptor = null;
 
@@ -71,7 +74,7 @@ class TokenManager
         return $this->getEncryptor()->decrypt($value);
     }
 
-    public function createTokenValue(mixed $loginId, string $loginType): string
+    public function createTokenValue(mixed $loginId, string $loginType, string $prefix = 'sat_'): string
     {
         $action = SaToken::getAction();
         if ($action !== null) {
@@ -82,7 +85,7 @@ class TokenManager
         }
 
         $style = $this->getConfig()->getTokenStyle();
-        return match ($style) {
+        $raw = match ($style) {
             'uuid'          => SaFoxUtil::uuid(),
             'simple-random' => SaFoxUtil::randomString(32),
             'random-64'     => SaFoxUtil::randomString(64),
@@ -91,6 +94,7 @@ class TokenManager
             'tiket'         => SaFoxUtil::randomNumber(20),
             default         => SaFoxUtil::uuid(),
         };
+        return $prefix . $raw;
     }
 
     public function saveToken(string $tokenValue, mixed $loginId, string $loginType, string $deviceType = '', ?int $timeout = null): void
@@ -225,18 +229,25 @@ class TokenManager
             $keysToDelete[] = self::TOKEN_PREFIX . $tokenValue;
             $keysToDelete[] = self::LAST_ACTIVE_PREFIX . $tokenValue;
             $keysToDelete[] = self::TOKEN_SESSION_PREFIX . $tokenValue;
+            $keysToDelete[] = self::FINGERPRINT_PREFIX . $tokenValue;
+            $keysToDelete[] = self::BLACKLIST_PREFIX . $tokenValue;
+
+            $refreshToken = $this->getRefreshTokenByAccessToken($loginId, $loginType, $tokenValue);
+            if ($refreshToken !== null) {
+                $keysToDelete[] = self::REFRESH_TOKEN_PREFIX . $refreshToken;
+                $keysToDelete[] = self::REFRESH_TOKEN_MAP_PREFIX . $tokenValue;
+            }
+
             $deletedTokens[] = $tokenValue;
         }
 
-        if (!empty($keysToDelete)) {
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $keysToDelete[] = self::LOGIN_ID_PREFIX . $loginType . ':' . $loginIdStr;
+        $keysToDelete[] = self::SESSION_PREFIX . $loginType . ':' . $loginIdStr;
+
+        if (count($keysToDelete) > 0) {
             $this->getDao()->deleteMultiple($keysToDelete);
         }
-
-        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-        $this->getDao()->deleteMultiple([
-            self::LOGIN_ID_PREFIX . $loginType . ':' . $loginIdStr,
-            self::SESSION_PREFIX . $loginType . ':' . $loginIdStr,
-        ]);
 
         return $deletedTokens;
     }
@@ -482,5 +493,47 @@ class TokenManager
     public function isRefreshTokenValid(string $refreshToken): bool
     {
         return $this->getDao()->exists(self::REFRESH_TOKEN_PREFIX . $refreshToken);
+    }
+
+    public function saveFingerprint(string $tokenValue, string $fingerprint, ?int $timeout = null): void
+    {
+        $effectiveTimeout = ($timeout === -1) ? null : $timeout;
+        $this->getDao()->set(self::FINGERPRINT_PREFIX . $tokenValue, $this->encryptValue($fingerprint), $effectiveTimeout);
+    }
+
+    public function getFingerprint(string $tokenValue): ?string
+    {
+        $value = $this->getDao()->get(self::FINGERPRINT_PREFIX . $tokenValue);
+        if ($value === null) {
+            return null;
+        }
+        return $this->decryptValue($value);
+    }
+
+    public function deleteFingerprint(string $tokenValue): void
+    {
+        $this->getDao()->delete(self::FINGERPRINT_PREFIX . $tokenValue);
+    }
+
+    public function computeFingerprint(): string
+    {
+        $ip = SaTokenContext::getClientIp() ?? '';
+        $ua = SaTokenContext::getHeader('User-Agent') ?? '';
+        return hash('sha256', $ip . '|' . $ua);
+    }
+
+    public function addToBlacklist(string $tokenValue, int $timeout): void
+    {
+        $this->getDao()->set(self::BLACKLIST_PREFIX . $tokenValue, '1', $timeout > 0 ? $timeout : null);
+    }
+
+    public function isBlacklisted(string $tokenValue): bool
+    {
+        return $this->getDao()->exists(self::BLACKLIST_PREFIX . $tokenValue);
+    }
+
+    public function removeFromBlacklist(string $tokenValue): void
+    {
+        $this->getDao()->delete(self::BLACKLIST_PREFIX . $tokenValue);
     }
 }

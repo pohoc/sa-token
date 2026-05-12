@@ -517,4 +517,14 @@ class StpUtil
     {
         return self::getStpLogic()->getRefreshTokenByAccessToken($accessToken);
     }
+
+    public static function revokeToken(string $tokenValue): bool
+    {
+        return self::getStpLogic()->revokeToken($tokenValue);
+    }
+
+    public static function isTokenRevoked(string $tokenValue): bool
+    {
+        return self::getStpLogic()->isTokenRevoked($tokenValue);
+    }
 }

@@ -115,6 +115,30 @@ class SaTokenContext
         unset(self::$requestMap[$id], self::$responseMap[$id]);
     }
 
+    public static function getClientIp(): ?string
+    {
+        $forwarded = self::getHeader('X-Forwarded-For');
+        if ($forwarded !== null && $forwarded !== '') {
+            $ips = array_map('trim', explode(',', $forwarded));
+            $first = $ips[0] ?? null;
+            return is_string($first) ? $first : null;
+        }
+
+        $realIp = self::getHeader('X-Real-IP');
+        if ($realIp !== null && $realIp !== '') {
+            return $realIp;
+        }
+
+        $request = self::getRequest();
+        if ($request instanceof \Psr\Http\Message\ServerRequestInterface) {
+            $serverParams = $request->getServerParams();
+            $addr = $serverParams['REMOTE_ADDR'] ?? null;
+            return is_string($addr) ? $addr : null;
+        }
+
+        return null;
+    }
+
     /**
      * 从请求 Header 中获取值
      *

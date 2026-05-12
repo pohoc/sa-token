@@ -163,6 +163,9 @@ class SaTokenConfig
     // Refresh Token 换取新 AccessToken 时是否同时刷新 RefreshToken
     protected bool $refreshTokenRotation = true;
 
+    // 是否开启 Token 指纹绑定（IP + User-Agent 哈希校验）
+    protected bool $tokenFingerprint = false;
+
     /**
      * @var array<string, mixed>
      */
@@ -280,6 +283,7 @@ class SaTokenConfig
             'refreshToken'            => $this->refreshToken,
             'refreshTokenTimeout'     => $this->refreshTokenTimeout,
             'refreshTokenRotation'    => $this->refreshTokenRotation,
+            'tokenFingerprint'        => $this->tokenFingerprint,
             'sso'                    => $this->sso,
             'oauth2'                 => $this->oauth2,
             'apiKeyHeader'           => $this->apiKeyHeader,
@@ -920,6 +924,17 @@ class SaTokenConfig
     public function setRefreshTokenRotation(bool $refreshTokenRotation): static
     {
         $this->refreshTokenRotation = $refreshTokenRotation;
+        return $this;
+    }
+
+    public function isTokenFingerprint(): bool
+    {
+        return $this->tokenFingerprint;
+    }
+
+    public function setTokenFingerprint(bool $tokenFingerprint): static
+    {
+        $this->tokenFingerprint = $tokenFingerprint;
         return $this;
     }
 }
