@@ -12,10 +12,11 @@
 - **登录认证** — 单端/多端登录、同端互斥登录、记住我、踢人下线、账号封禁、临时 Token
 - **权限认证** — 角色/权限校验、路由拦截鉴权、二级认证、身份切换
 - **Token 安全** — Token 内容加密（AES-256-CBC / SM4-CBC）、防内容泄露
+- **Refresh Token** — AccessToken + RefreshToken 双 Token 机制、Token 轮换、无感刷新
 - **国密全链路** — `cryptoType=sm` 时自动切换 SM4 加密 + HMAC-SM3 签名 + SM3 JWT
-- **SSO 单点登录** — 同域 / 跨域 / 前后端分离三种模式，域名校验，参数防丢
+- **SSO 单点登录** — 同域 / 跨域 / 前后端分离 / 无 SDK 四种模式，域名校验，参数防丢
 - **OAuth2.0** — 授权码 / 隐藏式 / 密码 / 客户端凭证 + OpenID Connect + Scope 校验
-- **JWT 集成** — 扩展参数、无状态模式、HS256 / HMAC-SM3 双算法
+- **JWT 集成** — 扩展参数、无状态模式、混合模式、HS256 / HMAC-SM3 双算法
 - **Http 认证** — Basic / Digest 一行代码接入
 - **参数签名** — 跨系统 API 调用签名校验，防篡改、防重放
 - **API Key** — 第三方接入秘钥授权
@@ -25,6 +26,12 @@
 - **多账号体系** — 不同 type 的 StpLogic 实例独立鉴权
 - **协程安全** — SaRouter 支持协程上下文隔离（Swoole / Hyperf）
 - **框架无关** — 纯 PHP 实现，PSR-7 / PSR-16 适配，适用于任意框架
+- **防暴力破解** — 登录失败计数、账号自动锁定、手动解锁
+- **IP 异常检测** — 登录 IP 历史记录、异地登录告警
+- **设备管理** — 登录设备注册/踢出、UA 自动解析
+- **敏感操作验证** — OTP 验证码、安全令牌、场景化验证
+- **审计日志** — 登录/登出/踢人/封禁/身份切换全链路记录
+- **RPC 上下文** — 微服务间 Token 透传与验证、拦截器模式
 
 ## 环境要求
 
@@ -81,11 +88,13 @@ SaToken::init([
 ```php
 use SaToken\StpUtil;
 
-$token = StpUtil::login(10001);
+$result = StpUtil::login(10001);
+$token = $result->getAccessToken();
 
 $param = new \SaToken\SaLoginParameter();
 $param->setDeviceType('PC')->setIsLastingCookie(true)->setTimeout(7200);
-$token = StpUtil::login(10001, $param);
+$result = StpUtil::login(10001, $param);
+$token = $result->getAccessToken();
 
 StpUtil::checkLogin();
 $isLogin = StpUtil::isLogin();
@@ -227,7 +236,70 @@ $device = StpUtil::getLoginDeviceType();
 $terminals = StpUtil::getTerminalListByLoginId(10001);
 ```
 
-### 12. 多账号体系
+### 12. Refresh Token
+
+AccessToken + RefreshToken 双 Token 机制，AccessToken 短期有效，RefreshToken 长期有效，用于无感刷新：
+
+```php
+SaToken::init([
+    'timeout'              => 7200,       // AccessToken 有效期 2 小时
+    'refreshToken'         => true,       // 启用 RefreshToken
+    'refreshTokenTimeout'  => 2592000,    // RefreshToken 有效期 30 天
+    'refreshTokenRotation' => true,       // 刷新时轮换 RefreshToken
+]);
+```
+
+登录时自动创建 RefreshToken（通过响应头 `satoken-refresh` 返回）：
+
+```php
+$result = StpUtil::login(10001);
+$accessToken = $result->getAccessToken();
+$refreshToken = $result->getRefreshToken(); // refreshToken=true 时有值
+$accessExpire = $result->getAccessExpire();
+$refreshExpire = $result->getRefreshExpire();
+```
+
+手动创建 RefreshToken：
+
+```php
+$refreshToken = StpUtil::createRefreshToken($accessToken);
+```
+
+AccessToken 过期后，用 RefreshToken 换取新 Token 对：
+
+```php
+$result = StpUtil::refreshToken($refreshToken);
+$newAccessToken = $result->getAccessToken();
+$newRefreshToken = $result->getRefreshToken(); // rotation=true 时有值
+```
+
+撤销 RefreshToken：
+
+```php
+StpUtil::revokeRefreshToken($refreshToken);
+StpUtil::revokeRefreshTokenByAccessToken($accessToken);
+```
+
+查询 RefreshToken：
+
+```php
+$isValid = StpUtil::isRefreshTokenValid($refreshToken);
+$refreshToken = StpUtil::getRefreshTokenByAccessToken($accessToken);
+```
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `refreshToken` | bool | `false` | 是否启用 RefreshToken |
+| `refreshTokenTimeout` | int | `2592000` | RefreshToken 有效期（秒） |
+| `refreshTokenRotation` | bool | `true` | 刷新时是否同时轮换 RefreshToken |
+
+安全特性：
+- RefreshToken 一次性使用，用完即销毁
+- Rotation 模式下每次刷新生成新 RefreshToken，旧 Token 立即失效
+- 刷新时检查账号封禁状态
+- 登出自动清除关联的 RefreshToken
+
+### 13. 多账号体系
 
 ```php
 use SaToken\StpLogic;
@@ -242,7 +314,7 @@ $adminLogic->checkLogin();
 $adminLogic->logout();
 ```
 
-### 13. 会话查询
+### 14. 会话查询
 
 ```php
 use SaToken\TokenManager;
@@ -656,6 +728,180 @@ $valid = SaTokenCrypto::bcryptVerify('password', $bcrypt);
 
 AES / RSA / SM2 / SM3 / SM4 等加解密功能参见 `SaTokenCrypto` 类。
 
+## 防暴力破解
+
+登录失败次数记录与账号自动锁定：
+
+```php
+StpUtil::checkAntiBrute('user@example.com');
+
+StpUtil::recordAntiBruteFailure('user@example.com');
+
+$isLocked = StpUtil::isAccountLocked('user@example.com');
+$remaining = StpUtil::getRemainingLockTime('user@example.com');
+
+StpUtil::unlockAccount('user@example.com');
+
+$info = StpUtil::getAntiBruteInfo('user@example.com');
+// ['failCount' => 3, 'isLocked' => false, 'remainingLockTime' => 0, ...]
+```
+
+配置：
+
+```php
+SaToken::init([
+    'antiBruteMaxFailures'  => 5,
+    'antiBruteLockDuration' => 600,
+]);
+```
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `antiBruteMaxFailures` | int | `0` | 最大失败次数，`0` 不限制 |
+| `antiBruteLockDuration` | int | `600` | 锁定时长（秒） |
+
+## IP 异常检测
+
+记录登录 IP 历史，检测异地登录异常：
+
+```php
+$info = StpUtil::getLoginInfo(10001);
+// ['currentIp' => '192.168.1.1', 'lastLoginIp' => '10.0.0.1', 'anomalyCount' => 2, ...]
+
+$count = StpUtil::getAnomalyCount(10001);
+$history = StpUtil::getIpHistory(10001);
+
+StpUtil::clearLoginHistory(10001);
+```
+
+配置：
+
+```php
+SaToken::init([
+    'ipAnomalyDetection'   => true,
+    'ipAnomalySensitivity' => 3,
+]);
+```
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `ipAnomalyDetection` | bool | `false` | 是否启用 IP 异常检测 |
+| `ipAnomalySensitivity` | int | `3` | 灵敏度（历史同网段 IP 数 ≥ 此值视为正常） |
+
+## 设备管理
+
+登录设备注册与踢出：
+
+```php
+$devices = StpUtil::getDeviceList(10001);
+$count = StpUtil::getDeviceCount(10001);
+
+StpUtil::kickoutDevice(10001, 'device-id-xxx');
+
+$kickedCount = StpUtil::kickoutAllDevices(10001, $currentToken);
+
+$device = StpUtil::findDevice(10001, 'device-id-xxx');
+```
+
+配置：
+
+```php
+SaToken::init([
+    'deviceManagement' => true,
+]);
+```
+
+设备信息自动检测（User-Agent 解析）：设备类型（PC/Mobile/Tablet）、设备名称（微信/钉钉/支付宝/Web）、操作系统、浏览器。
+
+## 敏感操作验证
+
+OTP 验证码与安全令牌：
+
+```php
+$code = StpUtil::generateOtpCode('payment');
+$code = StpUtil::sendOtpCode('payment');
+
+StpUtil::verifyOtpCode('payment', '123456');
+
+$isVerified = StpUtil::isSensitiveVerified('payment');
+$remaining = StpUtil::getSensitiveVerifyRemainingAttempts('payment');
+StpUtil::clearSensitiveVerify('payment');
+
+$token = StpUtil::openSensitiveVerify('payment', 600);
+StpUtil::checkSensitiveVerify('payment', $token);
+```
+
+## 审计日志
+
+记录登录、登出、踢人、封禁、身份切换等操作：
+
+```php
+$logs = StpUtil::getAuditLogs(50);
+$log = StpUtil::getAuditLog('log-id-xxx');
+
+SaAuditLog::logLogin(10001);
+SaAuditLog::logLogout(10001);
+SaAuditLog::logKickout(10001);
+SaAuditLog::logDisable(10001, 'login', '违规操作');
+SaAuditLog::logSwitchTo(10001, 20002);
+
+$recentLogs = SaAuditLog::getRecentLogs('login', 100);
+$logsByIp = SaAuditLog::getLogsByIp('192.168.1.1');
+$logsByEvent = SaAuditLog::getLogsByEvent('login');
+
+SaAuditLog::clearLogs();
+```
+
+配置：
+
+```php
+SaToken::init([
+    'auditLog'            => true,
+    'auditLogMaxEntries'  => 1000,
+    'auditLogTtlDays'     => 30,
+]);
+```
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `auditLog` | bool | `false` | 是否启用审计日志 |
+| `auditLogMaxEntries` | int | `1000` | 每种登录类型最大日志条数 |
+| `auditLogTtlDays` | int | `30` | 日志保留天数 |
+
+## RPC 上下文传播
+
+微服务间 Token 透传与验证：
+
+```php
+use SaToken\Rpc\SaRpcContext;
+use SaToken\Rpc\SaRpcInterceptor;
+
+// 发送端：将认证信息注入请求头
+$headers = SaRpcContext::attachToHeaders(['X-Custom' => 'value']);
+$psr7Request = SaRpcContext::attachToRequest($request);
+
+// 接收端：提取并验证
+SaRpcContext::extractAndValidate();
+
+$loginId = SaRpcContext::getForwardedLoginId();
+$token = SaRpcContext::getForwardedToken();
+$loginType = SaRpcContext::getForwardedLoginType();
+
+$isRpc = SaRpcContext::isRpcRequest();
+```
+
+拦截器模式：
+
+```php
+$interceptor = new SaRpcInterceptor();
+$interceptor->setValidateToken(true)
+    ->setAutoLogin(true)
+    ->setLoginType('login');
+
+$interceptor->handleIncoming();
+$outHeaders = $interceptor->handleOutgoing();
+```
+
 ## 事件监听
 
 ```php
@@ -779,6 +1025,9 @@ try {
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
 | `tokenSessionCheckLogin` | bool | `true` | TokenSession 是否校验登录 |
+| `refreshToken` | bool | `false` | 是否启用 RefreshToken |
+| `refreshTokenTimeout` | int | `2592000` | RefreshToken 有效期（秒） |
+| `refreshTokenRotation` | bool | `true` | 刷新时是否轮换 RefreshToken |
 
 ### SSO 配置
 
@@ -852,7 +1101,19 @@ src/
 │   └── SaOAuth2Manager.php
 ├── Plugin/                         # 插件
 │   ├── SaTokenCrypto.php           # 加密工具（AES/RSA/HMAC/MD5/SHA/bcrypt/SM）
-│   └── SaTokenJwt.php              # JWT（HS256/HMAC-SM3 + 扩展参数 + 无状态）
+│   ├── SaTokenJwt.php              # JWT（HS256/HMAC-SM3 + 扩展参数 + 无状态）
+│   └── SaTokenSmCrypto.php         # 国密插件（SM2 签名验签 + SM3 哈希 + SM4 加解密）
+├── Rpc/                            # 微服务 RPC
+│   ├── SaRpcContext.php            # RPC 上下文（Token 透传 + 验证）
+│   └── SaRpcInterceptor.php       # RPC 拦截器（自动验证 + 自动登录）
+├── Security/                       # 安全模块
+│   ├── SaAntiBruteUtil.php         # 防暴力破解（失败计数 + 账号锁定）
+│   ├── SaAuditLog.php              # 审计日志（登录/登出/踢人/封禁/切换）
+│   ├── SaIpAnomalyDetector.php     # IP 异常检测（异地登录告警）
+│   ├── SaLoginDeviceManager.php    # 设备管理（注册/踢出/UA 解析）
+│   └── SaSensitiveVerify.php       # 敏感操作验证（OTP + 安全令牌）
+├── Session/                        # 会话维护
+│   └── SaSessionCleaner.php        # 过期会话清理
 ├── Sign/                           # 参数签名
 │   └── SaSign.php                  # 签名校验（防篡改 + 防重放）
 ├── Sso/                            # SSO 单点登录
