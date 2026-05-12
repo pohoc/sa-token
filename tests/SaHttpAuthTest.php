@@ -14,7 +14,7 @@ use SaToken\Util\SaTokenContext;
 
 class SaHttpAuthTest extends TestCase
 {
-    protected object $responseTracker;
+    protected TestResponseTracker $responseTracker;
 
     protected function setUp(): void
     {
@@ -34,13 +34,7 @@ class SaHttpAuthTest extends TestCase
         ]));
         SaToken::setDao(new SaTokenDaoMemory());
 
-        $this->responseTracker = new class () {
-            public array $headers = [];
-            public function header(string $name, string $value): void
-            {
-                $this->headers[$name] = $value;
-            }
-        };
+        $this->responseTracker = new TestResponseTracker();
         SaTokenContext::setResponse($this->responseTracker);
     }
 

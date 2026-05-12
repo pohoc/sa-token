@@ -47,6 +47,9 @@ class SaRpcContextTest extends TestCase
         SaRpcContext::reset();
     }
 
+    /**
+     * @param array<string, string> $headers
+     */
     protected function mockRequestWithHeaders(array $headers): ServerRequestInterface
     {
         $request = $this->createMock(ServerRequestInterface::class);

@@ -46,9 +46,11 @@ class SaTokenJwtSmTest extends TestCase
         $parts = explode('.', $token);
         $this->assertCount(3, $parts);
 
-        $header = json_decode(base64_decode(strtr($parts[0], '-_', '+/'), true), true);
+        $decoded = base64_decode(strtr($parts[0], '-_', '+/'), true);
+        $this->assertNotFalse($decoded);
+        $header = json_decode($decoded, true);
         $this->assertNotNull($header);
-        $this->assertEquals('SM3', $header['alg']);
+        $this->assertEquals('SM3', is_array($header) ? ($header['alg'] ?? null) : null);
     }
 
     public function testParseTokenWithSm3SignedJwt(): void

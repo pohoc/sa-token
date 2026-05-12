@@ -216,9 +216,11 @@ class SaOAuth2Test extends TestCase
         ]);
         $this->handle->registerClient($otherClient);
 
+        $refreshToken = $accessToken->getRefreshToken();
+        $this->assertNotNull($refreshToken);
         $this->expectException(SaTokenException::class);
         $this->expectExceptionMessage('客户端 ID 不匹配');
-        $this->handle->refreshToken($accessToken->getRefreshToken(), 'other-client', 'mock-other-secret');
+        $this->handle->refreshToken($refreshToken, 'other-client', 'mock-other-secret');
     }
 
     // ======== 密码模式 ========

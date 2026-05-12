@@ -24,7 +24,8 @@ class SaTokenEncryptorTest extends TestCase
     {
         $ref = new \ReflectionClass($encryptor);
         $prop = $ref->getProperty('key');
-        return $prop->getValue($encryptor);
+        $value = $prop->getValue($encryptor);
+        return is_string($value) ? $value : '';
     }
 
     public function testAesEncryptDecryptRoundTrip(): void
@@ -73,6 +74,7 @@ class SaTokenEncryptorTest extends TestCase
         $encryptor = $this->createAesEncryptor();
         $encrypted = $encryptor->encrypt('important-data');
         $decoded = base64_decode($encrypted, true);
+        $this->assertNotFalse($decoded);
         $tampered = substr($decoded, 0, 40) . chr(ord($decoded[40]) ^ 0xFF) . substr($decoded, 41);
         $tamperedEncoded = base64_encode($tampered);
         $this->assertEquals($tamperedEncoded, $encryptor->decrypt($tamperedEncoded));
@@ -83,6 +85,7 @@ class SaTokenEncryptorTest extends TestCase
         $encryptor = $this->createAesEncryptor();
         $encrypted = $encryptor->encrypt('important-data');
         $decoded = base64_decode($encrypted, true);
+        $this->assertNotFalse($decoded);
         $tampered = chr(ord($decoded[0]) ^ 0xFF) . substr($decoded, 1);
         $tamperedEncoded = base64_encode($tampered);
         $this->assertEquals($tamperedEncoded, $encryptor->decrypt($tamperedEncoded));
@@ -223,6 +226,7 @@ class SaTokenEncryptorTest extends TestCase
         $encryptor = $this->createSm4Encryptor();
         $encrypted = $encryptor->encrypt('important-data');
         $decoded = base64_decode($encrypted, true);
+        $this->assertNotFalse($decoded);
         $tampered = substr($decoded, 0, 40) . chr(ord($decoded[40]) ^ 0xFF) . substr($decoded, 41);
         $tamperedEncoded = base64_encode($tampered);
         $this->assertEquals($tamperedEncoded, $encryptor->decrypt($tamperedEncoded));
@@ -236,6 +240,7 @@ class SaTokenEncryptorTest extends TestCase
         $encryptor = $this->createSm4Encryptor();
         $encrypted = $encryptor->encrypt('important-data');
         $decoded = base64_decode($encrypted, true);
+        $this->assertNotFalse($decoded);
         $tampered = chr(ord($decoded[0]) ^ 0xFF) . substr($decoded, 1);
         $tamperedEncoded = base64_encode($tampered);
         $this->assertEquals($tamperedEncoded, $encryptor->decrypt($tamperedEncoded));

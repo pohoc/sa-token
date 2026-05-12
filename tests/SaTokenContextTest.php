@@ -79,11 +79,12 @@ class SaTokenContextTest extends TestCase
         SaTokenContext::setRequest($req2);
 
         // 当前上下文应为 ctx-2 的请求
-        $this->assertEquals(2, SaTokenContext::getRequest()->id);
+        $req1 = SaTokenContext::getRequest();
+        $this->assertEquals(2, is_object($req1) && property_exists($req1, 'id') ? $req1->id : null);
 
-        // 切回 ctx-1
         SaTokenContext::setContextId('ctx-1');
-        $this->assertEquals(1, SaTokenContext::getRequest()->id);
+        $req2 = SaTokenContext::getRequest();
+        $this->assertEquals(1, is_object($req2) && property_exists($req2, 'id') ? $req2->id : null);
     }
 
     // ---- Header with PSR-7 ----

@@ -170,7 +170,7 @@ class SaFoxUtilTest extends TestCase
     {
         $data = SaFoxUtil::fromJson('{"key":"value"}', false);
         $this->assertIsObject($data);
-        $this->assertEquals('value', $data->key);
+        $this->assertEquals('value', $data->key ?? null);
     }
 
     public function testToJsonFromJsonRoundTrip(): void

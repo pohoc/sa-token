@@ -111,13 +111,17 @@ class SaTokenCryptoTest extends TestCase
 
     public function testRsaSignAndVerify(): void
     {
-        // 生成 RSA 密钥对
         $keyPair = openssl_pkey_new([
             'private_key_bits' => 2048,
             'private_key_type' => OPENSSL_KEYTYPE_RSA,
         ]);
+        $this->assertNotFalse($keyPair);
         openssl_pkey_export($keyPair, $privateKey);
-        $publicKey = openssl_pkey_get_details($keyPair)['key'];
+        $this->assertNotFalse($privateKey);
+        $details = openssl_pkey_get_details($keyPair);
+        $this->assertNotFalse($details);
+        $this->assertArrayHasKey('key', $details);
+        $publicKey = $details['key'];
 
         $crypto = new SaTokenCrypto([
             'rsaPrivateKey' => $privateKey,
@@ -137,8 +141,13 @@ class SaTokenCryptoTest extends TestCase
             'private_key_bits' => 2048,
             'private_key_type' => OPENSSL_KEYTYPE_RSA,
         ]);
+        $this->assertNotFalse($keyPair);
         openssl_pkey_export($keyPair, $privateKey);
-        $publicKey = openssl_pkey_get_details($keyPair)['key'];
+        $this->assertNotFalse($privateKey);
+        $details = openssl_pkey_get_details($keyPair);
+        $this->assertNotFalse($details);
+        $this->assertArrayHasKey('key', $details);
+        $publicKey = $details['key'];
 
         $crypto = new SaTokenCrypto([
             'rsaPrivateKey' => $privateKey,
@@ -169,8 +178,11 @@ class SaTokenCryptoTest extends TestCase
             'private_key_bits' => 2048,
             'private_key_type' => OPENSSL_KEYTYPE_RSA,
         ]);
-        openssl_pkey_export($keyPair, $privateKey);
-        $publicKey = openssl_pkey_get_details($keyPair)['key'];
+        $this->assertNotFalse($keyPair);
+        $details = openssl_pkey_get_details($keyPair);
+        $this->assertNotFalse($details);
+        $this->assertArrayHasKey('key', $details);
+        $publicKey = $details['key'];
 
         $crypto = new SaTokenCrypto(['rsaPublicKey' => $publicKey]);
         $this->assertFalse($crypto->rsaVerify('data', base64_encode('invalid-signature')));

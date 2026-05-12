@@ -36,17 +36,17 @@ class SaSessionCleanerTest extends TestCase
             'tokenValue' => 'expired-token-1',
             'loginId' => 'user1',
             'expireAt' => $pastTime,
-        ]));
+        ]) ?: '{}');
         $dao->set('satoken:login:token:expired-token-2', json_encode([
             'tokenValue' => 'expired-token-2',
             'loginId' => 'user2',
             'expireAt' => $pastTime,
-        ]));
+        ]) ?: '{}');
         $dao->set('satoken:login:token:valid-token', json_encode([
             'tokenValue' => 'valid-token',
             'loginId' => 'user3',
             'expireAt' => $futureTime,
-        ]));
+        ]) ?: '{}');
 
         $cleaned = SaSessionCleaner::cleanOnce();
 
@@ -65,19 +65,19 @@ class SaSessionCleanerTest extends TestCase
         $dao->set('satoken:session:expired-session-1', json_encode([
             'id' => 'expired-session-1',
             'expireAt' => $pastTime,
-        ]));
+        ]) ?: '{}');
         $dao->set('satoken:session:expired-session-2', json_encode([
             'id' => 'expired-session-2',
             'expireAt' => $pastTime,
-        ]));
+        ]) ?: '{}');
         $dao->set('satoken:tokenSession:expired-token-session', json_encode([
             'id' => 'expired-token-session',
             'expireAt' => $pastTime,
-        ]));
+        ]) ?: '{}');
         $dao->set('satoken:session:valid-session', json_encode([
             'id' => 'valid-session',
             'expireAt' => $futureTime,
-        ]));
+        ]) ?: '{}');
 
         $cleaned = SaSessionCleaner::cleanOnce();
 
@@ -98,16 +98,16 @@ class SaSessionCleanerTest extends TestCase
             'tokenValue' => 'valid-token-1',
             'loginId' => 'user1',
             'expireAt' => $futureTime,
-        ]));
+        ]) ?: '{}');
         $dao->set('satoken:login:token:valid-token-2', json_encode([
             'tokenValue' => 'valid-token-2',
             'loginId' => 'user2',
             'expireAt' => $noExpireTime,
-        ]));
+        ]) ?: '{}');
         $dao->set('satoken:session:valid-session', json_encode([
             'id' => 'valid-session',
             'expireAt' => $futureTime,
-        ]));
+        ]) ?: '{}');
 
         $cleaned = SaSessionCleaner::cleanOnce();
 
@@ -131,7 +131,7 @@ class SaSessionCleanerTest extends TestCase
             'tokenValue' => 'expired-token-1',
             'loginId' => 'user1',
             'expireAt' => $pastTime,
-        ]));
+        ]) ?: '{}');
 
         SaSessionCleaner::cleanOnce();
         $firstClean = SaSessionCleaner::getTotalCleaned();
@@ -140,7 +140,7 @@ class SaSessionCleanerTest extends TestCase
             'tokenValue' => 'expired-token-2',
             'loginId' => 'user2',
             'expireAt' => $pastTime,
-        ]));
+        ]) ?: '{}');
 
         SaSessionCleaner::cleanOnce();
         $secondClean = SaSessionCleaner::getTotalCleaned();
@@ -169,7 +169,7 @@ class SaSessionCleanerTest extends TestCase
             'tokenValue' => 'expired-token-1',
             'loginId' => 'user1',
             'expireAt' => $pastTime,
-        ]));
+        ]) ?: '{}');
 
         SaSessionCleaner::cleanOnce();
         $this->assertEquals(1, SaSessionCleaner::getTotalCleaned());
@@ -187,16 +187,16 @@ class SaSessionCleanerTest extends TestCase
             'tokenValue' => 'token1',
             'loginId' => 'user1',
             'expireAt' => $pastTime,
-        ]));
+        ]) ?: '{}');
         $dao->set('satoken:login:token:token2', json_encode([
             'tokenValue' => 'token2',
             'loginId' => 'user2',
             'expireAt' => $pastTime,
-        ]));
+        ]) ?: '{}');
         $dao->set('satoken:session:session1', json_encode([
             'id' => 'session1',
             'expireAt' => $pastTime,
-        ]));
+        ]) ?: '{}');
 
         $count = SaSessionCleaner::cleanOnce();
 

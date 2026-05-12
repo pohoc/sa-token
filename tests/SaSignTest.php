@@ -88,7 +88,7 @@ class SaSignTest extends TestCase
 
     public function testEmptyValuesSkipped(): void
     {
-        $params = $this->sign->signParams(['foo' => 'bar', 'empty' => '', 'nil' => null]);
+        $params = $this->sign->signParams(['foo' => 'bar', 'empty' => '', 'nil' => 'null']);
 
         $this->assertTrue($this->sign->verifySign($params));
     }

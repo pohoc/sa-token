@@ -103,6 +103,7 @@ class StpLogicIntegrationTest extends TestCase
     {
         $token = $this->loginAndGetToken(10001);
         $session = $this->logic->getSessionByLoginId(10001);
+        $this->assertNotNull($session);
         $session->set('theme', 'dark');
 
         // 注销后再登录，session 数据应保留（因为 logoutByLoginId 删除 session）
@@ -127,6 +128,7 @@ class StpLogicIntegrationTest extends TestCase
         $tokenSession->set('request_count', 5);
 
         $tokenSession2 = $this->logic->getTokenSession();
+        $this->assertNotNull($tokenSession2);
         $this->assertEquals(5, $tokenSession2->get('request_count'));
     }
 
@@ -223,8 +225,14 @@ class StpLogicIntegrationTest extends TestCase
         $switchBackEvents = [];
 
         $listener = new class ($switchEvents, $switchBackEvents) implements SaTokenListenerInterface {
+            /** @var array<array{from: mixed, to: mixed}> */
             public static array $switchEvents;
+            /** @var array<array{loginId: mixed}> */
             public static array $switchBackEvents;
+            /**
+             * @param array<array{from: mixed, to: mixed}> &$s
+             * @param array<array{loginId: mixed}>         &$sb
+             */
             public function __construct(array &$s, array &$sb)
             {
                 self::$switchEvents = &$s;
@@ -358,7 +366,11 @@ class StpLogicIntegrationTest extends TestCase
     {
         $logoutEvents = [];
         $listener = new class ($logoutEvents) implements SaTokenListenerInterface {
+            /** @var array<array{loginId: mixed, tokenValue: string}> */
             public static array $logoutEvents;
+            /**
+             * @param array<array{loginId: mixed, tokenValue: string}> &$e
+             */
             public function __construct(array &$e)
             {
                 self::$logoutEvents = &$e;

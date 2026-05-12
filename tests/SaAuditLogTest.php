@@ -111,7 +111,7 @@ class SaAuditLogTest extends TestCase
         $this->assertNotNull($log);
         $this->assertEquals('disable', $log['event']);
         $this->assertEquals('账号被封禁', $log['action']);
-        $this->assertEquals('spam', $log['extra']['reason']);
+        $this->assertEquals('spam', is_array($log['extra'] ?? null) ? ($log['extra']['reason'] ?? null) : null);
     }
 
     public function testLogSwitchToCreatesEntry(): void
@@ -124,7 +124,7 @@ class SaAuditLogTest extends TestCase
         $log = SaAuditLog::getLog($id, 'login');
         $this->assertNotNull($log);
         $this->assertEquals('switch', $log['event']);
-        $this->assertEquals('20002', $log['extra']['targetLoginId']);
+        $this->assertEquals('20002', is_array($log['extra'] ?? null) ? ($log['extra']['targetLoginId'] ?? null) : null);
     }
 
     public function testGetRecentLogs(): void
@@ -202,10 +202,10 @@ class SaAuditLogTest extends TestCase
         $longToken = str_repeat('a', 100);
         $id = SaAuditLog::logLogin(10001, 'login', $longToken);
 
-        $log = SaAuditLog::getLog($id, 'login');
+        $log = SaAuditLog::getLog($id ?? '', 'login');
         $this->assertNotNull($log);
-        $this->assertStringEndsWith('...', $log['tokenValue']);
-        $this->assertEquals(35, strlen($log['tokenValue']));
+        $this->assertStringEndsWith('...', is_string($log['tokenValue'] ?? null) ? $log['tokenValue'] : '');
+        $this->assertEquals(35, strlen(is_string($log['tokenValue'] ?? null) ? $log['tokenValue'] : ''));
     }
 
     public function testMaxEntriesLimit(): void

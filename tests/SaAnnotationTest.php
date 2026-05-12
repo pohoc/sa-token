@@ -176,12 +176,22 @@ class SaAnnotationTest extends TestCase
         return $token;
     }
 
+    /**
+     * @param array<string> $permissions
+     * @param array<string> $roles
+     */
     private function setActionWithPermissions(array $permissions = [], array $roles = []): void
     {
         SaToken::setAction(new class ($permissions, $roles) implements SaTokenActionInterface {
+            /** @var array<string> */
             private array $permissions;
+            /** @var array<string> */
             private array $roles;
 
+            /**
+             * @param array<string> $permissions
+             * @param array<string> $roles
+             */
             public function __construct(array $permissions, array $roles)
             {
                 $this->permissions = $permissions;

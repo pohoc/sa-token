@@ -8,6 +8,7 @@ use Psr\SimpleCache\CacheInterface;
 
 class ArrayPsr16Cache implements CacheInterface
 {
+    /** @var array<string, mixed> */
     protected array $data = [];
 
     public function get(string $key, mixed $default = null): mixed
@@ -17,7 +18,7 @@ class ArrayPsr16Cache implements CacheInterface
 
     public function set(string $key, mixed $value, \DateInterval|int|null $ttl = null): bool
     {
-        $this->data[$key] = $value;
+        $this->data[(string) $key] = $value;
         return true;
     }
 
@@ -42,10 +43,13 @@ class ArrayPsr16Cache implements CacheInterface
         return $result;
     }
 
+    /**
+     * @param iterable<string|int, mixed> $values
+     */
     public function setMultiple(iterable $values, \DateInterval|int|null $ttl = null): bool
     {
         foreach ($values as $key => $value) {
-            $this->set($key, $value, $ttl);
+            $this->set((string) $key, $value, $ttl);
         }
         return true;
     }

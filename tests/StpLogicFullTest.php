@@ -393,6 +393,7 @@ class StpLogicFullTest extends TestCase
 
         $session->set('key', 'value');
         $loaded = $this->logic->getSessionByLoginId(10001);
+        $this->assertNotNull($loaded);
         $this->assertEquals('value', $loaded->get('key'));
     }
 

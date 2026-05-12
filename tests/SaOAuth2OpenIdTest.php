@@ -93,12 +93,16 @@ class SaOAuth2OpenIdTest extends TestCase
             $this->assertNotFalse($decoded, 'Each JWT part should be valid base64url');
         }
 
-        $header = json_decode(base64_decode(strtr($parts[0], '-_', '+/'), true), true);
+        $headerDecoded = base64_decode(strtr($parts[0], '-_', '+/'), true);
+        $this->assertNotFalse($headerDecoded);
+        $header = json_decode($headerDecoded, true);
         $this->assertIsArray($header);
         $this->assertEquals('JWT', $header['typ']);
         $this->assertEquals('HS256', $header['alg']);
 
-        $payload = json_decode(base64_decode(strtr($parts[1], '-_', '+/'), true), true);
+        $payloadDecoded = base64_decode(strtr($parts[1], '-_', '+/'), true);
+        $this->assertNotFalse($payloadDecoded);
+        $payload = json_decode($payloadDecoded, true);
         $this->assertIsArray($payload);
         $this->assertEquals('10001', $payload['sub']);
         $this->assertEquals('test-client', $payload['aud']);

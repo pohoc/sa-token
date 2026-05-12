@@ -43,6 +43,9 @@ class SaApiKeyTest extends TestCase
         SaToken::reset();
     }
 
+    /**
+     * @param array<string, string> $headers
+     */
     protected function mockRequestWithHeaders(array $headers): ServerRequestInterface
     {
         $request = $this->createMock(ServerRequestInterface::class);
