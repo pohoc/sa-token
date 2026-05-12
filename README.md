@@ -1,7 +1,7 @@
 # Sa-Token PHP
 
 <p align="center">
-<img src="https://img.shields.io/badge/PHP-8.1%20~%208.4-777BB4?style=flat-square&logo=php&logoColor=white" alt="PHP Version">
+<img src="https://img.shields.io/badge/PHP-8.1%20~%208.5-777BB4?style=flat-square&logo=php&logoColor=white" alt="PHP Version">
 <img src="https://img.shields.io/github/license/pohoc/sa-token?style=flat-square&label=License" alt="License">
 </p>
 
