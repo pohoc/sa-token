@@ -41,9 +41,9 @@ class StpUtil
      *
      * @param  mixed                 $loginId   登录 ID
      * @param  SaLoginParameter|null $parameter 登录参数
-     * @return string                Token 值
+     * @return SaLoginResult         登录结果
      */
-    public static function login(mixed $loginId, ?SaLoginParameter $parameter = null): string
+    public static function login(mixed $loginId, ?SaLoginParameter $parameter = null): SaLoginResult
     {
         return self::getStpLogic()->login($loginId, $parameter);
     }
@@ -486,5 +486,35 @@ class StpUtil
     public static function createTempToken(mixed $loginId, int $timeout): string
     {
         return self::getStpLogic()->createTempToken($loginId, $timeout);
+    }
+
+    public static function createRefreshToken(string $accessToken, ?int $timeout = null): string
+    {
+        return self::getStpLogic()->createRefreshToken($accessToken, $timeout);
+    }
+
+    public static function refreshToken(string $refreshToken): SaLoginResult
+    {
+        return self::getStpLogic()->refreshToken($refreshToken);
+    }
+
+    public static function revokeRefreshToken(string $refreshToken): bool
+    {
+        return self::getStpLogic()->revokeRefreshToken($refreshToken);
+    }
+
+    public static function revokeRefreshTokenByAccessToken(string $accessToken): bool
+    {
+        return self::getStpLogic()->revokeRefreshTokenByAccessToken($accessToken);
+    }
+
+    public static function isRefreshTokenValid(string $refreshToken): bool
+    {
+        return self::getStpLogic()->isRefreshTokenValid($refreshToken);
+    }
+
+    public static function getRefreshTokenByAccessToken(string $accessToken): ?string
+    {
+        return self::getStpLogic()->getRefreshTokenByAccessToken($accessToken);
     }
 }

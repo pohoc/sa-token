@@ -154,6 +154,15 @@ class SaTokenConfig
     // 审计日志保留天数
     protected int $auditLogTtlDays = 30;
 
+    // 是否启用 Refresh Token 机制
+    protected bool $refreshToken = false;
+
+    // Refresh Token 有效期（秒），默认 30 天
+    protected int $refreshTokenTimeout = 2592000;
+
+    // Refresh Token 换取新 AccessToken 时是否同时刷新 RefreshToken
+    protected bool $refreshTokenRotation = true;
+
     /**
      * @var array<string, mixed>
      */
@@ -268,6 +277,9 @@ class SaTokenConfig
             'auditLog'                => $this->auditLog,
             'auditLogMaxEntries'      => $this->auditLogMaxEntries,
             'auditLogTtlDays'         => $this->auditLogTtlDays,
+            'refreshToken'            => $this->refreshToken,
+            'refreshTokenTimeout'     => $this->refreshTokenTimeout,
+            'refreshTokenRotation'    => $this->refreshTokenRotation,
             'sso'                    => $this->sso,
             'oauth2'                 => $this->oauth2,
             'apiKeyHeader'           => $this->apiKeyHeader,
@@ -875,6 +887,39 @@ class SaTokenConfig
     public function setAuditLogTtlDays(int $auditLogTtlDays): static
     {
         $this->auditLogTtlDays = $auditLogTtlDays;
+        return $this;
+    }
+
+    public function isRefreshToken(): bool
+    {
+        return $this->refreshToken;
+    }
+
+    public function setRefreshToken(bool $refreshToken): static
+    {
+        $this->refreshToken = $refreshToken;
+        return $this;
+    }
+
+    public function getRefreshTokenTimeout(): int
+    {
+        return $this->refreshTokenTimeout;
+    }
+
+    public function setRefreshTokenTimeout(int $refreshTokenTimeout): static
+    {
+        $this->refreshTokenTimeout = $refreshTokenTimeout;
+        return $this;
+    }
+
+    public function isRefreshTokenRotation(): bool
+    {
+        return $this->refreshTokenRotation;
+    }
+
+    public function setRefreshTokenRotation(bool $refreshTokenRotation): static
+    {
+        $this->refreshTokenRotation = $refreshTokenRotation;
         return $this;
     }
 }

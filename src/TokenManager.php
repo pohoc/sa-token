@@ -19,8 +19,12 @@ class TokenManager
     public const DISABLE_PREFIX = 'satoken:disable:';
     public const SAFE_PREFIX = 'satoken:safe:';
     public const SWITCH_PREFIX = 'satoken:switch:';
+    public const REFRESH_TOKEN_PREFIX = 'satoken:refresh:';
+    public const REFRESH_TOKEN_MAP_PREFIX = 'satoken:refreshMap:';
 
     protected ?SaTokenEncryptor $encryptor = null;
+
+    protected ?SaTokenJwt $jwtInstance = null;
 
     protected function getDao(): \SaToken\Dao\SaTokenDaoInterface
     {
@@ -43,6 +47,18 @@ class TokenManager
             $this->encryptor = new SaTokenEncryptor($config->isTokenEncrypt(), $key, $config->getCryptoType());
         }
         return $this->encryptor;
+    }
+
+    protected function getJwtInstance(): SaTokenJwt
+    {
+        if ($this->jwtInstance === null) {
+            $config = $this->getConfig();
+            $this->jwtInstance = new SaTokenJwt([
+                'jwtSecretKey' => $config->getJwtSecretKey(),
+                'cryptoType'   => $config->getCryptoType(),
+            ]);
+        }
+        return $this->jwtInstance;
     }
 
     protected function encryptValue(string $value): string
@@ -84,11 +100,7 @@ class TokenManager
         $effectiveTimeout = ($timeout === -1) ? null : $timeout;
 
         if ($config->getJwtMode() === 'mixed') {
-            $jwt = new SaTokenJwt([
-                'jwtSecretKey' => $config->getJwtSecretKey(),
-                'cryptoType'   => $config->getCryptoType(),
-            ]);
-            $tokenValue = $jwt->createMixedToken($loginId, $loginType, $effectiveTimeout);
+            $tokenValue = $this->getJwtInstance()->createMixedToken($loginId, $loginType, $effectiveTimeout);
         }
 
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
@@ -140,11 +152,7 @@ class TokenManager
 
         $config = $this->getConfig();
         if ($config->getJwtMode() === 'mixed') {
-            $jwt = new SaTokenJwt([
-                'jwtSecretKey' => $config->getJwtSecretKey(),
-                'cryptoType'   => $config->getCryptoType(),
-            ]);
-            $loginId = $jwt->getLoginId($tokenValue);
+            $loginId = $this->getJwtInstance()->getLoginId($tokenValue);
             if ($loginId !== null) {
                 $daoValue = $this->getDao()->get(self::TOKEN_PREFIX . $tokenValue);
                 if ($daoValue !== null) {
@@ -208,20 +216,27 @@ class TokenManager
         $tokens = $this->getTokenListByLoginId($loginId, $loginType);
         $deletedTokens = [];
 
+        $keysToDelete = [];
         foreach ($tokens as $item) {
             $tokenValue = is_string($item['tokenValue'] ?? null) ? $item['tokenValue'] : '';
             if ($tokenValue === '') {
                 continue;
             }
-            $this->getDao()->delete(self::TOKEN_PREFIX . $tokenValue);
-            $this->getDao()->delete(self::LAST_ACTIVE_PREFIX . $tokenValue);
-            $this->getDao()->delete(self::TOKEN_SESSION_PREFIX . $tokenValue);
+            $keysToDelete[] = self::TOKEN_PREFIX . $tokenValue;
+            $keysToDelete[] = self::LAST_ACTIVE_PREFIX . $tokenValue;
+            $keysToDelete[] = self::TOKEN_SESSION_PREFIX . $tokenValue;
             $deletedTokens[] = $tokenValue;
         }
 
+        if (!empty($keysToDelete)) {
+            $this->getDao()->deleteMultiple($keysToDelete);
+        }
+
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-        $this->getDao()->delete(self::LOGIN_ID_PREFIX . $loginType . ':' . $loginIdStr);
-        $this->getDao()->delete(self::SESSION_PREFIX . $loginType . ':' . $loginIdStr);
+        $this->getDao()->deleteMultiple([
+            self::LOGIN_ID_PREFIX . $loginType . ':' . $loginIdStr,
+            self::SESSION_PREFIX . $loginType . ':' . $loginIdStr,
+        ]);
 
         return $deletedTokens;
     }
@@ -397,5 +412,75 @@ class TokenManager
     public function resetEncryptor(): void
     {
         $this->encryptor = null;
+        $this->jwtInstance = null;
+    }
+
+    public function saveRefreshToken(string $refreshToken, string $accessToken, mixed $loginId, string $loginType, int $timeout): void
+    {
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $data = SaFoxUtil::toJson([
+            'loginId'      => $loginIdStr,
+            'loginType'    => $loginType,
+            'accessToken'  => $accessToken,
+            'createTime'   => SaFoxUtil::getTime(),
+        ]);
+        $effectiveTimeout = ($timeout === -1) ? null : $timeout;
+        $this->getDao()->set(self::REFRESH_TOKEN_PREFIX . $refreshToken, $this->encryptValue($data), $effectiveTimeout);
+
+        $mapKey = self::REFRESH_TOKEN_MAP_PREFIX . $loginType . ':' . $loginIdStr . ':' . $accessToken;
+        $this->getDao()->set($mapKey, $this->encryptValue($refreshToken), $effectiveTimeout);
+    }
+
+    public function getRefreshTokenData(string $refreshToken): ?array
+    {
+        $value = $this->getDao()->get(self::REFRESH_TOKEN_PREFIX . $refreshToken);
+        if ($value === null) {
+            return null;
+        }
+        $data = SaFoxUtil::fromJson($this->decryptValue($value));
+        if (!is_array($data)) {
+            return null;
+        }
+        return $data;
+    }
+
+    public function getRefreshTokenByAccessToken(mixed $loginId, string $loginType, string $accessToken): ?string
+    {
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $mapKey = self::REFRESH_TOKEN_MAP_PREFIX . $loginType . ':' . $loginIdStr . ':' . $accessToken;
+        $value = $this->getDao()->get($mapKey);
+        if ($value === null) {
+            return null;
+        }
+        return $this->decryptValue($value);
+    }
+
+    public function deleteRefreshToken(string $refreshToken): void
+    {
+        $data = $this->getRefreshTokenData($refreshToken);
+        $this->getDao()->delete(self::REFRESH_TOKEN_PREFIX . $refreshToken);
+
+        if ($data !== null) {
+            $loginId = is_string($data['loginId'] ?? null) ? $data['loginId'] : '';
+            $loginType = is_string($data['loginType'] ?? null) ? $data['loginType'] : '';
+            $accessToken = is_string($data['accessToken'] ?? null) ? $data['accessToken'] : '';
+            if ($loginId !== '' && $accessToken !== '') {
+                $mapKey = self::REFRESH_TOKEN_MAP_PREFIX . $loginType . ':' . $loginId . ':' . $accessToken;
+                $this->getDao()->delete($mapKey);
+            }
+        }
+    }
+
+    public function deleteRefreshTokenByAccessToken(mixed $loginId, string $loginType, string $accessToken): void
+    {
+        $refreshToken = $this->getRefreshTokenByAccessToken($loginId, $loginType, $accessToken);
+        if ($refreshToken !== null) {
+            $this->deleteRefreshToken($refreshToken);
+        }
+    }
+
+    public function isRefreshTokenValid(string $refreshToken): bool
+    {
+        return $this->getDao()->exists(self::REFRESH_TOKEN_PREFIX . $refreshToken);
     }
 }
