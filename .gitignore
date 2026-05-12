@@ -6,6 +6,7 @@
 *.swo
 *~
 .phpunit.result.cache
+.phpunit.cache/
 composer.phar
 composer.lock
 .phpcs-cache
