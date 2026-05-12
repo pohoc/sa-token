@@ -24,6 +24,11 @@ class SaTokenDaoMemory implements SaTokenDaoInterface
     protected array $dataMap = [];
 
     /**
+     * @var array<string, array<string, true>>
+     */
+    protected array $prefixIndex = [];
+
+    /**
      * @inheritdoc
      */
     public function get(string $key): ?string
@@ -47,6 +52,7 @@ class SaTokenDaoMemory implements SaTokenDaoInterface
             'value'     => $value,
             'expire_at' => $expireAt,
         ];
+        $this->addToPrefixIndex($key);
     }
 
     /**
@@ -65,6 +71,7 @@ class SaTokenDaoMemory implements SaTokenDaoInterface
      */
     public function delete(string $key): void
     {
+        $this->removeFromPrefixIndex($key);
         unset($this->dataMap[$key]);
     }
 
@@ -150,6 +157,7 @@ class SaTokenDaoMemory implements SaTokenDaoInterface
     public function deleteMultiple(array $keys): void
     {
         foreach ($keys as $key) {
+            $this->removeFromPrefixIndex($key);
             unset($this->dataMap[$key]);
         }
     }
@@ -158,10 +166,14 @@ class SaTokenDaoMemory implements SaTokenDaoInterface
     {
         $this->cleanExpired();
 
+        $candidates = $this->prefixIndex[$prefix] ?? [];
         $values = [];
-        foreach ($this->dataMap as $key => $item) {
-            if (str_starts_with($key, $prefix) && str_contains($key, $keyword)) {
-                $values[] = $item['value'];
+        foreach (array_keys($candidates) as $key) {
+            if (!isset($this->dataMap[$key])) {
+                continue;
+            }
+            if ($keyword === '' || str_contains($key, $keyword)) {
+                $values[] = $this->dataMap[$key]['value'];
             }
         }
 
@@ -176,6 +188,7 @@ class SaTokenDaoMemory implements SaTokenDaoInterface
     public function clear(): void
     {
         $this->dataMap = [];
+        $this->prefixIndex = [];
     }
 
     /**
@@ -192,6 +205,7 @@ class SaTokenDaoMemory implements SaTokenDaoInterface
 
         $expireAt = $this->dataMap[$key]['expire_at'];
         if ($expireAt !== null && $expireAt <= time()) {
+            $this->removeFromPrefixIndex($key);
             unset($this->dataMap[$key]);
         }
     }
@@ -206,8 +220,41 @@ class SaTokenDaoMemory implements SaTokenDaoInterface
         $now = time();
         foreach ($this->dataMap as $key => $item) {
             if ($item['expire_at'] !== null && $item['expire_at'] <= $now) {
+                $this->removeFromPrefixIndex($key);
                 unset($this->dataMap[$key]);
             }
         }
+    }
+
+    protected function addToPrefixIndex(string $key): void
+    {
+        $colonPos = strpos($key, ':');
+        if ($colonPos === false) {
+            return;
+        }
+        $prefix = substr($key, 0, $colonPos + 1);
+        $nextColon = strpos($key, ':', $colonPos + 1);
+        while ($nextColon !== false) {
+            $prefix = substr($key, 0, $nextColon + 1);
+            $this->prefixIndex[$prefix][$key] = true;
+            $nextColon = strpos($key, ':', $nextColon + 1);
+        }
+        $this->prefixIndex[$prefix][$key] = true;
+    }
+
+    protected function removeFromPrefixIndex(string $key): void
+    {
+        $colonPos = strpos($key, ':');
+        if ($colonPos === false) {
+            return;
+        }
+        $prefix = substr($key, 0, $colonPos + 1);
+        $nextColon = strpos($key, ':', $colonPos + 1);
+        while ($nextColon !== false) {
+            $prefix = substr($key, 0, $nextColon + 1);
+            unset($this->prefixIndex[$prefix][$key]);
+            $nextColon = strpos($key, ':', $nextColon + 1);
+        }
+        unset($this->prefixIndex[$prefix][$key]);
     }
 }

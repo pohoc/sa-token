@@ -40,7 +40,7 @@ class TokenManagerTest extends TestCase
     {
         $token = $this->manager->createTokenValue(10001, 'login');
         $this->assertNotEmpty($token);
-        $this->assertEquals(36, strlen($token)); // UUID v4 长度
+        $this->assertEquals(40, strlen($token)); // sat_ (4) + UUID v4 (36)
     }
 
     public function testCreateSimpleRandomToken(): void
@@ -48,7 +48,7 @@ class TokenManagerTest extends TestCase
         SaToken::getConfig()->setTokenStyle('simple-random');
         $token = $this->manager->createTokenValue(10001, 'login');
         $this->assertNotEmpty($token);
-        $this->assertEquals(32, strlen($token));
+        $this->assertEquals(36, strlen($token)); // sat_ (4) + 32 random
     }
 
     public function testSaveAndGetToken(): void
