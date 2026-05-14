@@ -40,19 +40,27 @@ class SsoModeSameDomain
      */
     public function doLogin(): mixed
     {
-        // 检查当前是否已登录
         if (StpUtil::isLogin()) {
             return StpUtil::getLoginId();
         }
 
-        // 检查共享 Cookie 中的 token
         $tokenValue = SaTokenContext::getCookie(SaToken::getConfig()->getTokenName());
         if ($tokenValue !== null) {
-            $loginId = SaToken::getStpLogic('login')->getTokenManager()
-                ->getLoginIdByToken($tokenValue);
-            if ($loginId !== null) {
-                return $loginId;
+            $csrfToken = SaTokenContext::getHeader('X-CSRF-Token') ?? SaTokenContext::getParam('_csrf');
+            if ($csrfToken !== null) {
+                $savedCsrf = SaTokenContext::getCookie('sso_csrf_token');
+                if ($savedCsrf !== null && hash_equals($savedCsrf, $csrfToken)) {
+                    $loginId = SaToken::getStpLogic('login')->getTokenManager()
+                        ->getLoginIdByToken($tokenValue);
+                    if ($loginId !== null) {
+                        return $loginId;
+                    }
+                }
             }
+
+            $newCsrf = bin2hex(random_bytes(16));
+            SaTokenContext::setCookie('sso_csrf_token', $newCsrf, 300);
+            throw new SaTokenException('同域 SSO 登录需要 CSRF 验证，请携带 X-CSRF-Token 请求头');
         }
 
         throw new SaTokenException('同域 SSO 登录失败：未检测到有效登录信息');

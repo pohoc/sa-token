@@ -61,6 +61,9 @@ class SaSsoHandle
             throw new SaTokenException('SSO 回调域名不在允许列表中');
         }
 
+        $state = bin2hex(random_bytes(16));
+        SaTokenContext::setCookie($this->config->getParamName() . '_state', $state, 300);
+
         $params = [];
         if ($backUrl !== '') {
             $params['redirect'] = $backUrl;
@@ -68,10 +71,9 @@ class SaSsoHandle
         if ($this->config->getClientId() !== '') {
             $params['client_id'] = $this->config->getClientId();
         }
+        $params['state'] = $state;
 
-        if (!empty($params)) {
-            $loginUrl .= (str_contains($loginUrl, '?') ? '&' : '?') . http_build_query($params);
-        }
+        $loginUrl .= (str_contains($loginUrl, '?') ? '&' : '?') . http_build_query($params);
 
         return $loginUrl;
     }
@@ -108,10 +110,18 @@ class SaSsoHandle
      * @return mixed            登录 ID
      * @throws SaTokenException
      */
-    public function doLoginCallback(string $ticket, ?string $redirect = null): mixed
+    public function doLoginCallback(string $ticket, ?string $redirect = null, ?string $state = null): mixed
     {
         if (SaFoxUtil::isEmpty($ticket)) {
             throw new SaTokenException('SSO ticket 不能为空');
+        }
+
+        if ($state !== null && $state !== '') {
+            $savedState = SaTokenContext::getCookie($this->config->getParamName() . '_state');
+            if ($savedState === null || !hash_equals($savedState, $state)) {
+                throw new SaTokenException('SSO state 参数校验失败，可能遭受 CSRF 攻击');
+            }
+            SaTokenContext::setCookie($this->config->getParamName() . '_state', '', -1);
         }
 
         if ($redirect !== null && $redirect !== '' && !$this->validateDomain($redirect)) {
@@ -220,6 +230,10 @@ class SaSsoHandle
     public function buildSloUrl(?string $redirect = null): string
     {
         $sloUrl = $this->config->getSloUrl();
+
+        if ($redirect !== null && $redirect !== '' && !$this->validateDomain($redirect)) {
+            throw new SaTokenException('SSO 注销回调域名不在允许列表中');
+        }
 
         $params = [];
         if ($this->config->getClientId() !== '') {

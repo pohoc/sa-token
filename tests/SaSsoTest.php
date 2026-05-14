@@ -147,8 +147,9 @@ class SaSsoTest extends TestCase
     public function testBuildSloUrlWithRedirect(): void
     {
         $config = new SaSsoConfig([
-            'sloUrl'   => 'https://auth.example.com/slo',
-            'clientId' => 'app-1',
+            'sloUrl'       => 'https://auth.example.com/slo',
+            'clientId'     => 'app-1',
+            'allowDomains' => ['app.example.com'],
         ]);
 
         $handle = new SaSsoHandle($config);
