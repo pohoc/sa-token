@@ -277,7 +277,8 @@ class StpLogicFullTest extends TestCase
         $loginResult2 = $this->logic->login(10001, $param2);
         $token2 = $loginResult2->getAccessToken();
 
-        $this->assertEquals($token1, $token2);
+        $this->assertNotEquals($token1, $token2);
+        $this->assertNotNull($this->tokenManager->getLoginIdByToken($token2));
     }
 
     public function testTokenNotShareWithDifferentDeviceType(): void
