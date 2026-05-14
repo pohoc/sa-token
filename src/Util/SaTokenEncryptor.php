@@ -137,10 +137,10 @@ class SaTokenEncryptor
     {
         if ($key === '') {
             $isTest = defined('PHPUNIT_COMPOSER_INSTALL') || getenv('PHPUNIT_TESTING') !== false;
-            if (!$isTest) {
-                trigger_error('Sa-Token: 正在使用默认加密密钥，请在生产环境中配置 aesKey 或 tokenEncryptKey', E_USER_WARNING);
+            if ($isTest) {
+                return hash_hkdf('sha256', 'sa-token-default-encrypt-key', 32, 'token-encrypt', '');
             }
-            return hash_hkdf('sha256', 'sa-token-default-encrypt-key', 32, 'token-encrypt', '');
+            throw new SaTokenException('Sa-Token: 未配置加密密钥，请在生产环境中配置 aesKey 或 tokenEncryptKey');
         }
         if (strlen($key) >= 32) {
             return substr($key, 0, 32);
@@ -152,10 +152,10 @@ class SaTokenEncryptor
     {
         if ($key === '') {
             $isTest = defined('PHPUNIT_COMPOSER_INSTALL') || getenv('PHPUNIT_TESTING') !== false;
-            if (!$isTest) {
-                trigger_error('Sa-Token: 正在使用默认 SM4 加密密钥，请在生产环境中配置 sm4Key 或 tokenEncryptKey', E_USER_WARNING);
+            if ($isTest) {
+                return substr(bin2hex(hash_hkdf('sha256', 'sa-token-default-sm4-key', 32, 'token-encrypt-sm4', '')), 0, 32);
             }
-            return substr(bin2hex(hash_hkdf('sha256', 'sa-token-default-sm4-key', 32, 'token-encrypt-sm4', '')), 0, 32);
+            throw new SaTokenException('Sa-Token: 未配置 SM4 加密密钥，请在生产环境中配置 sm4Key 或 tokenEncryptKey');
         }
         if (strlen($key) >= 32 && ctype_xdigit($key)) {
             return substr($key, 0, 32);

@@ -115,6 +115,14 @@ class SaTokenJwt
         }
 
         $alg = $header['alg'] ?? 'HS256';
+        if (!is_string($alg)) {
+            throw new SaTokenException('JWT Header alg 字段必须为字符串');
+        }
+        $allowedAlgs = ['HS256', 'SM3'];
+        if (!in_array($alg, $allowedAlgs, true)) {
+            throw new SaTokenException('JWT 不支持的算法：' . $alg . '，仅允许：' . implode(', ', $allowedAlgs));
+        }
+
         $signingInput = $headerB64 . '.' . $payloadB64;
         $signatureBin = $this->base64UrlDecode($signatureB64);
         $signature = bin2hex($signatureBin);

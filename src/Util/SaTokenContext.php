@@ -115,13 +115,46 @@ class SaTokenContext
         unset(self::$requestMap[$id], self::$responseMap[$id]);
     }
 
+    protected static array $trustedProxies = [];
+
+    public static function setTrustedProxies(array $proxies): void
+    {
+        self::$trustedProxies = $proxies;
+    }
+
+    public static function getTrustedProxies(): array
+    {
+        return self::$trustedProxies;
+    }
+
     public static function getClientIp(): ?string
     {
+        $remoteAddr = null;
+        $request = self::getRequest();
+        if ($request instanceof \Psr\Http\Message\ServerRequestInterface) {
+            $serverParams = $request->getServerParams();
+            $addr = $serverParams['REMOTE_ADDR'] ?? null;
+            $remoteAddr = is_string($addr) ? $addr : null;
+        }
+
+        if (empty(self::$trustedProxies)) {
+            return $remoteAddr;
+        }
+
+        if ($remoteAddr === null || !in_array($remoteAddr, self::$trustedProxies, true)) {
+            return $remoteAddr;
+        }
+
         $forwarded = self::getHeader('X-Forwarded-For');
         if ($forwarded !== null && $forwarded !== '') {
             $ips = array_map('trim', explode(',', $forwarded));
-            $first = $ips[0] ?? null;
-            return is_string($first) ? $first : null;
+            for ($i = count($ips) - 1; $i >= 0; $i--) {
+                $ip = $ips[$i];
+                if (!in_array($ip, self::$trustedProxies, true)) {
+                    return $ip;
+                }
+            }
+            return $ips[0] ?? $remoteAddr;
         }
 
         $realIp = self::getHeader('X-Real-IP');
@@ -129,14 +162,7 @@ class SaTokenContext
             return $realIp;
         }
 
-        $request = self::getRequest();
-        if ($request instanceof \Psr\Http\Message\ServerRequestInterface) {
-            $serverParams = $request->getServerParams();
-            $addr = $serverParams['REMOTE_ADDR'] ?? null;
-            return is_string($addr) ? $addr : null;
-        }
-
-        return null;
+        return $remoteAddr;
     }
 
     /**

@@ -64,13 +64,13 @@ class SaTokenConfig
     protected string $cookiePath = '/';
 
     // Cookie 是否仅 HTTPS 传输
-    protected bool $cookieSecure = false;
+    protected bool $cookieSecure = true;
 
     // Cookie 是否 HttpOnly
-    protected bool $cookieHttpOnly = false;
+    protected bool $cookieHttpOnly = true;
 
     // Cookie SameSite 策略（Strict / Lax / None）
-    protected string $cookieSameSite = 'Lax';
+    protected string $cookieSameSite = 'Strict';
 
     // 加密类型：intl / sm
     protected string $cryptoType = 'intl';
