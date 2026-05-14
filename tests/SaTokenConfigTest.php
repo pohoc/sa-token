@@ -85,6 +85,26 @@ class SaTokenConfigTest extends TestCase
         $this->assertEquals('Strict', $config->getCookieSameSite());
     }
 
+    public function testPublishedConfigKeepsSecureCookieDefaults(): void
+    {
+        $publishedConfig = require dirname(__DIR__) . '/config/sa_token.php';
+        if (!is_array($publishedConfig)) {
+            $this->fail('Published config must return an array.');
+        }
+        $configData = [];
+        foreach ($publishedConfig as $key => $value) {
+            if (!is_string($key)) {
+                $this->fail('Published config keys must be strings.');
+            }
+            $configData[$key] = $value;
+        }
+        $config = new SaTokenConfig($configData);
+
+        $this->assertTrue($config->isCookieSecure());
+        $this->assertTrue($config->isCookieHttpOnly());
+        $this->assertEquals('Strict', $config->getCookieSameSite());
+    }
+
     public function testSsoConfig(): void
     {
         $config = new SaTokenConfig([

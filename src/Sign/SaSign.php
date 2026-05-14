@@ -4,8 +4,12 @@ declare(strict_types=1);
 
 namespace SaToken\Sign;
 
+use SaToken\Exception\SaTokenException;
+
 class SaSign
 {
+    private const ALLOWED_ALGORITHMS = ['sha256', 'md5'];
+
     protected string $key = '';
 
     protected int $timestampGap = 600;
@@ -22,10 +26,13 @@ class SaSign
     {
         $key = $config['key'] ?? '';
         $this->key = is_string($key) ? $key : '';
+        if ($this->key === '') {
+            throw new SaTokenException('签名密钥未配置');
+        }
         $timestampGap = $config['timestampGap'] ?? 600;
         $this->timestampGap = is_int($timestampGap) ? $timestampGap : 600;
         $signAlg = $config['signAlg'] ?? 'sha256';
-        $this->signAlg = is_string($signAlg) ? $signAlg : 'sha256';
+        $this->setSignAlg(is_string($signAlg) ? $signAlg : 'sha256');
     }
 
     /**
@@ -79,6 +86,9 @@ class SaSign
 
     public function setSignAlg(string $alg): static
     {
+        if (!in_array($alg, self::ALLOWED_ALGORITHMS, true)) {
+            throw new SaTokenException('不支持的签名算法：' . $alg);
+        }
         $this->signAlg = $alg;
         return $this;
     }

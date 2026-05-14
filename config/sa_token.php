@@ -41,11 +41,11 @@ return [
     // Cookie 路径
     'cookiePath'            => '/',
     // Cookie 是否仅 HTTPS 传输
-    'cookieSecure'          => false,
+    'cookieSecure'          => true,
     // Cookie 是否 HttpOnly
-    'cookieHttpOnly'        => false,
+    'cookieHttpOnly'        => true,
     // Cookie SameSite 策略（Strict / Lax / None）
-    'cookieSameSite'        => 'Lax',
+    'cookieSameSite'        => 'Strict',
 
     // 加密类型：intl（国际算法 AES/RSA/HMAC-SHA256） / sm（国密算法 SM2/SM3/SM4）
     'cryptoType'            => 'intl',

@@ -42,7 +42,7 @@
 
 - PHP >= 8.1
 - ext-openssl
-- ext-redis
+- ext-redis（可选：使用 Redis 存储适配器时需要）
 
 ## 安装
 
@@ -1079,9 +1079,9 @@ try {
 | `isWriteHeader` | bool | `false` | 登录后写入响应头 |
 | `cookieDomain` | string | `''` | Cookie 作用域 |
 | `cookiePath` | string | `'/'` | Cookie 路径 |
-| `cookieSecure` | bool | `false` | Cookie 仅 HTTPS 传输 |
-| `cookieHttpOnly` | bool | `false` | Cookie HttpOnly |
-| `cookieSameSite` | string | `'Lax'` | Cookie SameSite：`Strict` / `Lax` / `None` |
+| `cookieSecure` | bool | `true` | Cookie 仅 HTTPS 传输 |
+| `cookieHttpOnly` | bool | `true` | Cookie HttpOnly |
+| `cookieSameSite` | string | `'Strict'` | Cookie SameSite：`Strict` / `Lax` / `None` |
 | `tokenFingerprint` | bool | `false` | 是否启用 Token 指纹绑定（IP + User-Agent） |
 
 ### 加密配置
@@ -1247,7 +1247,7 @@ src/
 | 依赖 | 用途 |
 |------|------|
 | `ext-openssl` | AES/RSA/HMAC 等加密算法 |
-| `ext-redis` | Redis 分布式会话存储 |
+| `ext-redis` | 可选，Redis 分布式会话存储 |
 | `firebase/php-jwt` | JWT Token 模式 |
 | `pohoc/crypto-sm` | 国密 SM2/SM3/SM4 算法 |
 | `psr/http-message` | PSR-7 HTTP 消息接口 |

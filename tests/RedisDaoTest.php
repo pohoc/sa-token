@@ -16,6 +16,10 @@ class RedisDaoTest extends TestCase
 
     protected function setUp(): void
     {
+        if (!class_exists(\Redis::class)) {
+            $this->markTestSkipped('Redis extension is not installed.');
+        }
+
         // 创建 Redis Mock 对象
         $this->mockRedis = $this->createMock(\Redis::class);
         // 注入 Mock 到 SaTokenDaoRedis（需要通过构造函数或者反射注入）

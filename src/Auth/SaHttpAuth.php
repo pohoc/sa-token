@@ -144,7 +144,7 @@ class SaHttpAuth
 
     public function generateNonce(): string
     {
-        return md5(uniqid((string) mt_rand(), true) . ':' . time());
+        return bin2hex(random_bytes(16));
     }
 
     /**

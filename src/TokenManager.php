@@ -29,6 +29,11 @@ class TokenManager
 
     protected ?SaTokenJwt $jwtInstance = null;
 
+    /**
+     * @var array<string, string>
+     */
+    protected array $lockValues = [];
+
     protected function getDao(): \SaToken\Dao\SaTokenDaoInterface
     {
         return SaToken::getDao();
@@ -550,7 +555,11 @@ class TokenManager
         if ($dao instanceof \SaToken\Dao\SaTokenDaoRedis) {
             $client = $dao->getClient();
             $result = $client->set($lockKey, $lockValue, ['NX', 'EX' => $ttl]);
-            return $result === true || (is_object($result) && method_exists($result, 'getPayload'));
+            $acquired = $result === true || (is_object($result) && method_exists($result, 'getPayload'));
+            if ($acquired) {
+                $this->lockValues[$lockKey] = $lockValue;
+            }
+            return $acquired;
         }
 
         $existing = $dao->get($lockKey);
@@ -558,11 +567,31 @@ class TokenManager
             return false;
         }
         $dao->set($lockKey, $lockValue, $ttl);
+        $this->lockValues[$lockKey] = $lockValue;
         return true;
     }
 
     public function releaseLock(string $key): void
     {
-        $this->getDao()->delete(self::LOCK_PREFIX . $key);
+        $lockKey = self::LOCK_PREFIX . $key;
+        $lockValue = $this->lockValues[$lockKey] ?? null;
+        if ($lockValue === null) {
+            return;
+        }
+
+        $dao = $this->getDao();
+        if ($dao instanceof \SaToken\Dao\SaTokenDaoRedis) {
+            $script = <<<'LUA'
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+end
+return 0
+LUA;
+            $dao->getClient()->eval($script, [$lockKey, $lockValue], 1);
+        } elseif ($dao->get($lockKey) === $lockValue) {
+            $dao->delete($lockKey);
+        }
+
+        unset($this->lockValues[$lockKey]);
     }
 }

@@ -241,4 +241,29 @@ class TokenManagerTest extends TestCase
         $result = $encryptor->decrypt($tampered);
         $this->assertEquals($tampered, $result);
     }
+
+    public function testReleaseLockDeletesOnlyOwnedLock(): void
+    {
+        $key = 'login:test-user';
+        $lockKey = TokenManager::LOCK_PREFIX . $key;
+
+        $this->assertTrue($this->manager->acquireLock($key, 5));
+        $this->assertNotNull($this->dao->get($lockKey));
+
+        $this->dao->set($lockKey, 'other-owner', 5);
+        $this->manager->releaseLock($key);
+
+        $this->assertEquals('other-owner', $this->dao->get($lockKey));
+    }
+
+    public function testReleaseLockDeletesOwnedLock(): void
+    {
+        $key = 'login:test-user';
+        $lockKey = TokenManager::LOCK_PREFIX . $key;
+
+        $this->assertTrue($this->manager->acquireLock($key, 5));
+        $this->manager->releaseLock($key);
+
+        $this->assertNull($this->dao->get($lockKey));
+    }
 }

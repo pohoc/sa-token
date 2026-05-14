@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SaToken\Tests;
 
 use PHPUnit\Framework\TestCase;
+use SaToken\Exception\SaTokenException;
 use SaToken\Sign\SaSign;
 
 class SaSignTest extends TestCase
@@ -86,6 +87,22 @@ class SaSignTest extends TestCase
         $params = $this->sign->signParams(['foo' => 'bar']);
 
         $this->assertTrue($this->sign->verifySign($params));
+    }
+
+    public function testEmptySignKeyRejected(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('签名密钥未配置');
+
+        new SaSign(['key' => '']);
+    }
+
+    public function testUnsupportedAlgorithmRejected(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('不支持的签名算法');
+
+        $this->sign->setSignAlg('sha512');
     }
 
     public function testEmptyValuesSkipped(): void
