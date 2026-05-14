@@ -74,7 +74,7 @@ class TokenManager
         return $this->getEncryptor()->decrypt($value);
     }
 
-    public function createTokenValue(mixed $loginId, string $loginType, string $prefix = 'sat_'): string
+    public function createTokenValue(mixed $loginId, string $loginType, string $prefix = ''): string
     {
         $action = SaToken::getAction();
         if ($action !== null) {
@@ -84,6 +84,8 @@ class TokenManager
             }
         }
 
+        $effectivePrefix = $prefix !== '' ? $prefix : '';
+
         $style = $this->getConfig()->getTokenStyle();
         $raw = match ($style) {
             'uuid'          => SaFoxUtil::uuid(),
@@ -91,10 +93,10 @@ class TokenManager
             'random-64'     => SaFoxUtil::randomString(64),
             'random-128'    => SaFoxUtil::randomString(128),
             'random-256'    => SaFoxUtil::randomString(256),
-            'tiket'         => SaFoxUtil::randomNumber(20),
+            'ticket'        => SaFoxUtil::randomString(24),
             default         => SaFoxUtil::uuid(),
         };
-        return $prefix . $raw;
+        return $effectivePrefix . $raw;
     }
 
     public function saveToken(string $tokenValue, mixed $loginId, string $loginType, string $deviceType = '', ?int $timeout = null): void
@@ -535,5 +537,32 @@ class TokenManager
     public function removeFromBlacklist(string $tokenValue): void
     {
         $this->getDao()->delete(self::BLACKLIST_PREFIX . $tokenValue);
+    }
+
+    public const LOCK_PREFIX = 'satoken:lock:';
+
+    public function acquireLock(string $key, int $ttl = 5): bool
+    {
+        $dao = $this->getDao();
+        $lockKey = self::LOCK_PREFIX . $key;
+        $lockValue = bin2hex(random_bytes(8));
+
+        if ($dao instanceof \SaToken\Dao\SaTokenDaoRedis) {
+            $client = $dao->getClient();
+            $result = $client->set($lockKey, $lockValue, ['NX', 'EX' => $ttl]);
+            return $result === true || (is_object($result) && method_exists($result, 'getPayload'));
+        }
+
+        $existing = $dao->get($lockKey);
+        if ($existing !== null) {
+            return false;
+        }
+        $dao->set($lockKey, $lockValue, $ttl);
+        return true;
+    }
+
+    public function releaseLock(string $key): void
+    {
+        $this->getDao()->delete(self::LOCK_PREFIX . $key);
     }
 }

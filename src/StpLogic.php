@@ -96,28 +96,37 @@ class StpLogic
         $isShare = $parameter->getIsShare() ?? $config->isShare();
         $maxLoginCount = $parameter->getMaxLoginCount() ?? $config->getMaxLoginCount();
 
-        $tokenValue = $this->resolveTokenValue($loginId, $deviceType, $isShare, $config);
+        $lockKey = 'satoken:lock:login:' . $this->loginType . ':' . (is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : ''));
+        $lockAcquired = $this->tokenManager->acquireLock($lockKey, 5);
 
-        $this->controlMaxLoginCount($loginId, $deviceType, $maxLoginCount, $tokenValue);
+        try {
+            $tokenValue = $this->resolveTokenValue($loginId, $deviceType, $isShare, $config);
 
-        $this->tokenManager->saveToken($tokenValue, $loginId, $this->loginType, $deviceType, $timeout);
+            $this->controlMaxLoginCount($loginId, $deviceType, $maxLoginCount, $tokenValue);
 
-        if ($config->isTokenFingerprint()) {
-            $fingerprint = $this->tokenManager->computeFingerprint();
-            $this->tokenManager->saveFingerprint($tokenValue, $fingerprint, $timeout);
+            $this->tokenManager->saveToken($tokenValue, $loginId, $this->loginType, $deviceType, $timeout);
+
+            if ($config->isTokenFingerprint()) {
+                $fingerprint = $this->tokenManager->computeFingerprint();
+                $this->tokenManager->saveFingerprint($tokenValue, $fingerprint, $timeout);
+            }
+
+            $this->writeTokenToResponse($tokenValue, $parameter);
+
+            $this->getEvent()->onLogin($this->loginType, $loginId, $tokenValue, $parameter);
+
+            $this->clearAntiBruteFailures($loginId);
+
+            if ($config->isDeviceManagement()) {
+                $this->registerLoginDevice($loginId, $deviceType, $parameter, $tokenValue);
+            }
+
+            $result = $this->buildLoginResult($tokenValue, $timeout, $loginId, $config);
+        } finally {
+            if ($lockAcquired) {
+                $this->tokenManager->releaseLock($lockKey);
+            }
         }
-
-        $this->writeTokenToResponse($tokenValue, $parameter);
-
-        $this->getEvent()->onLogin($this->loginType, $loginId, $tokenValue, $parameter);
-
-        $this->clearAntiBruteFailures($loginId);
-
-        if ($config->isDeviceManagement()) {
-            $this->registerLoginDevice($loginId, $deviceType, $parameter, $tokenValue);
-        }
-
-        $result = $this->buildLoginResult($tokenValue, $timeout, $loginId, $config);
 
         return $result;
     }
@@ -126,16 +135,17 @@ class StpLogic
     {
         $tokenValue = null;
         if ($isShare && $config->isConcurrent()) {
-            $tokenValue = $this->getTokenValueByDeviceType($loginId, $deviceType);
+            $existingToken = $this->getTokenValueByDeviceType($loginId, $deviceType);
+            if ($existingToken !== null) {
+                $this->tokenManager->deleteToken($existingToken, $loginId, $this->loginType);
+            }
         }
 
         if (!$config->isConcurrent() && $isShare) {
             $this->logoutAllExceptCurrent($loginId, $deviceType);
         }
 
-        if ($tokenValue === null) {
-            $tokenValue = $this->tokenManager->createTokenValue($loginId, $this->loginType);
-        }
+        $tokenValue = $this->tokenManager->createTokenValue($loginId, $this->loginType);
 
         return $tokenValue;
     }
@@ -413,6 +423,11 @@ class StpLogic
         if ($config->isReadBody()) {
             $tokenValue = SaTokenContext::getParam($tokenName);
             if ($tokenValue !== null && SaFoxUtil::isNotEmpty($tokenValue)) {
+                $contentType = SaTokenContext::getHeader('Content-Type');
+                if ($contentType !== null
+                    && !str_contains($contentType, 'application/json')) {
+                    trigger_error('Sa-Token: 从 URL 参数读取 Token 存在安全风险，建议使用 Header 或 Cookie 传递', E_USER_NOTICE);
+                }
                 return $this->formatTokenValue($tokenValue);
             }
         }
