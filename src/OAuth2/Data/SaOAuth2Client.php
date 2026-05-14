@@ -116,4 +116,19 @@ class SaOAuth2Client
         $this->scopes = $scopes;
         return $this;
     }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function toArray(): array
+    {
+        return [
+            'clientId' => $this->clientId,
+            'clientSecret' => $this->clientSecret,
+            'clientName' => $this->clientName,
+            'redirectUris' => $this->redirectUris,
+            'grantTypes' => $this->grantTypes,
+            'scopes' => $this->scopes,
+        ];
+    }
 }

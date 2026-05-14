@@ -13,6 +13,7 @@ use SaToken\OAuth2\Data\SaOAuth2IdToken;
 use SaToken\OAuth2\Data\SaOAuth2RefreshToken;
 use SaToken\SaToken;
 use SaToken\Util\SaFoxUtil;
+use SaToken\Util\SaTokenEncryptor;
 
 /**
  * OAuth2 请求处理器
@@ -23,8 +24,9 @@ class SaOAuth2Handle
 {
     protected SaOAuth2Config $config;
 
+    protected const CLIENT_PREFIX = 'oauth2:client:';
+
     /**
-     * 客户端注册表
      * @var array<string, SaOAuth2Client>
      */
     protected array $clientRegistry = [];
@@ -43,17 +45,33 @@ class SaOAuth2Handle
     public function registerClient(SaOAuth2Client $client): void
     {
         $this->clientRegistry[$client->getClientId()] = $client;
+        $this->getDao()->set(
+            self::CLIENT_PREFIX . $client->getClientId(),
+            $this->encryptValue(SaFoxUtil::toJson($client->toArray())),
+            null
+        );
     }
 
-    /**
-     * 获取客户端信息
-     *
-     * @param  string              $clientId 客户端 ID
-     * @return SaOAuth2Client|null
-     */
     public function getClient(string $clientId): ?SaOAuth2Client
     {
-        return $this->clientRegistry[$clientId] ?? null;
+        if (isset($this->clientRegistry[$clientId])) {
+            return $this->clientRegistry[$clientId];
+        }
+
+        $json = $this->getDao()->get(self::CLIENT_PREFIX . $clientId);
+        if ($json === null) {
+            return null;
+        }
+
+        $data = SaFoxUtil::fromJson($this->decryptValue($json));
+        if (!is_array($data)) {
+            return null;
+        }
+        /** @var array<string, mixed> $data */
+
+        $client = new SaOAuth2Client($data);
+        $this->clientRegistry[$clientId] = $client;
+        return $client;
     }
 
     /**
@@ -83,7 +101,7 @@ class SaOAuth2Handle
         // 保存授权码到存储层
         $this->getDao()->set(
             $this->buildCodeKey($code->getCode()),
-            SaFoxUtil::toJson($code->toArray() + ['used' => false]),
+            $this->encryptValue(SaFoxUtil::toJson($code->toArray() + ['used' => false])),
             $this->config->getCodeTimeout()
         );
 
@@ -230,7 +248,7 @@ class SaOAuth2Handle
             return null;
         }
 
-        $data = SaFoxUtil::fromJson($json);
+        $data = SaFoxUtil::fromJson($this->decryptValue($json));
         if (!is_array($data)) {
             return null;
         }
@@ -299,7 +317,7 @@ class SaOAuth2Handle
         // 保存到存储层
         $this->getDao()->set(
             $this->buildAccessTokenKey($tokenStr),
-            SaFoxUtil::toJson($accessToken->toArray()),
+            $this->encryptValue(SaFoxUtil::toJson($accessToken->toArray())),
             $expiresIn
         );
 
@@ -336,7 +354,7 @@ class SaOAuth2Handle
 
         $this->getDao()->set(
             $this->buildRefreshTokenKey($rtStr),
-            SaFoxUtil::toJson($refreshToken->toArray()),
+            $this->encryptValue(SaFoxUtil::toJson($refreshToken->toArray())),
             $expiresIn
         );
 
@@ -353,7 +371,7 @@ class SaOAuth2Handle
             return null;
         }
 
-        $data = SaFoxUtil::fromJson($json);
+        $data = SaFoxUtil::fromJson($this->decryptValue($json));
         if (!is_array($data)) {
             return null;
         }
@@ -369,7 +387,7 @@ class SaOAuth2Handle
             return null;
         }
 
-        $data = SaFoxUtil::fromJson($json);
+        $data = SaFoxUtil::fromJson($this->decryptValue($json));
         if (!is_array($data)) {
             return null;
         }
@@ -388,7 +406,7 @@ class SaOAuth2Handle
             return null;
         }
 
-        $data = SaFoxUtil::fromJson($json);
+        $data = SaFoxUtil::fromJson($this->decryptValue($json));
         if (!is_array($data)) {
             return null;
         }
@@ -430,6 +448,22 @@ class SaOAuth2Handle
         if ($client === null) {
             return;
         }
+
+        if ($redirectUri === '') {
+            return;
+        }
+
+        $parsed = parse_url($redirectUri);
+        if ($parsed === false || !isset($parsed['scheme']) || !isset($parsed['host'])) {
+            throw new SaTokenException('回调地址必须是绝对 URL');
+        }
+        if (($parsed['scheme'] ?? '') !== 'https') {
+            $isLocalhost = ($parsed['host'] ?? '') === 'localhost' || ($parsed['host'] ?? '') === '127.0.0.1';
+            if (!$isLocalhost) {
+                throw new SaTokenException('回调地址必须使用 HTTPS 协议');
+            }
+        }
+
         $uris = $client->getRedirectUris();
         if (!empty($uris) && !in_array($redirectUri, $uris, true)) {
             throw new SaTokenException('未注册的回调地址');
@@ -556,6 +590,31 @@ class SaOAuth2Handle
     /**
      * 获取存储层
      */
+    protected ?SaTokenEncryptor $encryptor = null;
+
+    protected function getEncryptor(): SaTokenEncryptor
+    {
+        if ($this->encryptor === null) {
+            $config = SaToken::getConfig();
+            $key = $config->getTokenEncryptKey() ?: $config->getAesKey();
+            if ($config->getCryptoType() === 'sm') {
+                $key = $config->getTokenEncryptKey() ?: $config->getSm4Key();
+            }
+            $this->encryptor = new SaTokenEncryptor($config->isTokenEncrypt(), $key, $config->getCryptoType());
+        }
+        return $this->encryptor;
+    }
+
+    protected function encryptValue(string $value): string
+    {
+        return $this->getEncryptor()->encrypt($value);
+    }
+
+    protected function decryptValue(string $value): string
+    {
+        return $this->getEncryptor()->decrypt($value);
+    }
+
     protected function getDao(): SaTokenDaoInterface
     {
         return SaToken::getDao();
