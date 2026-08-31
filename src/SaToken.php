@@ -101,7 +101,57 @@ class SaToken
         \SaToken\Security\SaAuditLog::setTtlDays($config->getAuditLogTtlDays());
 
         self::$stpLogicMap = [];
+
+        // storage 配置自动装配存储层：仅在未显式 setDao 时生效，
+        // 保证代码内 setDao(new RedisDao(...)) 的优先级高于配置文件
+        if (self::$dao === null) {
+            self::$dao = self::buildDaoFromStorageConfig($config);
+        }
+
+        // 配置热更新时必须同步废弃已固化的单例：
+        // getSign()/getApiKey() 等在首次调用时把当时的密钥/头名固定进实例，
+        // 不清理的话轮换 signKey 后旧密钥仍然有效（泄露的密钥无法通过 init 轮换）
+        self::$sign = null;
+        self::$apiKey = null;
+        self::$globalFilter = null;
+        self::$httpAuth = null;
+
         self::$initialized = true;
+    }
+
+    /**
+     * 根据 storage 配置构造存储层（memory / file / redis）
+     *
+     * @param  SaTokenConfig       $config
+     * @return SaTokenDaoInterface
+     */
+    protected static function buildDaoFromStorageConfig(SaTokenConfig $config): SaTokenDaoInterface
+    {
+        $storage = $config->getStorage();
+        $type = $storage['type'] ?? 'memory';
+        $type = is_string($type) ? strtolower($type) : 'memory';
+
+        switch ($type) {
+            case 'file':
+                /** @var array<string, mixed> $fileConfig */
+                $fileConfig = array_diff_key($storage, ['type' => true]);
+                return new \SaToken\Dao\SaTokenDaoFile($fileConfig);
+
+            case 'redis':
+                if (!class_exists(\Redis::class)) {
+                    throw new \SaToken\Exception\SaTokenException('storage.type=redis 需要 ext-redis 扩展');
+                }
+                /** @var array<string, mixed> $redisConfig */
+                $redisConfig = array_diff_key($storage, ['type' => true]);
+                return new \SaToken\Dao\SaTokenDaoRedis($redisConfig);
+
+            case 'memory':
+            default:
+                if ($type !== 'memory') {
+                    trigger_error("Sa-Token: 未知的 storage.type '{$type}'，已回退为 memory 存储", E_USER_WARNING);
+                }
+                return new SaTokenDaoMemory();
+        }
     }
 
     /**
@@ -123,10 +173,12 @@ class SaToken
         foreach ($paths as $path) {
             if (file_exists($path)) {
                 $config = require $path;
-                if (is_array($config)) {
-                    /** @var array<string, mixed> $config */
-                    return new SaTokenConfig($config);
+                if (!is_array($config)) {
+                    trigger_error("Sa-Token: 配置文件 {$path} 返回值不是数组，已忽略该文件并使用默认配置", E_USER_WARNING);
+                    continue;
                 }
+                /** @var array<string, mixed> $config */
+                return new SaTokenConfig($config);
             }
         }
 
@@ -298,6 +350,11 @@ class SaToken
      */
     public static function getStpLogic(string $type = 'login'): StpLogic
     {
+        // loginType 会成为注册表键与存储键的一部分：RPC 透传通道中该值
+        // 来自请求头（攻击者可控），不加约束会让长驻进程的注册表无界增长
+        if (!preg_match('/^[A-Za-z0-9_-]{1,32}$/', $type)) {
+            throw new \SaToken\Exception\SaTokenException('非法的 loginType（仅允许字母/数字/下划线/中划线，最长 32 字符）');
+        }
         if (!isset(self::$stpLogicMap[$type])) {
             self::$stpLogicMap[$type] = new StpLogic($type);
         }
@@ -343,6 +400,10 @@ class SaToken
         self::$sign = null;
         self::$initialized = false;
         \SaToken\Security\SaAuditLog::reset();
+        \SaToken\Security\SaSensitiveVerify::reset();
+        \SaToken\Security\SaAntiBruteUtil::reset();
+        \SaToken\Security\SaLoginDeviceManager::reset();
+        \SaToken\Util\SaMetrics::reset();
     }
 
     public static function clearContext(): void

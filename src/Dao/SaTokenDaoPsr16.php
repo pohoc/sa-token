@@ -141,4 +141,38 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface
     {
         return [];
     }
+
+    public function searchKeys(string $prefix, string $keyword, int $start, int $size): array
+    {
+        return [];
+    }
+
+    /**
+     * PSR-16 无原生的 SET-NX 语义，这里为尽力而为实现：
+     * 在不支持原子 setIfNotExists 的缓存后端上存在极小的竞态窗口，
+     * 需要强一致分布式锁的场景建议使用 Redis 存储。
+     */
+    public function setIfNotExists(string $key, string $value, ?int $timeout = null): bool
+    {
+        if ($this->exists($key)) {
+            return false;
+        }
+        $this->set($key, $value, $timeout);
+        return true;
+    }
+
+    public function increment(string $key, int $amount = 1, ?int $timeout = null): int
+    {
+        $current = $this->get($key);
+        $newValue = ($current === null ? 0 : (int) $current) + $amount;
+        if ($newValue < 0) {
+            $newValue = 0;
+        }
+        if ($current === null) {
+            $this->set($key, (string) $newValue, $timeout);
+        } else {
+            $this->update($key, (string) $newValue);
+        }
+        return $newValue;
+    }
 }

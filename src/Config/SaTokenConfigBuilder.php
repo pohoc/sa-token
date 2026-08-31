@@ -18,6 +18,9 @@ namespace SaToken\Config;
  */
 class SaTokenConfigBuilder
 {
+    /**
+     * @var array<string, mixed>
+     */
     protected array $config = [];
 
     public static function create(): self

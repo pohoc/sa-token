@@ -181,7 +181,8 @@ LUA;
     public function search(string $prefix, string $keyword, int $start, int $size): array
     {
         $client = $this->saRedis ?? $this->client;
-        $pattern = $prefix . '*' . $keyword . '*';
+        $escapedKeyword = str_replace(['\\', '*', '?', '[', ']'], ['\\\\', '\\*', '\\?', '\\[', '\\]'], $keyword);
+        $pattern = $prefix . '*' . $escapedKeyword . '*';
         $keys = [];
         $iterator = null;
         $maxIterations = 100;
@@ -221,6 +222,28 @@ LUA;
         return array_slice($values, $start, $size);
     }
 
+    public function searchKeys(string $prefix, string $keyword, int $start, int $size): array
+    {
+        $client = $this->saRedis ?? $this->client;
+        $escapedKeyword = str_replace(['\\', '*', '?', '[', ']'], ['\\\\', '\\*', '\\?', '\\[', '\\]'], $keyword);
+        $pattern = $prefix . '*' . $escapedKeyword . '*';
+        $keys = [];
+        $iterator = null;
+        $maxIterations = 100;
+        $iterations = 0;
+
+        while (($scanResult = $client->scan($iterator, $pattern, 100)) !== false) {
+            $keys = array_merge($keys, $scanResult);
+            $iterations++;
+            if ($iterations >= $maxIterations || $iterator === 0) {
+                break;
+            }
+        }
+
+        $keys = array_values(array_unique($keys));
+        return array_slice($keys, $start, $size);
+    }
+
     public function deleteMultiple(array $keys): void
     {
         if (empty($keys)) {
@@ -228,6 +251,37 @@ LUA;
         }
         $client = $this->saRedis ?? $this->client;
         $client->del($keys);
+    }
+
+    public function setIfNotExists(string $key, string $value, ?int $timeout = null): bool
+    {
+        $client = $this->saRedis ?? $this->client;
+        $options = ['NX'];
+        if ($timeout !== null && $timeout > 0) {
+            $options['EX'] = $timeout;
+        }
+        $result = $client->set($key, $value, $options);
+        return $result === true || $result === 'OK';
+    }
+
+    public function increment(string $key, int $amount = 1, ?int $timeout = null): int
+    {
+        $client = $this->saRedis ?? $this->client;
+        if ($timeout !== null && $timeout > 0) {
+            // 仅在 key 首次创建时设置 TTL，保证"计数 + 过期"原子生效
+            $script = <<<'LUA'
+local value = redis.call('INCRBY', KEYS[1], ARGV[1])
+if redis.call('TTL', KEYS[1]) == -1 then
+    redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
+end
+return value
+LUA;
+            $result = $client->eval($script, [$key, (string) $amount, (string) $timeout], 1);
+            return is_int($result) ? $result : 0;
+        }
+
+        $result = $client->incrBy($key, $amount);
+        return is_int($result) ? $result : 0;
     }
 
     public function getClient(): \Redis

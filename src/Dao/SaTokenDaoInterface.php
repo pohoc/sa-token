@@ -114,4 +114,35 @@ interface SaTokenDaoInterface
      * @return void
      */
     public function deleteMultiple(array $keys): void;
+
+    /**
+     * 搜索匹配指定前缀和关键字的键，返回键名列表（区别于 search 返回值列表）
+     *
+     * @param  string        $prefix  键前缀
+     * @param  string        $keyword 搜索关键字
+     * @param  int           $start   起始偏移量
+     * @param  int           $size    返回数量上限
+     * @return array<string> 匹配的键名列表
+     */
+    public function searchKeys(string $prefix, string $keyword, int $start, int $size): array;
+
+    /**
+     * 仅当 key 不存在时设置值（原子操作，用于分布式锁等场景）
+     *
+     * @param  string   $key     存储键
+     * @param  string   $value   存储值
+     * @param  int|null $timeout 过期时间（秒），null 表示永不过期
+     * @return bool     key 原本不存在且设置成功时返回 true，否则返回 false
+     */
+    public function setIfNotExists(string $key, string $value, ?int $timeout = null): bool;
+
+    /**
+     * 原子递增计数器（用于防暴力破解等并发安全计数场景）
+     *
+     * @param  string   $key     存储键
+     * @param  int      $amount  递增量（可为负）
+     * @param  int|null $timeout 过期时间（秒），仅在计数器首次创建时生效，null 表示永不过期
+     * @return int      递增后的计数值
+     */
+    public function increment(string $key, int $amount = 1, ?int $timeout = null): int;
 }

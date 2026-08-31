@@ -128,9 +128,42 @@ class SaTokenDaoMemory implements SaTokenDaoInterface
             return null;
         }
 
+        $this->removeFromPrefixIndex($key);
         $value = $this->dataMap[$key]['value'];
         unset($this->dataMap[$key]);
         return $value;
+    }
+
+    /**
+     * @inheritdoc
+     */
+    public function setIfNotExists(string $key, string $value, ?int $timeout = null): bool
+    {
+        $this->checkExpired($key);
+
+        if (isset($this->dataMap[$key])) {
+            return false;
+        }
+        $this->set($key, $value, $timeout);
+        return true;
+    }
+
+    /**
+     * @inheritdoc
+     */
+    public function increment(string $key, int $amount = 1, ?int $timeout = null): int
+    {
+        $current = $this->get($key);
+        $newValue = ($current === null ? 0 : (int) $current) + $amount;
+        if ($newValue < 0) {
+            $newValue = 0;
+        }
+        if ($current === null) {
+            $this->set($key, (string) $newValue, $timeout);
+        } else {
+            $this->update($key, (string) $newValue);
+        }
+        return $newValue;
     }
 
     /**
@@ -178,6 +211,24 @@ class SaTokenDaoMemory implements SaTokenDaoInterface
         }
 
         return array_slice($values, $start, $size);
+    }
+
+    public function searchKeys(string $prefix, string $keyword, int $start, int $size): array
+    {
+        $this->cleanExpired();
+
+        $candidates = $this->prefixIndex[$prefix] ?? [];
+        $keys = [];
+        foreach (array_keys($candidates) as $key) {
+            if (!isset($this->dataMap[$key])) {
+                continue;
+            }
+            if ($keyword === '' || str_contains($key, $keyword)) {
+                $keys[] = $key;
+            }
+        }
+
+        return array_slice($keys, $start, $size);
     }
 
     /**

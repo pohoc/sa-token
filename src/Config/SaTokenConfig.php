@@ -196,6 +196,24 @@ class SaTokenConfig
         'issuer'               => '',
     ];
 
+    /**
+     * 存储层配置（SaToken::init 时自动装配，无需再手动 setDao）。
+     *
+     * type=memory（默认，单进程）：
+     *   ['type' => 'memory']
+     * type=file（单机文件存储，flock 保证单机多进程原子性，不支持 NFS）：
+     *   ['type' => 'file', 'path' => 'runtime/sa-token', 'scanLimit' => 10000]
+     * type=redis（分布式部署）：
+     *   ['type' => 'redis', 'host' => '127.0.0.1', 'port' => 6379,
+     *    'password' => '', 'database' => 0, 'timeout' => 0]
+     * type=psr16 无法用纯配置表达，请使用 SaToken::setDao(new SaTokenDaoPsr16($cache))
+     *
+     * @var array<string, mixed>
+     */
+    protected array $storage = [
+        'type' => 'memory',
+    ];
+
     // API Key 请求头名称
     protected string $apiKeyHeader = 'api-key';
 
@@ -264,6 +282,7 @@ class SaTokenConfig
             'sm4Key'                 => $this->sm4Key,
             'jwtSecretKey'           => $this->jwtSecretKey,
             'jwtStateless'           => $this->jwtStateless,
+            'storage'                => $this->storage,
             'jwtMode'                => $this->jwtMode,
             'tokenEncrypt'           => $this->tokenEncrypt,
             'tokenEncryptKey'        => $this->tokenEncryptKey,
@@ -725,6 +744,9 @@ class SaTokenConfig
         return $this->sso;
     }
 
+    /**
+     * @param array<string, mixed> $sso
+     */
     public function setSso(array $sso): static
     {
         /** @var array<string, mixed> $merged */
@@ -748,11 +770,34 @@ class SaTokenConfig
     /**
      * @return array<string, mixed>
      */
+    public function getStorage(): array
+    {
+        return $this->storage;
+    }
+
+    /**
+     * @param array<string, mixed> $storage
+     */
+    public function setStorage(array $storage): static
+    {
+        $this->storage = $storage;
+        return $this;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
     public function getOauth2(): array
     {
         return $this->oauth2;
     }
 
+    /**
+     * @param array<string, mixed> $oauth2
+     */
+    /**
+     * @param array<string, mixed> $oauth2
+     */
     public function setOauth2(array $oauth2): static
     {
         /** @var array<string, mixed> $merged */

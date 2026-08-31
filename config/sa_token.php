@@ -4,6 +4,14 @@
 // 在项目根目录 config/sa_token.php 中返回此数组即可，SaToken::init() 会自动加载
 
 return [
+    // 存储层配置（init 时自动装配；不配置则默认内存存储）
+    // memory：单进程/测试    file：单机文件存储    redis：分布式部署
+    'storage'               => [
+        'type'              => 'file',          // memory / file / redis
+        'path'              => 'runtime/sa-token',  // file 模式数据目录
+        // redis 模式可用：host / port / password / database / timeout
+    ],
+
     // Token 名称（同时也是 Cookie 名称、提交参数名、Header 名称）
     'tokenName'             => 'satoken',
     // Token 前缀（如 'Bearer'，提交时格式为 Bearer xxx）
