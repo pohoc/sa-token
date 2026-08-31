@@ -16,9 +16,13 @@
 - (storage) DAO 原子原语、本地文件存储与配置驱动自动装配
 
 ### 变更
+- (release) CHANGELOG 回写降级为 best-effort 并修复回写失败
 - 完善 CI/CD 流水线
 - chore(qa)+docs: 移除 PHPStan 泛型压制并同步全部文档
 - (deps) 升级 pohoc/crypto-sm 至 ^0.3 并完善工程配置
+
+### 文档
+- 更新 CHANGELOG（v0.2.0 发布）
 
 ### 测试
 - (security) 80 项安全行为回归测试与既有测试适配
@@ -80,7 +84,8 @@
 
 ## [v0.0.1] - 2026-04-09
 
-_无显著变更_
+### 新增
+- 初始提交
 
 
 [v0.0.1]: https://github.com/pohoc/sa-token/releases/tag/v0.0.1
