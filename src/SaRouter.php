@@ -17,9 +17,7 @@ class SaRouter
 
     protected static bool $isStop = false;
 
-    protected static ?string $currentPath = null;
-
-    /** @var array<string, array{mode: string, patterns: array<string>, isMatch: bool, isStop: bool}> */
+    /** @var array<string, array{mode: string, patterns: array<string>, isMatch: bool, isStop: bool, currentPath: ?string}> */
     protected static array $contextMap = [];
 
     protected static function getContextId(): string
@@ -35,7 +33,7 @@ class SaRouter
     }
 
     /**
-     * @return array{mode: string, patterns: array<string>, isMatch: bool, isStop: bool}
+     * @return array{mode: string, patterns: array<string>, isMatch: bool, isStop: bool, currentPath: ?string}
      */
     protected static function &getState(): array
     {
@@ -46,6 +44,7 @@ class SaRouter
                 'patterns' => [],
                 'isMatch' => false,
                 'isStop' => false,
+                'currentPath' => null,
             ];
         }
         return self::$contextMap[$id];
@@ -91,49 +90,54 @@ class SaRouter
 
     public static function getCurrentPath(): string
     {
-        if (self::$currentPath !== null) {
-            return self::$currentPath;
+        // 当前请求路径属于请求级状态，必须存放在协程隔离的上下文中。
+        // 进程级静态缓存在 Swoole/Workerman 等常驻环境下会让后续请求
+        // 沿用第一个请求的路径，导致路由鉴权规则错乱（放行或误拦）
+        $state = &self::getState();
+        if ($state['currentPath'] !== null) {
+            return $state['currentPath'];
         }
 
         $request = SaTokenContext::getRequest();
         if ($request === null) {
             if (isset($_SERVER['REQUEST_URI']) && is_string($_SERVER['REQUEST_URI'])) {
                 $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-                self::$currentPath = is_string($uri) ? $uri : '/';
+                $state['currentPath'] = is_string($uri) ? $uri : '/';
             } else {
-                self::$currentPath = '/';
+                $state['currentPath'] = '/';
             }
-            return self::$currentPath;
+            return $state['currentPath'];
         }
         if ($request instanceof \Psr\Http\Message\ServerRequestInterface) {
             $uri = $request->getUri();
-            self::$currentPath = $uri->getPath();
+            $state['currentPath'] = $uri->getPath();
         } elseif (is_object($request)) {
             if (method_exists($request, 'getPathInfo')) {
                 $pathInfo = $request->getPathInfo();
-                self::$currentPath = is_string($pathInfo) ? $pathInfo : '/';
+                $state['currentPath'] = is_string($pathInfo) ? $pathInfo : '/';
             } elseif (method_exists($request, 'path')) {
                 $path = $request->path();
-                self::$currentPath = is_string($path) ? $path : '/';
+                $state['currentPath'] = is_string($path) ? $path : '/';
             } elseif (isset($_SERVER['REQUEST_URI']) && is_string($_SERVER['REQUEST_URI'])) {
                 $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-                self::$currentPath = is_string($uri) ? $uri : '/';
+                $state['currentPath'] = is_string($uri) ? $uri : '/';
             } else {
-                self::$currentPath = '/';
+                $state['currentPath'] = '/';
             }
         } elseif (isset($_SERVER['REQUEST_URI']) && is_string($_SERVER['REQUEST_URI'])) {
             $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-            self::$currentPath = is_string($uri) ? $uri : '/';
+            $state['currentPath'] = is_string($uri) ? $uri : '/';
         } else {
-            self::$currentPath = '/';
+            $state['currentPath'] = '/';
         }
 
-        return self::$currentPath ?? '/';
+        return $state['currentPath'] ?? '/'; // @phpstan-ignore-line
     }
 
     public static function setCurrentPath(string $path): void
     {
-        self::$currentPath = $path;
+        $state = &self::getState();
+        $state['currentPath'] = $path;
     }
 
     /**
@@ -178,7 +182,6 @@ class SaRouter
     public static function fullReset(): void
     {
         self::$contextMap = [];
-        self::$currentPath = null;
     }
 
     public static function clearContext(): void

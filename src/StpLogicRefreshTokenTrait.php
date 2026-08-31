@@ -47,31 +47,58 @@ trait StpLogicRefreshTokenTrait
 
         $this->checkDisableForLogin($loginId);
 
-        $this->tokenManager->deleteRefreshToken($refreshToken);
-
-        if ($oldAccessToken !== '') {
-            $this->tokenManager->deleteToken($oldAccessToken, $loginId, $this->loginType);
+        // 与登录共用同一把账号级互斥锁，避免并发刷新/登录互相覆盖 Token 列表
+        $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', $loginId);
+        if (!$this->tokenManager->acquireLock($lockKey, 5)) {
+            throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
 
-        $newAccessToken = $this->tokenManager->createTokenValue($loginId, $this->loginType);
-        $timeout = $config->getTimeout();
-        $this->tokenManager->saveToken($newAccessToken, $loginId, $this->loginType, '', $timeout);
+        try {
+            $remainingTimeout = $this->tokenManager->getRefreshTokenTimeout($refreshToken);
 
-        $result = (new SaLoginResult())
-            ->setAccessToken($newAccessToken)
-            ->setAccessExpire($timeout > 0 ? $timeout : 0);
+            // 原子消费：同一 RefreshToken 并发重放时，仅第一个请求成功
+            $consumed = $this->tokenManager->consumeRefreshToken($refreshToken);
+            if ($consumed === null) {
+                throw new SaTokenException('RefreshToken 无效或已过期');
+            }
 
-        if ($config->isRefreshTokenRotation()) {
-            $newRefreshToken = $this->tokenManager->createTokenValue($loginId, $this->loginType, 'srt_');
-            $refreshTimeout = $config->getRefreshTokenTimeout();
-            $this->tokenManager->saveRefreshToken($newRefreshToken, $newAccessToken, $loginId, $this->loginType, $refreshTimeout);
-            $result->setRefreshToken($newRefreshToken)
-                ->setRefreshExpire($refreshTimeout > 0 ? $refreshTimeout : 0);
+            if ($oldAccessToken !== '') {
+                $this->tokenManager->deleteToken($oldAccessToken, $loginId, $this->loginType);
+            }
+
+            $newAccessToken = $this->tokenManager->createTokenValue($loginId, $this->loginType);
+            $timeout = $config->getTimeout();
+            $newAccessToken = $this->tokenManager->saveToken($newAccessToken, $loginId, $this->loginType, '', $timeout);
+
+            if ($config->isTokenFingerprint()) {
+                $this->tokenManager->saveFingerprint($newAccessToken, $this->tokenManager->computeFingerprint(), $timeout);
+            }
+
+            $result = (new SaLoginResult())
+                ->setAccessToken($newAccessToken)
+                ->setAccessExpire($timeout > 0 ? $timeout : 0);
+
+            if ($config->isRefreshTokenRotation()) {
+                $newRefreshToken = $this->tokenManager->createTokenValue($loginId, $this->loginType, 'srt_');
+                $refreshTimeout = $config->getRefreshTokenTimeout();
+                $this->tokenManager->saveRefreshToken($newRefreshToken, $newAccessToken, $loginId, $this->loginType, $refreshTimeout);
+                $result->setRefreshToken($newRefreshToken)
+                    ->setRefreshExpire($refreshTimeout > 0 ? $refreshTimeout : 0);
+            } else {
+                // 未开启轮换时保留原 RefreshToken 并重新绑定到新 AccessToken，
+                // 避免一次刷新后客户端永久失去刷新能力
+                $rtTimeout = ($remainingTimeout > 0) ? $remainingTimeout : $config->getRefreshTokenTimeout();
+                $this->tokenManager->saveRefreshToken($refreshToken, $newAccessToken, $loginId, $this->loginType, $rtTimeout);
+                $result->setRefreshToken($refreshToken)
+                    ->setRefreshExpire($rtTimeout > 0 ? $rtTimeout : 0);
+            }
+
+            $this->writeTokenToResponse($newAccessToken, new SaLoginParameter());
+
+            return $result;
+        } finally {
+            $this->tokenManager->releaseLock($lockKey);
         }
-
-        $this->writeTokenToResponse($newAccessToken, new SaLoginParameter());
-
-        return $result;
     }
 
     public function revokeRefreshToken(string $refreshToken): bool

@@ -175,6 +175,9 @@ class SaTokenJwt
         }
     }
 
+    /**
+     * @return array<string, mixed>
+     */
     public function getExtraClaims(string $token): array
     {
         $payload = $this->parseToken($token);
@@ -195,7 +198,15 @@ class SaTokenJwt
             $sessionData = $session->getDataMap();
         }
 
-        $statelessClaims = array_merge($extraClaims, $sessionData);
+        // 剥离 session 数据中的保留 claims（sub/exp/iat/type/jti 等）：
+        // 保留字段是身份与有效性的权威来源，一旦可被 session 数据覆盖，
+        // 任何能写 session 顶层键的输入都能伪造登录身份或延长有效期。
+        // 额外参数同样不允许碰保留字段
+        $reservedKeys = ['sub', 'exp', 'iat', 'nbf', 'jti', 'iss', 'aud', 'type'];
+        $safeSessionData = array_diff_key($sessionData, array_flip($reservedKeys));
+        $safeExtraClaims = array_diff_key($extraClaims, array_flip($reservedKeys));
+
+        $statelessClaims = array_merge($safeSessionData, $safeExtraClaims);
 
         return $this->createToken($loginId, $loginType, $timeout, $statelessClaims);
     }

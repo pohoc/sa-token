@@ -105,9 +105,9 @@ class SaSession
      */
     public function set(string $key, mixed $value): void
     {
-        $this->loadData();
-        $this->dataMap[$key] = $value;
-        $this->saveData();
+        $this->mutate(function (array &$data) use ($key, $value): void {
+            $data[$key] = $value;
+        });
     }
 
     /**
@@ -118,9 +118,9 @@ class SaSession
      */
     public function delete(string $key): void
     {
-        $this->loadData();
-        unset($this->dataMap[$key]);
-        $this->saveData();
+        $this->mutate(function (array &$data) use ($key): void {
+            unset($data[$key]);
+        });
     }
 
     /**
@@ -142,8 +142,9 @@ class SaSession
      */
     public function clear(): void
     {
-        $this->dataMap = [];
-        $this->saveData();
+        $this->mutate(function (array &$data): void {
+            $data = [];
+        });
     }
 
     /**
@@ -165,9 +166,9 @@ class SaSession
      */
     public function update(array $data): void
     {
-        $this->loadData();
-        $this->dataMap = array_merge($this->dataMap, $data);
-        $this->saveData();
+        $this->mutate(function (array &$fresh) use ($data): void {
+            $fresh = array_merge($fresh, $data);
+        });
     }
 
     /**
@@ -179,6 +180,66 @@ class SaSession
     {
         $this->dataMap = [];
         SaToken::getDao()->delete($this->id);
+    }
+
+    /**
+     * 互斥修改会话：setIfNotExists 分布式锁 + 锁内重读最新数据 + 合并写。
+     *
+     * 整包读改写在并发下会互相覆盖（后写者用旧快照覆盖前者的修改），
+     * 可能导致安全状态（登录信息、二级认证标记）静默回退。
+     * 锁 TTL 5 秒：持锁进程崩溃后自动释放
+     *
+     * @param  callable(array<string, mixed>): void $fn 接收最新数据引用并就地修改
+     * @return void
+     * @throws \SaToken\Exception\SaTokenException  锁获取超时
+     */
+    protected function mutate(callable $fn): void
+    {
+        $dao = SaToken::getDao();
+        $lockKey = 'satoken:session:lock:' . $this->id;
+
+        for ($i = 0; $i < 10; $i++) {
+            if ($dao->setIfNotExists($lockKey, '1', 5)) {
+                try {
+                    $fresh = $this->readFreshDataMap();
+                    $fn($fresh);
+                    $this->dataMap = $fresh;
+                    $this->loaded = true;
+                    $this->saveData();
+                    return;
+                } finally {
+                    $dao->delete($lockKey);
+                }
+            }
+            usleep(50000);
+        }
+
+        throw new \SaToken\Exception\SaTokenException('会话并发冲突：锁获取超时，请稍后重试');
+    }
+
+    /**
+     * 从存储层强制重读最新数据（不解密失败静默清空：用 decryptChecked 区分）
+     *
+     * @return array<string, mixed>
+     */
+    protected function readFreshDataMap(): array
+    {
+        $dao = SaToken::getDao();
+        $json = $dao->get($this->id);
+        if ($json === null) {
+            return [];
+        }
+
+        $encryptor = self::getEncryptor();
+        $decrypted = $encryptor->decryptChecked($json);
+        if ($decrypted === null) {
+            // 密文被篡改或密钥错配：拒绝静默清空后盲写（那会掩盖完整性破坏）
+            throw new \SaToken\Exception\SaTokenException('会话数据完整性校验失败，拒绝修改（请检查加密配置或存储是否被篡改）');
+        }
+
+        $data = SaFoxUtil::fromJson($decrypted);
+        /** @var array<string, mixed> $data */
+        return is_array($data) ? $data : [];
     }
 
     /**
@@ -210,10 +271,24 @@ class SaSession
      */
     protected function saveData(): void
     {
+        // 序列化失败时（如存入 NAN/非法 UTF-8）绝不能写空串——
+        // 那会把整个会话的所有键值一并销毁
         $json = SaFoxUtil::toJson($this->dataMap);
+        if ($json === '' && $this->dataMap !== []) {
+            throw new \SaToken\Exception\SaTokenException('会话数据序列化失败，已中止写入以保护存量数据');
+        }
+
         $encryptor = self::getEncryptor();
         $encrypted = $encryptor->encrypt($json);
-        SaToken::getDao()->set($this->id, $encrypted, $this->timeout);
+
+        // 经 getBySessionId 读取的会话 timeout 为 null：
+        // 直接写 null 会让已存在会话变成"永不过期"，必须回读并保留原 TTL
+        $timeout = $this->timeout;
+        if ($timeout === null && SaToken::getDao()->exists($this->id)) {
+            $currentTtl = SaToken::getDao()->getTimeout($this->id);
+            $timeout = $currentTtl > 0 ? $currentTtl : null;
+        }
+        SaToken::getDao()->set($this->id, $encrypted, $timeout);
     }
 
     protected static function getEncryptor(): SaTokenEncryptor

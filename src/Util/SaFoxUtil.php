@@ -150,8 +150,14 @@ class SaFoxUtil
      */
     public static function toJson(mixed $value): string
     {
-        $encoded = json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        return $encoded !== false ? $encoded : '';
+        // 非法 UTF-8 以替换字符降级而非整体失败（如用户可控的 UA/字段），
+        // 其余失败（递归超深等）直接抛异常：静默返回空串会让调用方把
+        // 空值写回存储层，放大为存量数据销毁
+        $encoded = json_encode(
+            $value,
+            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR
+        );
+        return $encoded;
     }
 
     /**

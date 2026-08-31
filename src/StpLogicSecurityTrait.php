@@ -239,6 +239,11 @@ trait StpLogicSecurityTrait
     {
         $loginId = $this->getLoginIdAsNotNull();
         SaSensitiveVerify::verifyCodeAndThrow($scene, $code, $loginId, $this->loginType);
+
+        // 验证成功后同步打开 token 级二级认证窗口（默认 60 秒）：
+        // 否则 #[SaCheckSafe('otp')] 永远失败（checkSafe 只认 openSafe 状态），
+        // 两套验证体系互不相通形成死锁
+        $this->openSafe(60, $scene);
     }
 
     public function isSensitiveVerified(string $scene): bool
@@ -267,6 +272,9 @@ trait StpLogicSecurityTrait
         return SaSensitiveVerify::getRemainingAttempts($scene, $loginId, $this->loginType);
     }
 
+    /**
+     * @return array<array<string, mixed>>
+     */
     public function getAuditLogs(int $limit = 50): array
     {
         $loginId = $this->getLoginId();
@@ -276,6 +284,9 @@ trait StpLogicSecurityTrait
         return SaAuditLog::getLogsByLoginId($loginId, $this->loginType, $limit);
     }
 
+    /**
+     * @return array<string, mixed>|null
+     */
     public function getAuditLog(string $id): ?array
     {
         return SaAuditLog::getLog($id, $this->loginType);

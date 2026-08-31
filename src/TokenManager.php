@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SaToken;
 
 use SaToken\Config\SaTokenConfig;
+use SaToken\Exception\SaTokenException;
 use SaToken\Plugin\SaTokenJwt;
 use SaToken\Util\SaFoxUtil;
 use SaToken\Util\SaTokenContext;
@@ -85,6 +86,14 @@ class TokenManager
         if ($action !== null) {
             $customToken = $action->generateTokenValue($loginId, $loginType);
             if ($customToken !== null) {
+                // 自定义生成器是认证凭据的直接来源，最低防呆必须保留：
+                // 可预测/短熵的 token（如 md5(loginId)）等于开放任意账号伪造
+                if (SaFoxUtil::isEmpty($customToken)) {
+                    throw new SaTokenException('自定义 generateTokenValue 返回了空 Token');
+                }
+                if (strlen($customToken) < 16) {
+                    throw new SaTokenException('自定义 Token 熵不足（至少 16 字符），存在被伪造或碰撞的风险');
+                }
                 return $customToken;
             }
         }
@@ -104,7 +113,7 @@ class TokenManager
         return $effectivePrefix . $raw;
     }
 
-    public function saveToken(string $tokenValue, mixed $loginId, string $loginType, string $deviceType = '', ?int $timeout = null): void
+    public function saveToken(string $tokenValue, mixed $loginId, string $loginType, string $deviceType = '', ?int $timeout = null): string
     {
         $config = $this->getConfig();
         $timeout = $timeout ?? $config->getTimeout();
@@ -114,9 +123,30 @@ class TokenManager
             $tokenValue = $this->getJwtInstance()->createMixedToken($loginId, $loginType, $effectiveTimeout);
         }
 
-        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-        $this->getDao()->set(self::TOKEN_PREFIX . $tokenValue, $this->encryptValue($loginIdStr), $effectiveTimeout);
+        // Token 值冲突即覆盖他人会话（会话劫持），必须拒绝而不是盲写；
+        // 冲突时按 maxTryTimes 重新生成重试（自定义生成器输出固定值时重试耗尽后抛出）
+        $maxTries = max(1, $this->getConfig()->getMaxTryTimes());
+        for ($attempt = 0; $attempt < $maxTries; $attempt++) {
+            if (!$this->getDao()->exists(self::TOKEN_PREFIX . $tokenValue)) {
+                $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+                $this->getDao()->set(self::TOKEN_PREFIX . $tokenValue, $this->encryptValue($loginIdStr), $effectiveTimeout);
+                return $this->finalizeToken($tokenValue, $loginId, $loginType, $deviceType, $effectiveTimeout);
+            }
+            $tokenValue = $this->createTokenValue($loginId, $loginType);
+            if ($this->getConfig()->getJwtMode() === 'mixed') {
+                $tokenValue = $this->getJwtInstance()->createMixedToken($loginId, $loginType, $effectiveTimeout);
+            }
+        }
 
+        throw new SaTokenException('Token 值冲突：相同 Token 已存在（生成器缺乏唯一性保证）');
+    }
+
+    /**
+     * 保存 loginId 会话列表与映射（saveToken 的后半段，拆出以支持冲突重试）
+     */
+    protected function finalizeToken(string $tokenValue, mixed $loginId, string $loginType, string $deviceType, ?int $effectiveTimeout): string
+    {
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
         $loginIdKey = self::LOGIN_ID_PREFIX . $loginType . ':' . $loginIdStr;
         $existingTokens = $this->getTokenListByLoginId($loginId, $loginType);
         $tokenData = [
@@ -152,28 +182,35 @@ class TokenManager
         }
 
         $this->getDao()->set($loginIdKey, $this->encryptValue(SaFoxUtil::toJson($existingTokens)), $effectiveTimeout);
+
+        // mixed 模式下实际存储的是 JWT，必须返回真实值供调用方下发给客户端
+        return $tokenValue;
     }
 
     public function getLoginIdByToken(string $tokenValue): ?string
     {
+        // Dao 记录是会话存在性的唯一权威来源：
+        // logout/kickout/吊销均通过删除该记录实现，因此不存在记录的 Token 一律无效
         $value = $this->getDao()->get(self::TOKEN_PREFIX . $tokenValue);
-        if ($value !== null) {
-            return $this->decryptValue($value);
+        if ($value === null) {
+            return null;
         }
+        $loginId = $this->decryptValue($value);
 
         $config = $this->getConfig();
         if ($config->getJwtMode() === 'mixed') {
-            $loginId = $this->getJwtInstance()->getLoginId($tokenValue);
-            if ($loginId !== null) {
-                $daoValue = $this->getDao()->get(self::TOKEN_PREFIX . $tokenValue);
-                if ($daoValue !== null) {
-                    return $this->decryptValue($daoValue);
-                }
-                return $loginId;
+            // mixed 模式下 JWT 签名作为额外的真实性校验：签名可解码时主题必须一致
+            try {
+                $jwtLoginId = $this->getJwtInstance()->getLoginId($tokenValue);
+            } catch (\Throwable) {
+                $jwtLoginId = null;
+            }
+            if ($jwtLoginId !== null && $jwtLoginId !== $loginId) {
+                return null;
             }
         }
 
-        return null;
+        return $loginId;
     }
 
     /**
@@ -197,6 +234,23 @@ class TokenManager
     }
 
     public function deleteToken(string $tokenValue, mixed $loginId, string $loginType): void
+    {
+        // 会话列表是整包读改写，必须与 login/refresh 共用账号级互斥锁，
+        // 否则并发 logout/kickout 与 login 会互相覆盖（复活已删条目/丢失新 Token）。
+        // acquireLock 可重入，login 持锁路径不会被自阻塞
+        $loginIdStr0 = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $lockKey = 'login:' . $loginType . ':' . hash('sha256', $loginIdStr0);
+        if (!$this->acquireLock($lockKey, 5)) {
+            throw new SaTokenException('同账号会话正在处理中，请稍后重试');
+        }
+        try {
+            $this->deleteTokenLocked($tokenValue, $loginId, $loginType);
+        } finally {
+            $this->releaseLock($lockKey);
+        }
+    }
+
+    protected function deleteTokenLocked(string $tokenValue, mixed $loginId, string $loginType): void
     {
         $this->getDao()->delete(self::TOKEN_PREFIX . $tokenValue);
 
@@ -223,6 +277,23 @@ class TokenManager
      * @return array<string>
      */
     public function deleteAllTokenByLoginId(mixed $loginId, string $loginType): array
+    {
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $lockKey = 'login:' . $loginType . ':' . hash('sha256', $loginIdStr);
+        if (!$this->acquireLock($lockKey, 5)) {
+            throw new SaTokenException('同账号会话正在处理中，请稍后重试');
+        }
+        try {
+            return $this->deleteAllTokenByLoginIdLocked($loginId, $loginType);
+        } finally {
+            $this->releaseLock($lockKey);
+        }
+    }
+
+    /**
+     * @return array<string>
+     */
+    protected function deleteAllTokenByLoginIdLocked(mixed $loginId, string $loginType): array
     {
         $tokens = $this->getTokenListByLoginId($loginId, $loginType);
         $deletedTokens = [];
@@ -384,7 +455,14 @@ class TokenManager
     public function setSwitchTo(string $tokenValue, mixed $switchToId, string $loginType): void
     {
         $key = self::SWITCH_PREFIX . $loginType . ':' . $tokenValue;
-        $this->getDao()->set($key, $this->encryptValue(SaFoxUtil::toString($switchToId)));
+        // 身份切换跟随 Token 生命周期：Token 过期/被删除后切换关系不应残留；
+        // Token 不存在（-2）时直接拒绝写入，避免产生永不回收的孤儿键
+        $tokenTimeout = $this->getTokenTimeout($tokenValue);
+        if ($tokenTimeout === -2) {
+            throw new SaTokenException('Token 不存在，无法切换身份');
+        }
+        $effectiveTimeout = ($tokenTimeout > 0) ? $tokenTimeout : null;
+        $this->getDao()->set($key, $this->encryptValue(SaFoxUtil::toString($switchToId)), $effectiveTimeout);
     }
 
     public function getSwitchTo(string $tokenValue, string $loginType): ?string
@@ -449,6 +527,9 @@ class TokenManager
         $this->getDao()->set($mapKey, $this->encryptValue($refreshToken), $effectiveTimeout);
     }
 
+    /**
+     * @return array<string, mixed>|null
+     */
     public function getRefreshTokenData(string $refreshToken): ?array
     {
         $value = $this->getDao()->get(self::REFRESH_TOKEN_PREFIX . $refreshToken);
@@ -459,7 +540,43 @@ class TokenManager
         if (!is_array($data)) {
             return null;
         }
+        /** @var array<string, mixed> $data */
         return $data;
+    }
+
+    /**
+     * 原子消费 RefreshToken：读取并立即删除主记录，
+     * 保证并发重放同一 RefreshToken 时仅有一个请求成功
+     *
+     * @return array<string, mixed>|null
+     */
+    public function consumeRefreshToken(string $refreshToken): ?array
+    {
+        $raw = $this->getDao()->getAndDelete(self::REFRESH_TOKEN_PREFIX . $refreshToken);
+        if ($raw === null) {
+            return null;
+        }
+        $data = SaFoxUtil::fromJson($this->decryptValue($raw));
+        if (!is_array($data)) {
+            return null;
+        }
+        /** @var array<string, mixed> $data */
+        $loginId = is_string($data['loginId'] ?? null) ? $data['loginId'] : '';
+        $loginType = is_string($data['loginType'] ?? null) ? $data['loginType'] : '';
+        $accessToken = is_string($data['accessToken'] ?? null) ? $data['accessToken'] : '';
+        if ($loginId !== '' && $loginType !== '' && $accessToken !== '') {
+            $this->getDao()->delete(self::REFRESH_TOKEN_MAP_PREFIX . $loginType . ':' . $loginId . ':' . $accessToken);
+        }
+
+        return $data;
+    }
+
+    /**
+     * 获取 RefreshToken 的剩余有效期（秒），-1 表示永不过期，-2 表示不存在
+     */
+    public function getRefreshTokenTimeout(string $refreshToken): int
+    {
+        return $this->getDao()->getTimeout(self::REFRESH_TOKEN_PREFIX . $refreshToken);
     }
 
     public function getRefreshTokenByAccessToken(mixed $loginId, string $loginType, string $accessToken): ?string
@@ -529,9 +646,9 @@ class TokenManager
         return hash('sha256', $ip . '|' . $ua);
     }
 
-    public function addToBlacklist(string $tokenValue, int $timeout): void
+    public function addToBlacklist(string $tokenValue, ?int $timeout): void
     {
-        $this->getDao()->set(self::BLACKLIST_PREFIX . $tokenValue, '1', $timeout > 0 ? $timeout : null);
+        $this->getDao()->set(self::BLACKLIST_PREFIX . $tokenValue, '1', ($timeout !== null && $timeout > 0) ? $timeout : null);
     }
 
     public function isBlacklisted(string $tokenValue): bool
@@ -548,27 +665,21 @@ class TokenManager
 
     public function acquireLock(string $key, int $ttl = 5): bool
     {
-        $dao = $this->getDao();
         $lockKey = self::LOCK_PREFIX . $key;
+
+        // 可重入：本实例已持有该锁（如 login 持锁调用 deleteToken）时直接放行，
+        // 避免嵌套获取导致 5 秒自阻塞
+        if (isset($this->lockValues[$lockKey])) {
+            return true;
+        }
+
         $lockValue = bin2hex(random_bytes(8));
 
-        if ($dao instanceof \SaToken\Dao\SaTokenDaoRedis) {
-            $client = $dao->getClient();
-            $result = $client->set($lockKey, $lockValue, ['NX', 'EX' => $ttl]);
-            $acquired = $result === true || (is_object($result) && method_exists($result, 'getPayload'));
-            if ($acquired) {
-                $this->lockValues[$lockKey] = $lockValue;
-            }
-            return $acquired;
+        $acquired = $this->getDao()->setIfNotExists($lockKey, $lockValue, $ttl > 0 ? $ttl : null);
+        if ($acquired) {
+            $this->lockValues[$lockKey] = $lockValue;
         }
-
-        $existing = $dao->get($lockKey);
-        if ($existing !== null) {
-            return false;
-        }
-        $dao->set($lockKey, $lockValue, $ttl);
-        $this->lockValues[$lockKey] = $lockValue;
-        return true;
+        return $acquired;
     }
 
     public function releaseLock(string $key): void
