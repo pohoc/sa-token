@@ -66,3 +66,27 @@ vendor/bin/phpstan analyse
 ## Security
 
 If you discover a security vulnerability, please follow the instructions in [SECURITY.md](SECURITY.md). **Do not** open a public issue.
+
+## Release Process
+
+发版受两条硬性门禁约束（v0.2.0 事故后的固化）：
+
+1. **Tag 推送被 Ruleset 拦截**：`v*` tag 指向的提交必须已有 `CI green gate` 检查且结论为 success（即该提交在 main 上跑完整套 CI 并全绿）；同时 v* tag 禁止删除与重指（Packagist 版本不可变）。
+2. **Release 流程二次校验**：tag 触发的 release workflow 在创建 Release 前会再验证同一提交的 `CI green gate` 状态。
+
+发版步骤：
+
+```bash
+# 1. 推送代码并等待 main 的 PHP CI 全绿（含 CI green gate 检查）
+git push origin main
+gh run watch   # 或在 Actions 页面确认
+
+# 2. 全绿后打 tag 并推送（触发 Release 流水线）
+git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z
+```
+
+一次性配置（repo admin）：
+
+```bash
+GH_TOKEN=ghp_xxx ./scripts/setup-tag-protection.sh
+```

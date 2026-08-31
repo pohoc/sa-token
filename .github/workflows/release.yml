@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  checks: read
 
 jobs:
   release:
@@ -22,6 +23,23 @@ jobs:
         with:
           php-version: '8.4'
           extensions: gmp, openssl
+
+      - name: Verify CI green gate on tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SHA=$(git rev-parse HEAD^{commit})
+          echo "tagged commit: $SHA"
+          STATUS=$(curl -sf --max-time 30 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/commits/${SHA}/check-runs?per_page=100" \
+            | jq -r '[.check_runs[] | select(.name == "CI green gate")][0].conclusion // "missing"')
+          echo "CI green gate: $STATUS"
+          if [ "$STATUS" != "success" ]; then
+            echo "::error::该提交的 CI green gate 状态为 '$STATUS'（必须 success）。请等 main CI 全绿后再打 tag——Ruleset 本应拦截此操作。"
+            exit 1
+          fi
 
       - name: Validate composer.json
         run: composer validate --strict

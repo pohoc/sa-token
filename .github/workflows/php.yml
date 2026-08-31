@@ -190,3 +190,20 @@ jobs:
 
       - name: PHP-CS-Fixer
         run: composer cs-check
+
+  green:
+    name: CI green gate
+    needs: [test-no-redis, test-with-redis-extension, coverage, analyse]
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Require all CI jobs to pass
+        run: |
+          RESULTS='${{ join(needs.*.result, ' ') }}'
+          echo "job results: $RESULTS"
+          if echo "$RESULTS" | grep -qE 'failure|cancelled'; then
+            echo "::error::存在失败或被取消的必过 job，tag 将被拒绝"
+            exit 1
+          fi
+          echo "全部必过 job 通过——该提交允许打 tag"
