@@ -71,8 +71,8 @@ class SaRouterIsolationTest extends TestCase
 
     public function testClearContextProperlyCleansUp(): void
     {
-        SaRouter::setCurrentPath('/user/info');
         SaTokenContext::setContextId('ctx-clear');
+        SaRouter::setCurrentPath('/user/info');
 
         $matched = false;
         SaRouter::match('/user/**')->stop()->check(function () use (&$matched) {
@@ -83,12 +83,45 @@ class SaRouterIsolationTest extends TestCase
 
         SaRouter::clearContext();
 
+        // clearContext 后 stop 状态必须被清理，重新 match 应正常求值；
+        // 当前路径属于请求级上下文状态，同样被清理，由应用重新设置
+        SaRouter::setCurrentPath('/user/info');
+
         $matched2 = false;
         SaRouter::match('/user/**')->check(function () use (&$matched2) {
             $matched2 = true;
         });
 
         $this->assertTrue($matched2);
+    }
+
+    public function testCurrentPathIsIsolatedPerContext(): void
+    {
+        SaTokenContext::setContextId('ctx-path-a');
+        SaRouter::setCurrentPath('/user/info');
+
+        SaTokenContext::setContextId('ctx-path-b');
+        // 不设置路径时不得沿用其他上下文的路径
+        $leaked = false;
+        SaRouter::match('/user/**')->check(function () use (&$leaked) {
+            $leaked = true;
+        });
+        $this->assertFalse($leaked);
+
+        SaRouter::setCurrentPath('/admin/panel');
+        $admin = false;
+        SaRouter::match('/admin/**')->check(function () use (&$admin) {
+            $admin = true;
+        });
+        $this->assertTrue($admin);
+
+        // 原上下文的路径不受影响
+        SaTokenContext::setContextId('ctx-path-a');
+        $user = false;
+        SaRouter::match('/user/**')->check(function () use (&$user) {
+            $user = true;
+        });
+        $this->assertTrue($user);
     }
 
     public function testFullResetClearsAllState(): void

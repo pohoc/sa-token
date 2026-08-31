@@ -163,6 +163,9 @@ class SaHttpAuthTest extends TestCase
         $request->method('getMethod')->willReturn('GET');
         SaTokenContext::setRequest($request);
 
+        // 模拟服务端此前已通过 sendDigestChallenge 签发该 nonce
+        SaToken::getDao()->set('satoken:auth:digest:nonce:' . hash('sha256', $nonce), '1', 300);
+
         $auth = new SaHttpAuth();
         $auth->setDigestValidator(function (string $user) use ($ha1): ?string {
             if ($user === 'admin') {
@@ -172,6 +175,31 @@ class SaHttpAuthTest extends TestCase
         });
         $auth->checkDigest($realm);
         $this->assertTrue(true);
+
+        // 同一 nonce 的重放必须被拒绝（nonce 一次性消费）
+        try {
+            $auth->checkDigest($realm);
+            $this->fail('重放已消费的 Digest nonce 应被拒绝');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('重放', $e->getMessage());
+        }
+
+        // 从未签发过的 nonce 也必须被拒绝
+        $forgedHeader = str_replace('nonce="' . $nonce . '"', 'nonce="forged-nonce"', $digestHeader);
+        $request2 = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request2->method('getHeader')->willReturnCallback(function (string $name) use ($forgedHeader): array {
+            if ($name === 'Authorization') {
+                return [$forgedHeader];
+            }
+            return [];
+        });
+        SaTokenContext::setRequest($request2);
+        try {
+            $auth->checkDigest($realm);
+            $this->fail('未签发的 Digest nonce 应被拒绝');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('重放', $e->getMessage());
+        }
     }
 
     public function testCheckDigestThrowsOnMissingHeader(): void

@@ -94,9 +94,19 @@ class RefreshTokenTest extends TestCase
         $result = StpUtil::refreshToken($refreshToken);
 
         $this->assertNotEmpty($result->getAccessToken());
-        $this->assertFalse($result->hasRefreshToken());
+        // 未开启轮换时应保留原 RefreshToken 并重新绑定到新 AccessToken，
+        // 否则客户端刷新一次后即永久失去刷新能力
+        $this->assertTrue($result->hasRefreshToken());
+        $this->assertSame($refreshToken, $result->getRefreshToken());
 
         $this->assertTrue(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($result->getAccessToken()));
+        $this->assertFalse(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($accessToken));
+        $this->assertTrue(StpUtil::isRefreshTokenValid($refreshToken));
+
+        // 原 RefreshToken 应可继续用于下一次刷新
+        $result2 = StpUtil::refreshToken($refreshToken);
+        $this->assertNotEmpty($result2->getAccessToken());
+        $this->assertNotEquals($result->getAccessToken(), $result2->getAccessToken());
     }
 
     public function testRefreshTokenInvalid(): void

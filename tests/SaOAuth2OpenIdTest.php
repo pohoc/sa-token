@@ -57,7 +57,7 @@ class SaOAuth2OpenIdTest extends TestCase
             'clientName'   => 'Test Client',
             'redirectUris' => ['https://example.com/callback'],
             'grantTypes'   => ['authorization_code', 'password', 'client_credentials'],
-            'scopes'       => ['read', 'write', 'openid'],
+            'scopes'       => ['read', 'write', 'openid', 'profile'],
         ]);
 
         $this->handle->registerClient($this->testClient);

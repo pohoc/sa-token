@@ -61,7 +61,7 @@ class SaOAuth2Test extends TestCase
             'clientSecret' => $this->clientSecret,
             'clientName'   => 'Test Client',
             'redirectUris' => ['https://example.com/callback'],
-            'grantTypes'   => ['authorization_code', 'password', 'client_credentials'],
+            'grantTypes'   => ['authorization_code', 'password', 'client_credentials', 'refresh_token'],
             'scopes'       => ['read', 'write'],
         ]);
 
@@ -151,7 +151,15 @@ class SaOAuth2Test extends TestCase
     {
         $this->expectException(SaTokenException::class);
         $this->expectExceptionMessage('无效的授权码');
-        $this->handle->exchangeTokenByCode('mock-invalid-code', 'test-client', $this->clientSecret);
+        $this->handle->exchangeTokenByCode('mock-invalid-code', 'test-client', $this->clientSecret, 'https://example.com/callback');
+
+        // 不携带 redirect_uri 的换token请求必须被直接拒绝（RFC 6749 §4.1.3）
+        try {
+            $this->handle->exchangeTokenByCode('mock-invalid-code', 'test-client', $this->clientSecret);
+            $this->fail('缺少 redirect_uri 的换token请求应被拒绝');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('redirect_uri', $e->getMessage());
+        }
     }
 
     public function testExchangeTokenByCodeWithWrongSecret(): void
@@ -160,16 +168,33 @@ class SaOAuth2Test extends TestCase
 
         $this->expectException(SaTokenException::class);
         $this->expectExceptionMessage('客户端密钥错误');
-        $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', 'mock-wrong-secret');
+        $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', 'mock-wrong-secret', 'https://example.com/callback');
     }
 
     public function testExchangeTokenByCodeWithWrongClientId(): void
     {
         $code = $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback');
 
+        // 未注册客户端直接拒绝
+        try {
+            $this->handle->exchangeTokenByCode($code->getCode(), 'unknown-client', $this->clientSecret, 'https://example.com/callback');
+            $this->fail('未注册客户端应被拒绝');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('未注册的客户端', $e->getMessage());
+        }
+
+        // 已注册但非授权码归属的客户端，必须拒绝
+        $otherClient = new SaOAuth2Client([
+            'clientId'     => 'other-client',
+            'clientSecret' => 'mock-other-secret-long-enough',
+            'grantTypes'   => ['authorization_code'],
+            'redirectUris' => ['https://example.com/callback'],
+        ]);
+        $this->handle->registerClient($otherClient);
+
         $this->expectException(SaTokenException::class);
         $this->expectExceptionMessage('客户端 ID 不匹配');
-        $this->handle->exchangeTokenByCode($code->getCode(), 'wrong-client', $this->clientSecret);
+        $this->handle->exchangeTokenByCode($code->getCode(), 'other-client', 'mock-other-secret-long-enough', 'https://example.com/callback');
     }
 
     public function testExchangeTokenByCodeTwice(): void
@@ -177,11 +202,11 @@ class SaOAuth2Test extends TestCase
         $code = $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback');
 
         // 第一次成功
-        $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret);
+        $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
 
         // 第二次应失败（授权码已删除/已使用）
         $this->expectException(SaTokenException::class);
-        $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret);
+        $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
     }
 
     // ======== 刷新令牌 ========
@@ -189,7 +214,7 @@ class SaOAuth2Test extends TestCase
     public function testRefreshToken(): void
     {
         $code = $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback');
-        $accessToken = $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret);
+        $accessToken = $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
 
         $refreshToken = $accessToken->getRefreshToken();
         $this->assertNotNull($refreshToken);
@@ -209,12 +234,13 @@ class SaOAuth2Test extends TestCase
     public function testRefreshTokenWithWrongClientId(): void
     {
         $code = $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback');
-        $accessToken = $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret);
+        $accessToken = $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
 
         // 注册另一个客户端
         $otherClient = new SaOAuth2Client([
             'clientId'     => 'other-client',
-            'clientSecret' => 'mock-other-secret',
+            'clientSecret' => 'mock-other-secret-long-enough',
+            'grantTypes'   => ['refresh_token'],
         ]);
         $this->handle->registerClient($otherClient);
 
@@ -222,7 +248,7 @@ class SaOAuth2Test extends TestCase
         $this->assertNotNull($refreshToken);
         $this->expectException(SaTokenException::class);
         $this->expectExceptionMessage('客户端 ID 不匹配');
-        $this->handle->refreshToken($refreshToken, 'other-client', 'mock-other-secret');
+        $this->handle->refreshToken($refreshToken, 'other-client', 'mock-other-secret-long-enough');
     }
 
     // ======== 密码模式 ========
@@ -290,7 +316,7 @@ class SaOAuth2Test extends TestCase
     public function testValidateAccessToken(): void
     {
         $code = $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback');
-        $accessToken = $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret);
+        $accessToken = $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
 
         $validated = $this->handle->validateAccessToken($accessToken->getAccessToken());
         $this->assertNotNull($validated);
@@ -306,7 +332,7 @@ class SaOAuth2Test extends TestCase
     public function testRevokeAccessToken(): void
     {
         $code = $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback');
-        $accessToken = $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret);
+        $accessToken = $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
 
         $this->assertNotNull($this->handle->validateAccessToken($accessToken->getAccessToken()));
 

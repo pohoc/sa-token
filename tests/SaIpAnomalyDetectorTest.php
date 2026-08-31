@@ -177,8 +177,13 @@ class SaIpAnomalyDetectorTest extends TestCase
         $this->assertTrue(SaIpAnomalyDetector::isSameRegion('10.0.0.1', '10.1.0.1'));
         $this->assertTrue(SaIpAnomalyDetector::isSameRegion('192.168.0.1', '10.0.0.1'));
         $this->assertTrue(SaIpAnomalyDetector::isSameRegion('172.20.0.1', '172.31.255.255'));
-        $this->assertTrue(SaIpAnomalyDetector::isSameRegion('172.15.0.1', '172.32.0.1'));
         $this->assertFalse(SaIpAnomalyDetector::isSameRegion('127.0.0.1', '8.8.8.8'));
+
+        // /16 语义（前两段）：172.15.x.x 与 172.32.x.x 是不同网络区域；
+        // 同一 /16 内视为同区域
+        $this->assertFalse(SaIpAnomalyDetector::isSameRegion('172.15.0.1', '172.32.0.1'));
+        $this->assertTrue(SaIpAnomalyDetector::isSameRegion('1.2.3.4', '1.2.9.9'));
+        $this->assertFalse(SaIpAnomalyDetector::isSameRegion('1.2.3.4', '1.9.9.9'));
     }
 
     public function testCustomKeyPrefix(): void

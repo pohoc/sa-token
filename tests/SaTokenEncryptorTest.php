@@ -34,6 +34,14 @@ class SaTokenEncryptorTest extends TestCase
         return is_string($value) ? $value : '';
     }
 
+    private function getDerivedMacKey(SaTokenEncryptor $encryptor): string
+    {
+        $ref = new \ReflectionClass($encryptor);
+        $prop = $ref->getProperty('macKey');
+        $value = $prop->getValue($encryptor);
+        return is_string($value) ? $value : '';
+    }
+
     public function testAesEncryptDecryptRoundTrip(): void
     {
         $encryptor = $this->createAesEncryptor();
@@ -70,9 +78,31 @@ class SaTokenEncryptorTest extends TestCase
         $hmac = substr($decoded, 0, 32);
         $iv = substr($decoded, 32, 16);
         $ciphertext = substr($decoded, 48);
-        $key = $this->getDerivedKey($encryptor);
-        $expectedHmac = hash_hmac('sha256', $iv . $ciphertext, $key, true);
+        $macKey = $this->getDerivedMacKey($encryptor);
+        $expectedHmac = hash_hmac('sha256', $iv . $ciphertext, $macKey, true);
         $this->assertTrue(hash_equals($hmac, $expectedHmac));
+
+        // 密钥分离：MAC 不能用加密密钥直接推算
+        $encKey = $this->getDerivedKey($encryptor);
+        $withEncKey = hash_hmac('sha256', $iv . $ciphertext, $encKey, true);
+        $this->assertFalse(hash_equals($hmac, $withEncKey));
+    }
+
+    public function testSm4HmacUsesKeyedMac(): void
+    {
+        $encryptor = $this->createSm4Encryptor();
+        $encrypted = $encryptor->encrypt('sm4-integrity');
+        $decoded = base64_decode($encrypted, true);
+        $this->assertNotFalse($decoded);
+        $hmac = bin2hex(substr($decoded, 0, 32));
+        $iv = bin2hex(substr($decoded, 32, 16));
+        $ciphertext = bin2hex(substr($decoded, 48));
+
+        // 完整性必须依赖密钥：无密钥重算 SM3 不应匹配（防存储层篡改伪造）
+        $unkeyed = \CryptoSm\SM3\Sm3::sm3($iv . $ciphertext);
+        $this->assertFalse(hash_equals($hmac, $unkeyed));
+
+        $this->assertEquals('sm4-integrity', $encryptor->decrypt($encrypted));
     }
 
     public function testAesTamperDetection(): void
