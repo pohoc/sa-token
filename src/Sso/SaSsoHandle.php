@@ -336,6 +336,12 @@ class SaSsoHandle
                 || !$this->template->verifySign($scalarResult, $clientSecret)) {
                 throw new SaTokenException('SSO check-ticket 响应签名验证失败，拒绝信任该响应');
             }
+            // 跨 Redis 响应同样必须绑定本次请求的 ticket，
+            // 否则合法签名响应可在有效期内被重放到其他 ticket 请求上。
+            if (!isset($result['ticket']) || !is_string($result['ticket'])
+                || !hash_equals($ticket, $result['ticket'])) {
+                throw new SaTokenException('SSO check-ticket 响应与请求的 ticket 不匹配，拒绝信任该响应');
+            }
         }
 
         return $result['loginId'];
