@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SaToken\Plugin;
 
 use CryptoSm\SM2\Sm2;
+use CryptoSm\SM3\HmacSm3;
 use CryptoSm\SM3\Sm3;
 use CryptoSm\SM4\Sm4;
 use CryptoSm\SM4\Sm4Options;
@@ -121,6 +122,8 @@ class SaTokenSmCrypto
      * @return string           十六进制编码的密文（含前缀 IV）
      * @throws SaTokenException
      */
+    private const SM4_AEAD_MAGIC = 'SMT1';
+
     public function sm4Encrypt(string $data, ?string $key = null): string
     {
         $key = $key ?? $this->sm4Key;
@@ -131,10 +134,23 @@ class SaTokenSmCrypto
         try {
             $options = new Sm4Options(); // 构造时自动生成随机 IV
             $ciphertext = Sm4::encrypt($data, $key, $options);
-            return $options->getIv() . $ciphertext;
+            $iv = $options->getIv();
+
+            // CBC 无认证：拼 MAC（HMAC-SM3，独立派生密钥），防篡改/padding oracle
+            $mac = HmacSm3::hmac($this->deriveSm4MacKey($key), $iv . $ciphertext);
+
+            return self::SM4_AEAD_MAGIC . $mac . $iv . $ciphertext;
         } catch (\Throwable $e) {
             throw new SaTokenException('SM4 加密失败：' . $e->getMessage(), 0, $e);
         }
+    }
+
+    /**
+     * 插件 SM4 的 MAC 独立密钥（与加密密钥分离）
+     */
+    protected function deriveSm4MacKey(string $key): string
+    {
+        return hash('sha256', $key . ':sa-token-sm4-plugin-mac');
     }
 
     /**
@@ -155,9 +171,22 @@ class SaTokenSmCrypto
         }
 
         try {
-            // 前 32 hex 字符为 IV，其余为密文
-            $iv = substr($data, 0, 32);
-            $ciphertext = substr($data, 32);
+            $magicLength = strlen(self::SM4_AEAD_MAGIC);
+            if (str_starts_with($data, self::SM4_AEAD_MAGIC)) {
+                // 新格式：MAGIC(4) + HMAC-SM3(64hex) + IV(32hex) + 密文(hex)
+                $mac = substr($data, $magicLength, 64);
+                $iv = substr($data, $magicLength + 64, 32);
+                $ciphertext = substr($data, $magicLength + 96);
+
+                $expectedMac = HmacSm3::hmac($this->deriveSm4MacKey($key), $iv . $ciphertext);
+                if (!hash_equals($expectedMac, $mac)) {
+                    throw new SaTokenException('SM4 解密失败：密文完整性校验未通过（可能被篡改）');
+                }
+            } else {
+                // 旧格式兼容：前 32 hex 字符为 IV，其余为密文
+                $iv = substr($data, 0, 32);
+                $ciphertext = substr($data, 32);
+            }
 
             $options = (new Sm4Options())->setIv($iv);
             return Sm4::decrypt($ciphertext, $key, $options);

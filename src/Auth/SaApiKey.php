@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SaToken\Auth;
 
 use SaToken\Exception\SaTokenException;
+use SaToken\SaToken;
 use SaToken\StpUtil;
 use SaToken\Util\SaTokenContext;
 
@@ -50,7 +51,46 @@ class SaApiKey
             throw new SaTokenException('API Key 验证失败');
         }
 
-        StpUtil::login($loginId);
+        // 同一 Key 已存在有效会话时直接复用：每次请求全量 login() 会触发
+        // 账号级分布式锁竞争、反复触发 onLogin 事件、并在多实例部署下互相踢线
+        $deviceType = 'apikey:' . hash('sha256', $apiKey);
+        for ($attempt = 0; $attempt < 3; $attempt++) {
+            $reuseToken = $this->findReusableToken($loginId, $apiKey);
+            if ($reuseToken !== null) {
+                SaTokenContext::setHeader(SaToken::getConfig()->getTokenName(), $reuseToken);
+                return;
+            }
+
+            try {
+                StpUtil::login($loginId, (new \SaToken\SaLoginParameter())->setDeviceType($deviceType));
+                return;
+            } catch (SaTokenException $e) {
+                // 冷启动并发：多个请求同时发现无可复用会话时，只有一个能拿到
+                // 账号锁——其余短等后重查复用（赢家已建好会话）
+                if (strpos($e->getMessage(), '正在处理中') === false || $attempt === 2) {
+                    throw $e;
+                }
+                usleep(100000);
+            }
+        }
+    }
+
+    /**
+     * 查找该身份下本 API Key 设备类型的有效 Token（可复用会话）
+     */
+    protected function findReusableToken(mixed $loginId, string $apiKey): ?string
+    {
+        $logic = StpUtil::getStpLogic();
+        $deviceType = 'apikey:' . hash('sha256', $apiKey);
+        $tokens = $logic->getTokenManager()->getTokenListByLoginId($loginId, $logic->getLoginType());
+        foreach ($tokens as $item) {
+            $tokenValue = is_string($item['tokenValue'] ?? null) ? $item['tokenValue'] : '';
+            $itemDevice = is_string($item['deviceType'] ?? null) ? $item['deviceType'] : '';
+            if ($tokenValue !== '' && $itemDevice === $deviceType && $logic->getTokenManager()->isTokenValid($tokenValue)) {
+                return $tokenValue;
+            }
+        }
+        return null;
     }
 
     public function setValidator(callable $validator): static

@@ -134,13 +134,20 @@ class SaTokenContext
         );
     }
 
+    /** @var array<string> */
     protected static array $trustedProxies = [];
 
+    /**
+     * @param array<string> $proxies
+     */
     public static function setTrustedProxies(array $proxies): void
     {
         self::$trustedProxies = $proxies;
     }
 
+    /**
+     * @return array<string>
+     */
     public static function getTrustedProxies(): array
     {
         return self::$trustedProxies;
@@ -173,7 +180,9 @@ class SaTokenContext
                     return $ip;
                 }
             }
-            return $ips[0] ?? $remoteAddr;
+            // 链上全部为可信代理时，XFF 最左值是最初代理写入的、可能被
+            // 伪造的字段；此时唯一可信的是直连地址 REMOTE_ADDR
+            return $remoteAddr;
         }
 
         $realIp = self::getHeader('X-Real-IP');
@@ -293,6 +302,12 @@ class SaTokenContext
      */
     public static function setHeader(string $name, string $value): void
     {
+        // 头名/值中的 CR/LF/NUL 会让攻击者注入任意响应头（HTTP 响应拆分）。
+        // 框架内部值均为服务端生成，但 setHeader 是公开 API——在入口统一剥离，
+        // 集成方把用户可控数据写头时不再形成注入面
+        $name = str_replace(["\r", "\n", "\0"], '', $name);
+        $value = str_replace(["\r", "\n", "\0"], '', $value);
+
         $response = self::getResponse();
         if ($response === null) {
             $id = self::getContextId();
@@ -329,6 +344,13 @@ class SaTokenContext
         bool $httpOnly = false,
         string $sameSite = 'Lax'
     ): void {
+        // 同 setHeader：Cookie 名/值/属性中的 CR/LF/NUL 会被剥离，
+        // 防止经由 Set-Cookie 的响应头注入
+        $name = str_replace(["\r", "\n", "\0"], '', $name);
+        $value = str_replace(["\r", "\n", "\0"], '', $value);
+        $path = str_replace(["\r", "\n", "\0"], '', $path);
+        $domain = str_replace(["\r", "\n", "\0"], '', $domain);
+
         $response = self::getResponse();
         if ($response === null) {
             $id = self::getContextId();

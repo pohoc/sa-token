@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SaToken\Util;
 
+use CryptoSm\SM3\HmacSm3;
 use CryptoSm\SM3\Sm3;
 use CryptoSm\SM4\Sm4;
 use CryptoSm\SM4\Sm4Options;
@@ -12,6 +13,8 @@ use SaToken\Exception\SaTokenException;
 class SaTokenEncryptor
 {
     protected string $key;
+
+    protected string $macKey;
 
     protected bool $enabled;
 
@@ -24,8 +27,10 @@ class SaTokenEncryptor
 
         if ($this->useSm) {
             $this->key = $this->deriveSm4Key($key);
+            $this->macKey = substr(bin2hex(hash_hkdf('sha256', $this->key, 32, 'sa-token-sm4-mac', '')), 0, 32);
         } else {
             $this->key = $this->deriveAesKey($key);
+            $this->macKey = substr(hash_hkdf('sha256', $this->key, 32, 'sa-token-aes-mac', ''), 0, 32);
         }
     }
 
@@ -65,7 +70,8 @@ class SaTokenEncryptor
             throw new SaTokenException('Token 内容加密失败（AES）');
         }
 
-        $hmac = hash_hmac('sha256', $iv . $ciphertext, $this->key, true);
+        // Encrypt-then-MAC，MAC 使用独立派生的密钥（与加密密钥分离）
+        $hmac = hash_hmac('sha256', $iv . $ciphertext, $this->macKey, true);
 
         return base64_encode($hmac . $iv . $ciphertext);
     }
@@ -81,9 +87,13 @@ class SaTokenEncryptor
         $iv = substr($decoded, 32, 16);
         $ciphertext = substr($decoded, 48);
 
-        $expectedHmac = hash_hmac('sha256', $iv . $ciphertext, $this->key, true);
+        // 兼容历史格式：先验独立 MAC 密钥，再回退旧版（与加密密钥相同）格式
+        $expectedHmac = hash_hmac('sha256', $iv . $ciphertext, $this->macKey, true);
         if (!hash_equals($hmac, $expectedHmac)) {
-            return $data;
+            $legacyHmac = hash_hmac('sha256', $iv . $ciphertext, $this->key, true);
+            if (!hash_equals($hmac, $legacyHmac)) {
+                return $data;
+            }
         }
 
         $plaintext = openssl_decrypt($ciphertext, 'AES-256-CBC', $this->key, OPENSSL_RAW_DATA, $iv);
@@ -101,7 +111,8 @@ class SaTokenEncryptor
             $iv = $options->getIv();
             $ciphertext = Sm4::encrypt($plaintext, $this->key, $options);
 
-            $hmac = Sm3::sm3($iv . $ciphertext);
+            // 完整性必须使用带密钥的 HMAC-SM3：无密钥的 SM3 无法防御存储层篡改
+            $hmac = HmacSm3::hmac($this->macKey, $iv . $ciphertext);
 
             return base64_encode(hex2bin($hmac) . hex2bin($iv) . hex2bin($ciphertext));
         } catch (\Throwable $e) {
@@ -120,9 +131,13 @@ class SaTokenEncryptor
         $iv = bin2hex(substr($decoded, 32, 16));
         $ciphertext = bin2hex(substr($decoded, 48));
 
-        $expectedHmac = Sm3::sm3($iv . $ciphertext);
+        // 兼容历史格式：先验 HMAC-SM3（独立密钥），再回退旧版无密钥 SM3 格式
+        $expectedHmac = HmacSm3::hmac($this->macKey, $iv . $ciphertext);
         if (!hash_equals($expectedHmac, $hmac)) {
-            return $data;
+            $legacyHmac = Sm3::sm3($iv . $ciphertext);
+            if (!hash_equals($legacyHmac, $hmac)) {
+                return $data;
+            }
         }
 
         try {
@@ -131,6 +146,39 @@ class SaTokenEncryptor
         } catch (\Throwable) {
             return $data;
         }
+    }
+
+    /**
+     * 解密并校验完整性，失败时返回 null（区别于"数据不存在"）。
+     * decrypt() 出于兼容存量明文/迁移场景会静默返回原文，无法感知篡改；
+     * 对安全敏感的读取路径建议使用本方法。
+     */
+    public function decryptChecked(string $data): ?string
+    {
+        if (!$this->enabled) {
+            return $data;
+        }
+
+        $plaintext = $this->decrypt($data);
+        if ($plaintext === $data && $this->isCiphertext($data)) {
+            return null;
+        }
+        return $plaintext;
+    }
+
+    /**
+     * 判断输入是否符合本加密器的密文格式（base64 解码后长度足够且含 MAC 结构）
+     */
+    public function isCiphertext(string $data): bool
+    {
+        if (!$this->enabled) {
+            return false;
+        }
+        $decoded = base64_decode($data, true);
+        if ($decoded === false) {
+            return false;
+        }
+        return $this->useSm ? strlen($decoded) >= 64 : strlen($decoded) >= 48;
     }
 
     protected function deriveAesKey(string $key): string

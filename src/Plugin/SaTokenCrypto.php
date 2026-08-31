@@ -58,8 +58,14 @@ class SaTokenCrypto
         $this->hmacKey = is_string($hmacKey) ? $hmacKey : '';
     }
 
+    private const AEAD_MAGIC = 'SAT1';
+
     /**
-     * AES 加密
+     * AES 加密（Encrypt-then-MAC）
+     *
+     * CBC 模式本身不提供完整性：无 MAC 的密文可被篡改（比特翻转），
+     * 且解密失败的差异可被用作 padding oracle。新格式为
+     * MAGIC(4) + HMAC-SHA256(32, 独立派生密钥) + IV + 密文
      *
      * @param  string           $data 明文
      * @param  string|null      $key  密钥，null 使用配置密钥
@@ -85,11 +91,16 @@ class SaTokenCrypto
             throw new SaTokenException('AES 加密失败');
         }
 
-        return base64_encode($iv . $encrypted);
+        $mac = hash_hmac('sha256', $iv . $encrypted, $this->deriveAesMacKey($paddedKey), true);
+
+        return base64_encode(self::AEAD_MAGIC . $mac . $iv . $encrypted);
     }
 
     /**
      * AES 解密
+     *
+     * 新格式先验证 MAC（失败直接抛异常，不尝试解密）；
+     * 旧格式（无 MAGIC 前缀的历史密文）按原逻辑解密以保持兼容
      *
      * @param  string           $data Base64 编码的密文
      * @param  string|null      $key  密钥，null 使用配置密钥
@@ -109,10 +120,30 @@ class SaTokenCrypto
         }
 
         $ivLength = openssl_cipher_iv_length('AES-256-CBC') ?: 16;
-        $iv = substr($decoded, 0, $ivLength);
-        $encrypted = substr($decoded, $ivLength);
-
         $paddedKey = $this->padAesKey($key);
+
+        $macLength = strlen(self::AEAD_MAGIC) + 32;
+        if (str_starts_with($decoded, self::AEAD_MAGIC) && strlen($decoded) >= $macLength + $ivLength) {
+            $mac = substr($decoded, 4, 32);
+            $iv = substr($decoded, $macLength, $ivLength);
+            $encrypted = substr($decoded, $macLength + $ivLength);
+
+            $expectedMac = hash_hmac('sha256', $iv . $encrypted, $this->deriveAesMacKey($paddedKey), true);
+            if (!hash_equals($expectedMac, $mac)) {
+                // 旧格式随机 IV 的前 4 字节恰好是 'SAT1' 的概率约 2^-32，
+                // 命中后 MAC 必然不符——回退旧格式分支尝试解密而非直接判损
+                $legacyIv = substr($decoded, 0, $ivLength);
+                $legacyEncrypted = substr($decoded, $ivLength);
+                $legacyPlaintext = openssl_decrypt($legacyEncrypted, 'AES-256-CBC', $paddedKey, OPENSSL_RAW_DATA, $legacyIv);
+                if ($legacyPlaintext !== false) {
+                    return $legacyPlaintext;
+                }
+                throw new SaTokenException('AES 解密失败：密文完整性校验未通过（可能被篡改）');
+            }
+        } else {
+            $iv = substr($decoded, 0, $ivLength);
+            $encrypted = substr($decoded, $ivLength);
+        }
 
         $decrypted = openssl_decrypt($encrypted, 'AES-256-CBC', $paddedKey, OPENSSL_RAW_DATA, $iv);
         if ($decrypted === false) {
@@ -120,6 +151,14 @@ class SaTokenCrypto
         }
 
         return $decrypted;
+    }
+
+    /**
+     * 插件 AES 的 MAC 独立密钥（与加密密钥分离）
+     */
+    protected function deriveAesMacKey(string $paddedKey): string
+    {
+        return hash_hkdf('sha256', $paddedKey, 32, 'sa-token-aes-plugin-mac', '');
     }
 
     /**
