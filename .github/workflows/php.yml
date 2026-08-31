@@ -5,6 +5,11 @@ on:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test-no-redis:
@@ -15,6 +20,8 @@ jobs:
       matrix:
         php-version: ['8.1', '8.2', '8.3', '8.4', '8.5']
 
+    name: Test (no Redis) / PHP ${{ matrix.php-version }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -24,18 +31,27 @@ jobs:
           php-version: ${{ matrix.php-version }}
           extensions: gmp, openssl
           coverage: none
+          cache: composer
 
       - name: Validate composer.json
         run: composer validate --strict
 
       - name: Install dependencies
-        run: composer install --no-interaction --prefer-dist
+        run: composer install --no-interaction --prefer-dist --no-progress
 
       - name: Execute tests
         run: vendor/bin/phpunit
 
   test-with-redis-extension:
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        php-version: ['8.1', '8.2', '8.3', '8.4', '8.5']
+
+    name: Test (real Redis) / PHP ${{ matrix.php-version }}
+
     services:
       redis:
         image: redis:7-alpine
@@ -56,21 +72,24 @@ jobs:
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.4'
+          php-version: ${{ matrix.php-version }}
           extensions: gmp, openssl, redis
           coverage: none
+          cache: composer
 
       - name: Validate composer.json
         run: composer validate --strict
 
       - name: Install dependencies
-        run: composer install --no-interaction --prefer-dist
+        run: composer install --no-interaction --prefer-dist --no-progress
 
       - name: Execute tests with redis extension
         run: vendor/bin/phpunit
 
-  analyse:
+  coverage:
     runs-on: ubuntu-latest
+
+    name: Coverage
 
     steps:
       - uses: actions/checkout@v4
@@ -80,12 +99,51 @@ jobs:
         with:
           php-version: '8.4'
           extensions: gmp, openssl
+          coverage: pcov
+          cache: composer
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Generate coverage
+        run: |
+          vendor/bin/phpunit --coverage-clover=coverage.xml --coverage-html=coverage-html
+          PERCENT=$(php -r '$m=simplexml_load_file("coverage.xml")->project->metrics;echo $m["elements"]>0?round($m["coveredelements"]/$m["elements"]*100,2):0;')
+          echo "### 代码覆盖率：${PERCENT}%" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            coverage.xml
+            coverage-html/
+          retention-days: 14
+          if-no-files-found: error
+
+  analyse:
+    runs-on: ubuntu-latest
+
+    name: Static analysis & dependency audit
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: gmp, openssl
+          cache: composer
 
       - name: Validate composer.json
         run: composer validate --strict
 
       - name: Install dependencies
-        run: composer install --no-interaction --prefer-dist
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Security audit (composer advisories)
+        run: composer audit
 
       - name: PHPStan
         run: composer analyse

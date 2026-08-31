@@ -22,12 +22,16 @@ jobs:
         with:
           php-version: '8.4'
           extensions: gmp, openssl
+          cache: composer
 
       - name: Validate composer.json
         run: composer validate --strict
 
       - name: Install dependencies
-        run: composer install --no-interaction --prefer-dist
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Security audit (composer advisories)
+        run: composer audit
 
       - name: Run tests
         run: vendor/bin/phpunit
@@ -53,6 +57,22 @@ jobs:
           echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
           echo "$BODY" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Commit changelog back to main
+        run: |
+          cp CHANGELOG.md /tmp/CHANGELOG.generated.md
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout main
+          git pull --ff-only origin main
+          cp /tmp/CHANGELOG.generated.md CHANGELOG.md
+          if git diff --quiet CHANGELOG.md; then
+            echo "CHANGELOG 未变化，跳过提交"
+          else
+            git add CHANGELOG.md
+            git commit -m "docs: 更新 CHANGELOG（${{ steps.version.outputs.VERSION }} 发布）"
+            git push origin main
+          fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
