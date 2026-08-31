@@ -58,6 +58,9 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Commit changelog back to main
+        # 尽力而为：失败不阻塞 Release 发布（CHANGELOG 可随后手动同步）
+        id: changelog-commit
+        continue-on-error: true
         run: |
           cp CHANGELOG.md /tmp/CHANGELOG.generated.md
           git config user.name "github-actions[bot]"
@@ -72,6 +75,14 @@ jobs:
             git commit -m "docs: 更新 CHANGELOG（${{ steps.version.outputs.VERSION }} 发布）"
             git push origin main
           fi
+
+      - name: Diagnose changelog commit on failure
+        if: steps.changelog-commit.outcome == 'failure'
+        run: |
+          echo "::warning::CHANGELOG 回写失败，Release 继续发布；以下为诊断信息"
+          git status --porcelain || true
+          git branch -a || true
+          git remote -v || true
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
