@@ -303,41 +303,10 @@ class SaAuditLog
 
     protected static function getClientIp(): ?string
     {
-        $request = SaTokenContext::getRequest();
-        if ($request === null) {
-            return null;
-        }
-
-        if ($request instanceof \Psr\Http\Message\ServerRequestInterface) {
-            $serverParams = $request->getServerParams();
-            $addr = $serverParams['REMOTE_ADDR'] ?? null;
-            return is_string($addr) ? $addr : null;
-        }
-
-        if (is_object($request) && method_exists($request, 'getHeaderLine')) {
-            $ip = $request->getHeaderLine('X-Forwarded-For');
-            if (is_string($ip) && $ip !== '') {
-                $parts = explode(',', $ip);
-                return trim($parts[0]);
-            }
-            $ip = $request->getHeaderLine('X-Real-IP');
-            if (is_string($ip) && $ip !== '') {
-                return trim($ip);
-            }
-        }
-
-        if (function_exists('apache_request_headers')) {
-            $headers = apache_request_headers();
-            if (isset($headers['X-Forwarded-For']) && is_string($headers['X-Forwarded-For'])) {
-                $parts = explode(',', $headers['X-Forwarded-For']);
-                return trim($parts[0]);
-            }
-            if (isset($headers['X-Real-IP']) && is_string($headers['X-Real-IP'])) {
-                return $headers['X-Real-IP'];
-            }
-        }
-
-        return null;
+        // 审计日志的 IP 必须与鉴权主链路使用同一来源（SaTokenContext::getClientIp）。
+        // 这里自行解析 X-Forwarded-For 首段会信任客户端可伪造的头，
+        // 使审计记录的 IP 全部失真（可嫁祸他人、破坏取证）
+        return SaTokenContext::getClientIp();
     }
 
     public static function reset(): void

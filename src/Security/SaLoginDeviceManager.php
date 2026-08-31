@@ -97,6 +97,20 @@ class SaLoginDeviceManager
     {
         $dao = SaToken::getDao();
         $key = self::getKey($loginId, $loginType) . ':' . $deviceId;
+
+        // 踢出设备必须同时终止其会话：只删设备记录而保留 Token，
+        // 调用方会误以为会话已终止，实际 Token 完全可用
+        $data = $dao->get($key);
+        if ($data !== null) {
+            $decoded = @json_decode($data, true);
+            if (is_array($decoded)) {
+                $tokenValue = $decoded['tokenValue'] ?? null;
+                if (is_string($tokenValue) && $tokenValue !== '') {
+                    \SaToken\SaToken::getStpLogic($loginType)->kickoutByTokenValue($tokenValue);
+                }
+            }
+        }
+
         $dao->delete($key);
     }
 

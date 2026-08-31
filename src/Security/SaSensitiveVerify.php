@@ -14,6 +14,7 @@ class SaSensitiveVerify
     protected static int $codeLength = 6;
     protected static int $validSeconds = 300;
     protected static int $maxAttempts = 3;
+    protected static int $sendInterval = 60;
 
     public static function setCodeLength(int $length): void
     {
@@ -28,6 +29,16 @@ class SaSensitiveVerify
     public static function setMaxAttempts(int $max): void
     {
         self::$maxAttempts = $max;
+    }
+
+    public static function setSendInterval(int $seconds): void
+    {
+        self::$sendInterval = max(0, $seconds);
+    }
+
+    public static function getSendInterval(): int
+    {
+        return self::$sendInterval;
     }
 
     public static function getKey(string $scene, mixed $loginId, string $loginType = 'login'): string
@@ -53,6 +64,7 @@ class SaSensitiveVerify
 
         $jsonStr = json_encode($data);
         $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', self::$validSeconds + 60);
+        $dao->delete($key . ':att');
 
         return $code;
     }
@@ -68,6 +80,14 @@ class SaSensitiveVerify
 
     public static function sendCode(string $scene, mixed $loginId, string $loginType = 'login'): string
     {
+        // 发送频控：同一 scene+loginId 默认 60 秒内只允许发送一次。
+        // 没有频控的验证码下发等于向任意手机号/邮箱发起短信/邮件轰炸
+        $dao = SaToken::getDao();
+        $rateKey = self::getKey($scene, $loginId, $loginType) . ':sent';
+        if (!$dao->setIfNotExists($rateKey, '1', self::$sendInterval)) {
+            throw new SaTokenException('验证码发送过于频繁，请 ' . self::$sendInterval . ' 秒后再试');
+        }
+
         $code = self::generateCode($scene, $loginId, $loginType);
 
         self::sendNotification($scene, $code, $loginId);
@@ -89,6 +109,7 @@ class SaSensitiveVerify
     {
         $dao = SaToken::getDao();
         $key = self::getKey($scene, $loginId, $loginType);
+        $attemptsKey = $key . ':att';
         $data = $dao->get($key);
 
         if ($data === null) {
@@ -107,23 +128,21 @@ class SaSensitiveVerify
         $expiresAt = $info['expiresAt'] ?? 0;
         if ($expiresAt > 0 && $expiresAt < time()) {
             $dao->delete($key);
+            $dao->delete($attemptsKey);
             return false;
         }
 
-        $attempts = $info['attempts'] ?? 0;
-        $attemptsInt = is_int($attempts) ? $attempts : 0;
-        $attemptsInt = $attemptsInt + 1;
-        if ($attemptsInt > self::$maxAttempts) {
+        // 先原子递增尝试计数再校验：读-改-写在并发提交下会被覆盖，
+        // 攻击者可用远超 maxAttempts 的次数爆破 6 位验证码
+        $attempts = $dao->increment($attemptsKey, 1, max(60, self::$validSeconds));
+        if ($attempts > self::$maxAttempts) {
             $dao->delete($key);
+            $dao->delete($attemptsKey);
             throw new SaTokenException('验证码尝试次数过多，请重新获取', -1);
         }
 
         $codeStr = $info['code'] ?? '';
         if (!hash_equals(is_string($codeStr) ? $codeStr : (is_scalar($codeStr) ? (string) $codeStr : ''), $code)) {
-            $info['attempts'] = $attemptsInt;
-            $jsonStr = json_encode($info);
-            $expiresAtInt = is_int($expiresAt) ? $expiresAt : 0;
-            $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', $expiresAtInt > 0 ? ($expiresAtInt - time() + 60) : null);
             return false;
         }
 
@@ -131,6 +150,7 @@ class SaSensitiveVerify
         $info['verifiedAt'] = time();
         $jsonStr = json_encode($info);
         $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', 60);
+        $dao->delete($attemptsKey);
 
         return true;
     }
@@ -170,20 +190,9 @@ class SaSensitiveVerify
     public static function getRemainingAttempts(string $scene, mixed $loginId, string $loginType = 'login'): int
     {
         $dao = SaToken::getDao();
-        $key = self::getKey($scene, $loginId, $loginType);
-        $data = $dao->get($key);
+        $attempts = $dao->get(self::getKey($scene, $loginId, $loginType) . ':att');
 
-        if ($data === null) {
-            return self::$maxAttempts;
-        }
-
-        $info = @json_decode($data, true);
-        if (!is_array($info)) {
-            return self::$maxAttempts;
-        }
-
-        $attempts = $info['attempts'] ?? 0;
-        return max(0, self::$maxAttempts - (is_int($attempts) ? $attempts : 0));
+        return max(0, self::$maxAttempts - ($attempts !== null ? (int) $attempts : 0));
     }
 
     public static function createSafeToken(string $scene, mixed $loginId, string $loginType = 'login', int $validSeconds = 600): string
@@ -199,6 +208,7 @@ class SaSensitiveVerify
             'loginType' => $loginType,
             'createdAt' => time(),
             'expiresAt' => time() + $validSeconds,
+            'tokenHash' => hash('sha256', $token),
         ];
 
         $jsonStr = json_encode($data);
@@ -229,6 +239,15 @@ class SaSensitiveVerify
             return false;
         }
 
+        // 存储键只含 token 前 16 个 hex 字符，必须用完整 token 哈希校验，
+        // 否则有效熵从 256 bit 缩水到 64 bit
+        $tokenHash = $info['tokenHash'] ?? null;
+        if (is_string($tokenHash)) {
+            if (!hash_equals($tokenHash, hash('sha256', $token))) {
+                return false;
+            }
+        }
+
         $dao->delete($key);
         return true;
     }
@@ -246,5 +265,6 @@ class SaSensitiveVerify
         self::$codeLength = 6;
         self::$validSeconds = 300;
         self::$maxAttempts = 3;
+        self::$sendInterval = 60;
     }
 }

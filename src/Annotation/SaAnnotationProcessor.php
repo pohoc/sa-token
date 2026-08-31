@@ -18,7 +18,12 @@ class SaAnnotationProcessor
         $reflectionClass = new ReflectionClass($class);
         $reflectionMethod = $reflectionClass->getMethod($method);
 
-        $classAttributes = $reflectionClass->getAttributes();
+        // 类级注解必须沿继承链合并：开发者习惯把 #[SaCheckLogin] 标在
+        // BaseController 上，getAttributes() 不含父类会让继承式鉴权整体静默失效
+        $classAttributes = [];
+        for ($c = $reflectionClass; $c !== false; $c = $c->getParentClass()) {
+            $classAttributes = array_merge($classAttributes, $c->getAttributes());
+        }
         $methodAttributes = $reflectionMethod->getAttributes();
 
         foreach ($methodAttributes as $attr) {
@@ -48,7 +53,7 @@ class SaAnnotationProcessor
             } elseif ($instance instanceof SaCheckPermission) {
                 $permissions = explode(',', $instance->getValue());
                 $permissions = array_map('trim', $permissions);
-                if ($instance->getMode() === 'AND') {
+                if (strtoupper($instance->getMode()) === 'AND') {
                     $stpLogic->checkPermissionAnd($permissions);
                 } else {
                     $stpLogic->checkPermissionOr($permissions);
@@ -56,7 +61,7 @@ class SaAnnotationProcessor
             } elseif ($instance instanceof SaCheckRole) {
                 $roles = explode(',', $instance->getValue());
                 $roles = array_map('trim', $roles);
-                if ($instance->getMode() === 'AND') {
+                if (strtoupper($instance->getMode()) === 'AND') {
                     $stpLogic->checkRoleAnd($roles);
                 } else {
                     $stpLogic->checkRoleOr($roles);

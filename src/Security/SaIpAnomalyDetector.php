@@ -148,14 +148,16 @@ class SaIpAnomalyDetector
             return false;
         }
 
-        $p1 = strtok($ip1, '.');
-        $p2 = strtok($ip2, '.');
-
-        if ($p1 === false || $p2 === false) {
+        // 前 /8（仅第一段）会把 1.2.3.4 与 1.9.9.9 视为同区域——
+        // 这两个地址可能跨大洲；/16（前两段）是无 GeoIP 依赖下更贴近
+        // "同一网络区域"的合理近似
+        $parts1 = explode('.', $ip1);
+        $parts2 = explode('.', $ip2);
+        if (count($parts1) < 2 || count($parts2) < 2) {
             return false;
         }
 
-        return $p1 === $p2;
+        return $parts1[0] === $parts2[0] && $parts1[1] === $parts2[1];
     }
 
     public static function getAnomalyCount(mixed $loginId, string $loginType = 'login'): int
