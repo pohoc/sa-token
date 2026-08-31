@@ -1,112 +1,76 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: SemVer without v, for example 1.2.3
+        required: true
+        type: string
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
-  contents: write
-  checks: read
+  contents: read
 
 jobs:
-  release:
+  validate-version:
+    name: Validate release version
     runs-on: ubuntu-latest
-
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          ref: main
           fetch-depth: 0
-
-      - name: Setup PHP
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: '8.4'
-          extensions: gmp, openssl
-
-      - name: Verify CI green gate on tagged commit
+      - id: version
+        shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
         run: |
-          SHA=$(git rev-parse HEAD^{commit})
-          echo "tagged commit: $SHA"
-          STATUS=$(curl -sf --max-time 30 \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/commits/${SHA}/check-runs?per_page=100" \
-            | jq -r '[.check_runs[] | select(.name == "CI green gate")][0].conclusion // "missing"')
-          echo "CI green gate: $STATUS"
-          if [ "$STATUS" != "success" ]; then
-            echo "::error::该提交的 CI green gate 状态为 '$STATUS'（必须 success）。请等 main CI 全绿后再打 tag——Ruleset 本应拦截此操作。"
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]
+          if git show-ref --tags --verify --quiet "refs/tags/v$VERSION"; then
+            echo '::error::The release tag already exists.'
             exit 1
           fi
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Validate composer.json
-        run: composer validate --strict
+  full-ci:
+    name: Full CI
+    needs: validate-version
+    uses: ./.github/workflows/_ci.yml
+    secrets: inherit
 
-      - name: Install dependencies
-        run: composer install --no-interaction --prefer-dist --no-progress
-
-      - name: Security audit (composer advisories)
-        run: composer audit
-
-      - name: Run tests
-        run: vendor/bin/phpunit
-
-      - name: Get version
-        id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-
-      - name: Generate changelog
-        run: php scripts/changelog.php
-
-      - name: Extract current version changelog
-        id: changelog
-        run: |
-          VERSION=${{ steps.version.outputs.VERSION }}
-          NEXT_HEADER=$(grep -n "^## \[" CHANGELOG.md | head -2 | tail -1 | cut -d: -f1)
-          CURR_HEADER=$(grep -n "^## \[" CHANGELOG.md | head -1 | cut -d: -f1)
-          if [ -n "$NEXT_HEADER" ]; then
-            BODY=$(sed -n "$((CURR_HEADER + 1)),$((NEXT_HEADER - 1))p" CHANGELOG.md | sed '/^$/d; /^\[.*\]:/d')
-          else
-            BODY=$(sed -n "$((CURR_HEADER + 1)),\$p" CHANGELOG.md | sed '/^$/d; /^\[.*\]:/d')
-          fi
-          echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
-          echo "$BODY" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-      - name: Commit changelog back to main
-        # 尽力而为：失败不阻塞 Release 发布（CHANGELOG 可随后手动同步）
-        id: changelog-commit
-        continue-on-error: true
-        run: |
-          cp CHANGELOG.md /tmp/CHANGELOG.generated.md
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout main
-          git pull --ff-only origin main
-          cp /tmp/CHANGELOG.generated.md CHANGELOG.md
-          if git diff --quiet CHANGELOG.md; then
-            echo "CHANGELOG 未变化，跳过提交"
-          else
-            git add CHANGELOG.md
-            git commit -m "docs: 更新 CHANGELOG（${{ steps.version.outputs.VERSION }} 发布）"
-            git push origin main
-          fi
-
-      - name: Diagnose changelog commit on failure
-        if: steps.changelog-commit.outcome == 'failure'
-        run: |
-          echo "::warning::CHANGELOG 回写失败，Release 继续发布；以下为诊断信息"
-          git status --porcelain || true
-          git branch -a || true
-          git remote -v || true
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+  publish:
+    name: Create tag and GitHub Release
+    needs: [validate-version, full-ci]
+    if: ${{ needs.full-ci.result == 'success' }}
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          tag_name: ${{ steps.version.outputs.VERSION }}
-          name: Release ${{ steps.version.outputs.VERSION }}
-          body: ${{ steps.changelog.outputs.CHANGELOG }}
-          draft: false
-          prerelease: false
+          ref: main
+          fetch-depth: 0
+      - name: Verify main is unchanged and create tag
+        env:
+          TAG: ${{ needs.validate-version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git fetch origin main --prune --tags
+          test "$(git rev-parse origin/main)" = "$(git rev-parse HEAD)"
+          git config user.name 'release-bot[bot]'
+          git config user.email 'release-bot@users.noreply.github.com'
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.validate-version.outputs.tag }}
+        run: gh release create "$TAG" --verify-tag --generate-notes --title "$TAG"
