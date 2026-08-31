@@ -56,6 +56,10 @@ class SaSsoConfig
     // 跨 Redis ticket 校验地址
     protected string $crossRedisCheckUrl = '';
 
+    // 是否强制校验 state 参数（防登录 CSRF），默认开启。
+    // 关闭后回调不再要求 state，仅在明确了解风险的场景下才应关闭
+    protected bool $checkState = true;
+
     /**
      * @param array<string, mixed> $config
      */
@@ -204,6 +208,17 @@ class SaSsoConfig
     public function setCrossRedisCheckUrl(string $crossRedisCheckUrl): static
     {
         $this->crossRedisCheckUrl = $crossRedisCheckUrl;
+        return $this;
+    }
+
+    public function isCheckState(): bool
+    {
+        return $this->checkState;
+    }
+
+    public function setCheckState(bool $checkState): static
+    {
+        $this->checkState = $checkState;
         return $this;
     }
 }

@@ -62,9 +62,12 @@ class SaSsoManager
         return $this->handle->buildLoginUrl($redirect);
     }
 
-    public function doLoginCallback(string $ticket, ?string $redirect = null): mixed
+    public function doLoginCallback(string $ticket, ?string $redirect = null, ?string $state = null): mixed
     {
         if ($this->config->isCrossRedis()) {
+            // 跨 Redis 路径同样必须经过 state/redirect 校验，不能成为绕过防护的旁路
+            $this->handle->validateCallbackRequest($redirect, $state);
+
             $loginId = $this->handle->checkTicketCrossRedis($ticket);
             if ($loginId !== null) {
                 StpUtil::login($loginId);
@@ -72,17 +75,30 @@ class SaSsoManager
             return $loginId;
         }
 
-        return $this->handle->doLoginCallback($ticket, $redirect);
+        return $this->handle->doLoginCallback($ticket, $redirect, $state);
+    }
+
+    /**
+     * @param array<string, mixed>|null $params
+     */
+    public function doSloCallback(mixed $loginId, ?array $params = null): void
+    {
+        $this->handle->doSloCallback($loginId, $params);
+    }
+
+    /**
+     * 构建单点注销回调参数（认证中心侧使用，自动附带签名）
+     *
+     * @return array<string, string>
+     */
+    public function buildSloCallbackParams(mixed $loginId): array
+    {
+        return $this->handle->buildSloCallbackParams($loginId);
     }
 
     public function buildSloUrl(?string $redirect = null): string
     {
         return $this->handle->buildSloUrl($redirect);
-    }
-
-    public function doSloCallback(mixed $loginId): void
-    {
-        $this->handle->doSloCallback($loginId);
     }
 
     public function getConfig(): SaSsoConfig

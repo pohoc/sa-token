@@ -70,14 +70,31 @@ class SaSsoTemplate
     }
 
     /**
-     * @param array<string, string> $params
+     * 接受外部输入的参数集（值可能为 mixed），仅标量值参与规范化。
+     *
+     * $maxAge 非 null 且参数集含 timestamp 时额外校验时效（秒），
+     * 防止合法签名在窗口外被无限重放（check-ticket/SLO 回调建议传入）
+     *
+     * @param array<string, mixed> $params
      */
-    public function verifySign(array $params, string $clientSecret): bool
+    public function verifySign(array $params, string $clientSecret, ?int $maxAge = null): bool
     {
+        $ts = $params['timestamp'] ?? null;
+        if ($maxAge !== null && is_scalar($ts)) {
+            if (abs(time() - (int) (string) $ts) > $maxAge) {
+                return false;
+            }
+        }
         $sign = $params['sign'] ?? '';
         unset($params['sign']);
-        ksort($params);
-        $signStr = http_build_query($params) . '&key=' . $clientSecret;
+        $normalized = [];
+        foreach ($params as $k => $v) {
+            if (is_scalar($v)) {
+                $normalized[(string) $k] = (string) $v;
+            }
+        }
+        ksort($normalized);
+        $signStr = http_build_query($normalized) . '&key=' . $clientSecret;
 
         if ($this->cryptoType === 'sm') {
             $expected = HmacSm3::hmac($clientSecret, $signStr);
@@ -85,7 +102,7 @@ class SaSsoTemplate
             $expected = hash_hmac('sha256', $signStr, $clientSecret);
         }
 
-        return hash_equals($expected, $sign);
+        return is_string($sign) && hash_equals($expected, $sign);
     }
 
     /**
@@ -112,6 +129,9 @@ class SaSsoTemplate
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_TIMEOUT, 10);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+        // 协议白名单：即使配置被注入 file:// 等伪协议，也不会触发本地文件读取
+        curl_setopt($ch, CURLOPT_PROTOCOLS, CURLPROTO_HTTPS | CURLPROTO_HTTP);
+        curl_setopt($ch, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTPS | CURLPROTO_HTTP);
 
         if ($method === 'POST') {
             curl_setopt($ch, CURLOPT_POST, true);

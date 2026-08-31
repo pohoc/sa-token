@@ -40,13 +40,13 @@ class SsoModeFrontSeparate
      * @return array{tokenValue: string, loginId: mixed, tokenName: string}
      * @throws SaTokenException
      */
-    public function doLoginByTicket(string $ticket): array
+    public function doLoginByTicket(string $ticket, ?string $state = null): array
     {
         if (SaFoxUtil::isEmpty($ticket)) {
             throw new SaTokenException('ticket 不能为空');
         }
 
-        $loginId = $this->handle->doLoginCallback($ticket);
+        $loginId = $this->handle->doLoginCallback($ticket, null, $state);
 
         $tokenValue = StpUtil::getTokenValue();
         $tokenName = SaToken::getConfig()->getTokenName();
@@ -77,8 +77,11 @@ class SsoModeFrontSeparate
      * @param  mixed $loginId 登录 ID
      * @return void
      */
-    public function doSloCallback(mixed $loginId): void
+    /**
+     * @param array<string, mixed>|null $params
+     */
+    public function doSloCallback(mixed $loginId, ?array $params = null): void
     {
-        $this->handle->doSloCallback($loginId);
+        $this->handle->doSloCallback($loginId, $params);
     }
 }

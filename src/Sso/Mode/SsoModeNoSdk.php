@@ -19,7 +19,7 @@ class SsoModeNoSdk
         return $this->handle->buildLoginUrl($redirect, $currentUrl);
     }
 
-    public function validateTicket(string $ticket): mixed
+    public function validateTicket(string $ticket, ?string $state = null): mixed
     {
         if (SaFoxUtil::isEmpty($ticket)) {
             throw new SaTokenException('ticket 不能为空');
@@ -28,9 +28,10 @@ class SsoModeNoSdk
         $config = $this->handle->getConfig();
 
         if ($config->isCrossRedis()) {
+            $this->handle->validateCallbackRequest(null, $state);
             $loginId = $this->handle->checkTicketCrossRedis($ticket);
         } else {
-            $loginId = $this->handle->doLoginCallback($ticket);
+            $loginId = $this->handle->doLoginCallback($ticket, null, $state);
         }
 
         if ($loginId === null) {

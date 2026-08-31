@@ -41,12 +41,13 @@ class SsoModeCrossDomain
     /**
      * 处理跨域登录回调
      *
-     * @param  string $ticket SSO ticket
-     * @return mixed  登录 ID
+     * @param  string      $ticket SSO ticket
+     * @param  string|null $state  防 CSRF state 参数（checkState 开启时必填）
+     * @return mixed       登录 ID
      */
-    public function doLoginCallback(string $ticket): mixed
+    public function doLoginCallback(string $ticket, ?string $state = null): mixed
     {
-        return $this->handle->doLoginCallback($ticket);
+        return $this->handle->doLoginCallback($ticket, null, $state);
     }
 
     /**
@@ -77,11 +78,12 @@ class SsoModeCrossDomain
     /**
      * 处理跨域单点注销回调
      *
-     * @param  mixed $loginId 登录 ID
+     * @param  mixed                     $loginId 登录 ID
+     * @param  array<string, mixed>|null $params  回调请求参数（配置了 clientSecret 时必须携带签名）
      * @return void
      */
-    public function doSloCallback(mixed $loginId): void
+    public function doSloCallback(mixed $loginId, ?array $params = null): void
     {
-        $this->handle->doSloCallback($loginId);
+        $this->handle->doSloCallback($loginId, $params);
     }
 }
