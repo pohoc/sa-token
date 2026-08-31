@@ -2,6 +2,46 @@
 
 本文件由脚本自动生成，基于 git tag 和 commit 记录。
 
+## [v0.2.0] - 2026-08-31
+
+### 修复
+- (security) 安全组件原子化与注解继承修复
+- (sso) 登录 CSRF 强制校验、响应验签与回调防伪
+- (oauth2) 授权绑定、令牌族撤销与暴力破解防护
+- (crypto) 存储加密完整性与签名协议加固
+- (core) 会话终止闭环、并发竞态与多账号隔离
+
+### 新增
+- (storage) DAO 原子原语、本地文件存储与配置驱动自动装配
+
+### 变更
+- 完善 CI/CD 流水线
+- chore(qa)+docs: 移除 PHPStan 泛型压制并同步全部文档
+- (deps) 升级 pohoc/crypto-sm 至 ^0.3 并完善工程配置
+
+### 测试
+- (security) 80 项安全行为回归测试与既有测试适配
+
+## [v0.1.2] - 2026-05-21
+
+### 变更
+- 完善框架集成文档与上下文处理
+
+## [v0.1.1] - 2026-05-14
+
+### 修复
+- (security) 移除Token框架识别前缀、修正ticket拼写并增加随机熵
+- (security) OAuth2数据加密存储、redirect_uri严格校验、客户端信息持久化
+- (security) SSO添加State参数防CSRF、同域模式CSRF校验、注销回调域名白名单
+- (security) 登录分布式锁防竞态、Session Fixation防护、URL参数读取Token安全警告
+- (security) IP欺骗防护、JWT算法白名单校验、移除默认加密密钥、Cookie安全属性默认启用
+
+### 变更
+- 安全加固认证配置与锁释放
+
+### 文档
+- 更新变更日志 v0.1.0
+
 ## [v0.1.0] - 2026-05-12
 
 ### 修复
@@ -45,3 +85,6 @@
 
 [v0.0.1]: https://github.com/pohoc/sa-token/releases/tag/v0.0.1
 [v0.1.0]: https://github.com/pohoc/sa-token/compare/v0.0.1...v0.1.0
+[v0.1.1]: https://github.com/pohoc/sa-token/compare/v0.1.0...v0.1.1
+[v0.1.2]: https://github.com/pohoc/sa-token/compare/v0.1.1...v0.1.2
+[v0.2.0]: https://github.com/pohoc/sa-token/compare/v0.1.2...v0.2.0
