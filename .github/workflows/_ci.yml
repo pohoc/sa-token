@@ -28,12 +28,13 @@ jobs:
       - run: composer check-platform-reqs
 
   tests:
-    name: Test (no Redis) / PHP ${{ matrix.php }}
+    name: Test (no Redis) / PHP ${{ matrix.php }} / ${{ matrix.dependencies }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         php: ${{ fromJSON(inputs.php-versions) }}
+        dependencies: [lowest, highest]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: shivammathur/setup-php@b604ade2a87db23f8871b7182e69ec5e75effb45
@@ -43,7 +44,12 @@ jobs:
           tools: composer:v2
           coverage: none
       - run: composer validate --strict
-      - run: composer install --no-interaction --no-progress --prefer-dist
+      - name: Install lowest dependencies
+        if: matrix.dependencies == 'lowest'
+        run: composer update --prefer-lowest --prefer-dist --prefer-stable --no-interaction --no-progress
+      - name: Install highest dependencies
+        if: matrix.dependencies == 'highest'
+        run: composer update --prefer-dist --prefer-stable --no-interaction --no-progress
       - run: composer test
 
   redis:
