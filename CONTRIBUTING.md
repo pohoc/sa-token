@@ -16,6 +16,14 @@ composer install
 vendor/bin/phpunit
 ```
 
+## Coverage
+
+Requires Xdebug or PCOV (see composer.json scripts):
+
+```bash
+composer coverage   # generates coverage/ (HTML) and coverage.xml (clover)
+```
+
 ## Code Style
 
 This project uses [PHP-CS-Fixer](https://github.com/PHP-CS-Fixer/PHP-CS-Fixer) with the ruleset defined in `.php-cs-fixer.php`.
@@ -30,7 +38,7 @@ vendor/bin/php-cs-fixer fix
 
 ## Static Analysis
 
-This project uses [PHPStan](https://phpstan.org/) at level 5.
+This project uses [PHPStan](https://phpstan.org/) at level `max`.
 
 ```bash
 vendor/bin/phpstan analyse

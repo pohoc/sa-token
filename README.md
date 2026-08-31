@@ -7,6 +7,13 @@
 
 适用于 PHP 生态的轻量级权限认证框架，灵感源自 [sa-token](https://sa-token.cc)。
 
+> **致谢与声明**：本项目参考了 Java 生态 [dromara/sa-token](https://github.com/dromara/sa-token)（Apache-2.0）的 API 设计理念，
+> 代码为独立 PHP 实现。感谢原项目作者与社区。
+
+> **v0.1.3 安全加固说明**：本版本修复了安全审计发现的多处高危问题，部分行为为有意收紧（详见 [CHANGELOG.md](CHANGELOG.md)）：
+> OAuth2 换 token 必须携带 redirect_uri、SSO 回调强制校验 state、客户端注册必须配置非空 secret、
+> `SaSign` 强制 timestamp/nonce 且移除 MD5、加密插件密文格式升级（兼容读取旧格式）。升级前请阅读变更日志。
+
 ## 特性一览
 
 - **登录认证** — 单端/多端登录、同端互斥登录、记住我、踢人下线、账号封禁、临时 Token
@@ -21,7 +28,7 @@
 - **参数签名** — 跨系统 API 调用签名校验，防篡改、防重放
 - **API Key** — 第三方接入秘钥授权
 - **全局过滤器** — CORS、安全响应头、前后置过滤器
-- **持久层** — 内存 / Redis / PSR-16 任意适配，独立 Redis 分离
+- **持久层** — 内存 / 文件 / Redis / PSR-16 任意适配，配置驱动自动装配，独立 Redis 分离
 - **密码加密** — MD5 / SHA1 / SHA256 / HMAC / bcrypt
 - **多账号体系** — 不同 type 的 StpLogic 实例独立鉴权
 - **协程安全** — SaRouter 支持协程上下文隔离（Swoole / Hyperf）
@@ -574,17 +581,21 @@ SaToken::init([
         'clientId'     => 'your-client-id',
         'clientSecret' => 'your-client-secret',
         'allowDomains' => ['*.example.com', 'app.mycompany.cn'],
+        'checkState'   => true,   // 强制校验回调 state 防 CSRF（默认 true，不推荐关闭）
+        'crossRedis'   => false,  // 认证中心与客户端是否跨 Redis 部署
+        'crossRedisCheckUrl' => '', // 跨 Redis 模式的 check-ticket 端点，必须 HTTPS（localhost 豁免）
     ],
 ]);
 ```
 
-### 三种模式
+### 四种模式
 
 | 模式 | 适用场景 | 类 |
 |------|---------|-----|
 | `same-domain` | 前端同域 + 后端同 Redis | `SsoModeSameDomain` |
 | `cross-domain` | 前端不同域 + 后端同 Redis | `SsoModeCrossDomain` |
 | `front-separate` | 前后端分离 | `SsoModeFrontSeparate` |
+| `no-sdk` | 认证中心对接未引入 SDK 的客户端 | `SsoModeNoSdk` |
 
 ### 使用
 
@@ -595,7 +606,10 @@ $sso = SaToken::getSsoManager();
 
 $loginUrl = $sso->buildLoginUrl();
 
-$loginId = $sso->doLoginCallback($ticket);
+// $ticket、$redirect、$state 均来自回调请求参数；
+// $state 会与 buildLoginUrl 写入的 state Cookie 比对校验（checkState 默认开启，缺失/不匹配直接抛异常；
+// 确需关闭可在 SSO 配置中设置 'checkState' => false，不推荐）
+$loginId = $sso->doLoginCallback($ticket, $redirect, $state);
 ```
 
 ### 域名校验
@@ -607,12 +621,27 @@ $loginId = $sso->doLoginCallback($ticket);
 登录前 URL 参数自动保存，登录成功后精准回传：
 
 ```php
-$loginUrl = $sso->buildLoginUrl(null, $currentUrl);
+// buildLoginUrl 只有一个参数，携带当前 URL 请通过模式处理器调用
+$loginUrl = $sso->getModeHandler()->buildLoginUrl(null, $currentUrl);
 
-$result = $sso->doLoginCallbackWithRedirect($ticket);
+$result = $sso->getModeHandler()->doLoginCallbackWithRedirect($ticket);
 $loginId = $result['loginId'];
 $redirect = $result['redirect'];
 ```
+
+注意：`restorePreLoginUrl` 恢复登录前 URL 时会强制过 `allowDomains` 白名单（未配置 `allowDomains` 时返回空串）；配置 `clientSecret` 后预登录 URL Cookie 附带 HMAC 签名防篡改。
+
+### 单点注销回调
+
+```php
+// 认证中心侧：生成带签名的注销回调参数
+$params = $sso->buildSloCallbackParams($loginId);
+
+// 客户端侧：处理注销回调
+$sso->doSloCallback($loginId, $params);
+```
+
+配置 `clientSecret` 后，`doSloCallback` 会强制验签（回调参数必须包含 `sign`），防止伪造注销请求。
 
 ## OAuth2.0
 
@@ -620,6 +649,8 @@ $redirect = $result['redirect'];
 
 ```php
 SaToken::init([
+    // 签发 id_token（OpenID Connect）必需
+    'jwtSecretKey' => 'your-jwt-secret-key',
     'oauth2' => [
         'grantTypes'           => ['authorization_code', 'password'],
         'codeTimeout'          => 60,
@@ -643,19 +674,44 @@ SaToken::init([
 
 ### 使用
 
+使用前必须先注册客户端（clientId/clientSecret 强制非空，redirectUris 必须 HTTPS 且在白名单内，grantTypes/scopes 为白名单）：
+
 ```php
+use SaToken\OAuth2\Data\SaOAuth2Client;
 use SaToken\OAuth2\SaOAuth2Manager;
 
 $oauth2 = SaToken::getOAuth2Manager();
 
+$oauth2->registerClient(new SaOAuth2Client([
+    'clientId'     => 'your-client-id',
+    'clientSecret' => 'your-client-secret',
+    'redirectUris' => ['https://app.example.com/callback'],
+    'grantTypes'   => ['authorization_code', 'refresh_token'],
+    'scopes'       => ['user:read', 'user:write'],
+]));
+
+// 注意：换 token 必须传与授权请求一致的 redirect_uri；
+// 请求 scope 不得超出注册白名单；grant_type 必须在客户端注册列表中
 $code = $oauth2->generateAuthorizationCode($clientId, $loginId, $redirectUri, $scope);
 
 $accessToken = $oauth2->exchangeTokenByCode($code, $clientId, $clientSecret, $redirectUri);
 ```
 
+### PKCE
+
+公开客户端（注册时不配置 clientSecret 且 grantTypes 仅 `authorization_code`）强制使用 PKCE：
+
+```php
+// 第 5/6 参数为 codeChallenge/codeChallengeMethod，仅支持 S256，challenge 长度 43-128 字符
+$code = $oauth2->generateAuthorizationCode($clientId, $loginId, $redirectUri, $scope, $codeChallenge, 'S256');
+
+// 第 5 参数为 codeVerifier
+$accessToken = $oauth2->exchangeTokenByCode($code, $clientId, $clientSecret, $redirectUri, $codeVerifier);
+```
+
 ### OpenID Connect
 
-配置 `openIdMode => true` 且请求 scope 包含 `openid` 时，响应中自动包含 `id_token`：
+配置 `openIdMode => true` 且请求 scope 必须包含 `openid` 时，响应中自动包含 `id_token`（依赖 `jwtSecretKey` 配置）：
 
 ```php
 $accessToken = $oauth2->exchangeTokenByCode($code, $clientId, $clientSecret, $redirectUri);
@@ -698,9 +754,11 @@ $auth->setDigestValidator(function (string $username): ?string {
 $auth->checkDigest('My Realm');
 ```
 
+Digest 流程：服务端先返回 `401` + `WWW-Authenticate` 响应头（含服务端签发的一次性 nonce，TTL 300 秒），客户端携带该 nonce 完成认证；nonce 在认证成功后立即作废，重放直接拒绝。手搓 Digest 头调试时，必须先触发 challenge 获取服务端签发的 nonce。
+
 ## 参数签名校验（SaSign）
 
-跨系统 API 调用签名，防参数篡改、防请求重放：
+跨系统 API 调用签名，防参数篡改、防请求重放。使用前需先在配置中设置 `signKey`：
 
 ```php
 use SaToken\SaToken;
@@ -713,15 +771,17 @@ $signed = $sign->signParams($params);
 $isValid = $sign->verifySign($signed);
 ```
 
-防重放攻击：
+防重放默认内置：nonce 一次性存储基于 DAO 原子 `setIfNotExists` 实现，`verifySign` 强制要求 `timestamp` 与 `nonce`，缺失即拒绝；`signParams` / `verifySign` 支持可选 `method` / `path` 参数将 HTTP 方法与路径纳入签名，Web 场景建议传入：
 
 ```php
-$sign->setNonceValidator(function (string $nonce): bool {
-    return !Cache::has('nonce:' . $nonce);
-});
+$signed = $sign->signParams($params, 'POST', '/api/order');
+
+$isValid = $sign->verifySign($signed, 'POST', '/api/order');
 ```
 
-签名算法可选 `md5` 或 `sha256`：
+也可通过 `setNonceValidator` 接入自定义 nonce 存储。注意不要使用 `Cache::has` 这类"先查后写"的校验器——它存在并发重放窗口，推荐使用内置存储。
+
+签名算法仅支持 `sha256`（MD5 因碰撞风险已移除）：
 
 ```php
 $sign->setSignAlg('sha256');
@@ -797,6 +857,17 @@ use SaToken\SaToken;
 SaToken::setDao(new \SaToken\Dao\SaTokenDaoMemory());
 ```
 
+### 文件存储
+
+单机部署、无 Redis 环境时使用本地文件存储（flock 保证单机多进程原子性，不支持 NFS 等网络文件系统）：
+
+```php
+use SaToken\Dao\SaTokenDaoFile;
+use SaToken\SaToken;
+
+SaToken::setDao(new SaTokenDaoFile(['path' => __DIR__ . '/runtime/sa-token']));
+```
+
 ### Redis 存储
 
 ```php
@@ -828,6 +899,33 @@ $psr16Cache = new SomePsr16Cache();
 SaToken::setDao(new SaTokenDaoPsr16($psr16Cache));
 ```
 
+### 配置驱动自动装配
+
+在 `config/sa_token.php` 中声明 `storage` 段，`SaToken::init()` 会自动构造存储层（无需再调用 `setDao`；显式 `setDao` 的优先级更高）：
+
+```php
+return [
+    // 文件存储（单机）
+    'storage' => [
+        'type'     => 'file',
+        'path'     => runtime_path() . '/sa-token',  // 数据目录，默认 sys_get_temp_dir()/sa-token
+        'scanLimit'=> 10000,                          // search 扫描文件数上限
+    ],
+
+    // 或 Redis 存储（分布式部署）
+    // 'storage' => [
+    //     'type'     => 'redis',
+    //     'host'     => '127.0.0.1',
+    //     'port'     => 6379,
+    //     'password' => '',
+    //     'database' => 0,
+    //     'timeout'  => 0,
+    // ],
+];
+```
+
+选型建议：`memory` 仅适合单进程/测试；`file` 适合单机小规模生产（无外部依赖，但 search 为目录扫描，规模大时建议 Redis）；`redis` 适合多实例部署与分布式锁场景。
+
 ### 自定义 DAO
 
 实现 `SaTokenDaoInterface`：
@@ -848,6 +946,10 @@ class MyDao implements SaTokenDaoInterface
     public function getAndDelete(string $key): ?string { /* ... */ }
     public function size(): int { /* ... */ }
     public function search(string $prefix, string $keyword, int $start, int $size): array { /* ... */ }
+    public function deleteMultiple(array $keys): void { /* ... */ } // 批量删除
+    public function searchKeys(string $prefix, string $keyword, int $start, int $size): array { /* ... */ } // 仅返回键名列表
+    public function setIfNotExists(string $key, string $value, ?int $timeout = null): bool { /* ... */ } // 仅当 key 不存在时设置（登录锁/签名防重放依赖）
+    public function increment(string $key, int $amount = 1, ?int $timeout = null): int { /* ... */ } // 原子计数（防爆破/OTP 依赖）
 }
 ```
 
@@ -1122,6 +1224,7 @@ try {
 | `cookieHttpOnly` | bool | `true` | Cookie HttpOnly |
 | `cookieSameSite` | string | `'Strict'` | Cookie SameSite：`Strict` / `Lax` / `None` |
 | `tokenFingerprint` | bool | `false` | 是否启用 Token 指纹绑定（IP + User-Agent） |
+| `storage` | array | `['type' => 'memory']` | 存储层配置，`type`: `memory` / `file` / `redis`；`file` 可配 `path`、`scanLimit`，`redis` 可配 `host` / `port` / `password` / `database` / `timeout`；PSR-16 请用 `SaToken::setDao()` |
 
 ### 加密配置
 
@@ -1146,7 +1249,7 @@ try {
 |--------|------|--------|------|
 | `signKey` | string | `''` | 参数签名密钥 |
 | `signTimestampGap` | int | `600` | 签名时间戳容差（秒） |
-| `signAlg` | string | `'sha256'` | 签名算法：`md5` / `sha256` |
+| `signAlg` | string | `'sha256'` | 签名算法：仅支持 `sha256`（MD5 因碰撞风险已移除） |
 
 ### API Key 配置
 
@@ -1180,11 +1283,14 @@ try {
 | `backUrl` | `''` | 回调地址 |
 | `checkTicketUrl` | `''` | Ticket 校验地址 |
 | `sloUrl` | `''` | 单点注销地址 |
-| `mode` | `'same-domain'` | SSO 模式：`same-domain` / `cross-domain` / `front-separate` |
+| `mode` | `'same-domain'` | SSO 模式：`same-domain` / `cross-domain` / `front-separate` / `no-sdk` |
 | `clientId` | `''` | Client ID |
 | `clientSecret` | `''` | Client Secret |
 | `allowDomains` | `[]` | 允许的回调域名白名单（支持通配符 `*`） |
 | `paramName` | `'sso_params'` | 参数防丢 Cookie 名 |
+| `checkState` | `true` | 强制校验回调 state 防 CSRF |
+| `crossRedis` | `false` | 认证中心与客户端是否跨 Redis 部署 |
+| `crossRedisCheckUrl` | `''` | 跨 Redis 模式的 check-ticket 端点，必须 HTTPS（localhost 豁免） |
 
 ### OAuth2 配置
 
@@ -1197,6 +1303,8 @@ try {
 | `isNewRefreshToken` | `false` | 是否每次生成新 Refresh Token |
 | `openIdMode` | `false` | 是否启用 OpenID Connect |
 | `issuer` | `''` | OpenID 签发者 URL |
+| `clientSecretMaxFailures` | `10` | 密钥连续失败临时锁定阈值 |
+| `clientFailureWindow` | `300` | 失败计数窗口（秒） |
 
 ## 项目结构
 
@@ -1230,7 +1338,7 @@ src/
 │   ├── Data/                       # 数据对象
 │   │   ├── SaOAuth2AccessToken.php
 │   │   ├── SaOAuth2AuthorizationCode.php
-│   │   ├── SaOAuth2ClientInfo.php
+│   │   ├── SaOAuth2Client.php
 │   │   ├── SaOAuth2RefreshToken.php
 │   │   └── SaOAuth2IdToken.php
 │   ├── Strategy/                   # 策略模式

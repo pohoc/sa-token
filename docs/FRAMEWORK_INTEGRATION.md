@@ -374,11 +374,11 @@ class AuthController extends AbstractController
     public function login(): JsonResponse
     {
         $userId = 1001;
-        $token = StpUtil::login($userId);
+        $result = StpUtil::login($userId);
         return $this->json([
             'code' => 0,
             'msg' => '登录成功',
-            'token' => $token
+            'token' => $result->getAccessToken()
         ]);
     }
 
@@ -527,12 +527,12 @@ $server->on('request', function (Request $request, Response $response) {
         $path = $request->server['request_uri'];
 
         if ($path === '/auth/login') {
-            $token = StpUtil::login(1001);
+            $result = StpUtil::login(1001);
             $response->header('Content-Type', 'application/json');
             $response->end(json_encode([
                 'code' => 0,
                 'msg' => '登录成功',
-                'token' => $token
+                'token' => $result->getAccessToken()
             ]));
             return;
         }
@@ -604,6 +604,13 @@ $cache = new FilesystemCachePool($filesystem);
 SaToken::setDao(new SaTokenDaoPsr16($cache));
 SaToken::init();
 ```
+
+---
+
+## 高并发与刷新注意事项
+
+- **同账号并发登录**：同一账号的并发登录请求会抛出 `SaTokenException('同账号登录正在处理中，请勿重复提交')`（基于分布式锁，TTL 5 秒）。登录/刷新接口应捕获该异常并做短重试，或返回友好提示让用户稍后重试。
+- **RefreshToken 重放**：重放已消费的 RefreshToken 会触发"令牌家族撤销"安全机制（撤销跨代全家族令牌，含派生 RefreshToken）并抛出异常。应与普通 401 区分处理——将其视为安全事件（如记录审计日志、通知用户重新登录），而非简单的登录过期。
 
 ---
 
