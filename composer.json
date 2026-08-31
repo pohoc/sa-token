@@ -43,13 +43,16 @@
         "ext-redis": "可选：使用 Redis 存储适配器时所需"
     },
     "scripts": {
-        "test": "phpunit",
+        "test": "phpunit --configuration phpunit.xml",
+        "lint": "find src tests -type f -name '*.php' -print0 | xargs -0 -n1 php -l",
         "coverage": "phpunit --coverage-html coverage --coverage-clover coverage.xml",
         "analyse": "phpstan analyse",
         "cs-check": "php-cs-fixer fix --dry-run --diff",
         "cs-fix": "php-cs-fixer fix",
         "changelog": "php scripts/changelog.php",
         "check": [
+            "@composer validate --strict",
+            "@lint",
             "@cs-check",
             "@analyse",
             "@test"
