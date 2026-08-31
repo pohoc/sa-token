@@ -23,7 +23,7 @@ jobs:
     name: Test (no Redis) / PHP ${{ matrix.php-version }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -31,7 +31,17 @@ jobs:
           php-version: ${{ matrix.php-version }}
           extensions: gmp, openssl
           coverage: none
-          cache: composer
+
+      - name: Get composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+
+      - name: Cache composer packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: composer-${{ runner.os }}-php${{ matrix.php-version }}-${{ hashFiles('composer.json') }}
+          restore-keys: composer-${{ runner.os }}-php${{ matrix.php-version }}-
 
       - name: Validate composer.json
         run: composer validate --strict
@@ -67,7 +77,7 @@ jobs:
       REDIS_PORT: 6379
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -75,7 +85,17 @@ jobs:
           php-version: ${{ matrix.php-version }}
           extensions: gmp, openssl, redis
           coverage: none
-          cache: composer
+
+      - name: Get composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+
+      - name: Cache composer packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: composer-${{ runner.os }}-php${{ matrix.php-version }}-${{ hashFiles('composer.json') }}
+          restore-keys: composer-${{ runner.os }}-php${{ matrix.php-version }}-
 
       - name: Validate composer.json
         run: composer validate --strict
@@ -92,7 +112,7 @@ jobs:
     name: Coverage
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -100,7 +120,17 @@ jobs:
           php-version: '8.4'
           extensions: gmp, openssl
           coverage: pcov
-          cache: composer
+
+      - name: Get composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+
+      - name: Cache composer packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: composer-${{ runner.os }}-php8.4-${{ hashFiles('composer.json') }}
+          restore-keys: composer-${{ runner.os }}-php8.4-
 
       - name: Install dependencies
         run: composer install --no-interaction --prefer-dist --no-progress
@@ -127,14 +157,24 @@ jobs:
     name: Static analysis & dependency audit
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
           php-version: '8.4'
           extensions: gmp, openssl
-          cache: composer
+
+      - name: Get composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+
+      - name: Cache composer packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: composer-${{ runner.os }}-php8.4-${{ hashFiles('composer.json') }}
+          restore-keys: composer-${{ runner.os }}-php8.4-
 
       - name: Validate composer.json
         run: composer validate --strict

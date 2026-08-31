@@ -163,9 +163,9 @@ class SecurityRegressionTest extends TestCase
         ]));
 
         // 合法 JWT（自签发、未在 Dao 建立会话记录）不得直接登录成功
-        $jwt = new \SaToken\Plugin\SaTokenJwt([
+        $jwt = (new \SaToken\Plugin\SaTokenJwt([
             'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
-        ])->createStatelessToken(29999, 'login', 3600);
+        ]))->createStatelessToken(29999, 'login', 3600);
         $this->actAsToken($jwt);
         $this->assertFalse(StpUtil::getStpLogic()->isLogin());
     }
@@ -1342,7 +1342,10 @@ trait PsrRequestStubTrait
         return $this;
     }
 
-    public function getParsedBody(): null
+    /**
+     * @return array<string, mixed>|object|null
+     */
+    public function getParsedBody()
     {
         return null;
     }
