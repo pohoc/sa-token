@@ -71,6 +71,17 @@ class SaOAuth2AccessToken
         return $result;
     }
 
+    /**
+     * 判断访问令牌是否已过期（基于 createTime + expiresIn）
+     */
+    public function isExpired(): bool
+    {
+        if ($this->createTime <= 0) {
+            return false;
+        }
+        return time() > $this->createTime + $this->expiresIn;
+    }
+
     public function getAccessToken(): string
     {
         return $this->accessToken;

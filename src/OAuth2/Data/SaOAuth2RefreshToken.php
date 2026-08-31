@@ -16,6 +16,7 @@ class SaOAuth2RefreshToken
     protected string $scope = '';
     protected int $expiresIn = -1;
     protected int $createTime = 0;
+    protected string $familyId = '';
 
     /**
      * @param array<string, mixed> $data
@@ -44,7 +45,19 @@ class SaOAuth2RefreshToken
             'scope'        => $this->scope,
             'expiresIn'    => $this->expiresIn,
             'createTime'   => $this->createTime,
+            'familyId'     => $this->familyId,
         ];
+    }
+
+    public function getFamilyId(): string
+    {
+        return $this->familyId;
+    }
+
+    public function setFamilyId(string $familyId): static
+    {
+        $this->familyId = $familyId;
+        return $this;
     }
 
     public function getRefreshToken(): string

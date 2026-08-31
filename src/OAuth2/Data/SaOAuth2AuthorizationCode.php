@@ -19,6 +19,9 @@ class SaOAuth2AuthorizationCode
     protected int $expiresIn = 60;
     protected int $createTime = 0;
     protected bool $used = false;
+    protected string $codeChallenge = '';
+    protected string $codeChallengeMethod = '';
+    protected string $nonce = '';
 
     /**
      * @param array<string, mixed> $data
@@ -47,6 +50,9 @@ class SaOAuth2AuthorizationCode
             'scope'       => $this->scope,
             'expiresIn'   => $this->expiresIn,
             'createTime'  => $this->createTime,
+            'codeChallenge' => $this->codeChallenge,
+            'codeChallengeMethod' => $this->codeChallengeMethod,
+            'nonce' => $this->nonce,
         ];
     }
 
@@ -78,6 +84,39 @@ class SaOAuth2AuthorizationCode
     public function isUsed(): bool
     {
         return $this->used;
+    }
+
+    public function getNonce(): string
+    {
+        return $this->nonce;
+    }
+
+    public function setNonce(string $nonce): static
+    {
+        $this->nonce = $nonce;
+        return $this;
+    }
+
+    public function getCodeChallenge(): string
+    {
+        return $this->codeChallenge;
+    }
+
+    public function setCodeChallenge(string $codeChallenge): static
+    {
+        $this->codeChallenge = $codeChallenge;
+        return $this;
+    }
+
+    public function getCodeChallengeMethod(): string
+    {
+        return $this->codeChallengeMethod;
+    }
+
+    public function setCodeChallengeMethod(string $codeChallengeMethod): static
+    {
+        $this->codeChallengeMethod = $codeChallengeMethod;
+        return $this;
     }
 
     public function getCode(): string

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SaToken\OAuth2\Strategy;
 
+use SaToken\Exception\SaTokenException;
 use SaToken\OAuth2\Data\SaOAuth2AccessToken;
 use SaToken\OAuth2\SaOAuth2Handle;
 
@@ -52,13 +53,27 @@ class ImplicitStrategy
     /**
      * 直接生成访问令牌（隐藏式，不经过授权码）
      *
-     * @param  string              $clientId 客户端 ID
-     * @param  mixed               $loginId  已登录用户 ID
-     * @param  string              $scope    权限范围
+     * 隐式模式已被 OAuth 2.1 废弃（令牌经 URL 前端暴露，无法保护客户端身份），
+     * 仅为向后兼容保留。调用会校验客户端存在、redirect_uri 已注册且
+     * grant_type/scope 在客户端授权范围内
+     *
+     * @param  string              $clientId    客户端 ID
+     * @param  mixed               $loginId     已登录用户 ID
+     * @param  string              $scope       权限范围
+     * @param  string              $redirectUri 回调地址（必须已注册）
      * @return SaOAuth2AccessToken
+     * @throws SaTokenException
      */
-    public function authorize(string $clientId, mixed $loginId, string $scope = ''): SaOAuth2AccessToken
+    public function authorize(string $clientId, mixed $loginId, string $scope = '', string $redirectUri = ''): SaOAuth2AccessToken
     {
+        $client = $this->handle->getClientOrFail($clientId);
+        $allowed = $client->getGrantTypes();
+        if ($allowed !== [] && !in_array('implicit', $allowed, true)) {
+            throw new SaTokenException('该客户端未被授权使用隐式模式');
+        }
+        if ($redirectUri !== '') {
+            $this->handle->validateRedirectUriPublic($clientId, $redirectUri);
+        }
         return $this->handle->generateAccessToken($clientId, $loginId, $scope);
     }
 }

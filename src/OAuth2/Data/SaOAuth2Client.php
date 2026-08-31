@@ -17,8 +17,14 @@ class SaOAuth2Client
     /** @var array<string> */
     protected array $redirectUris = [];
 
-    /** @var array<string> */
-    protected array $grantTypes = ['authorization_code'];
+    /**
+     * 客户端可用的授权类型；空数组表示跟随全局配置（SaOAuth2Config::getGrantTypes）。
+     * 注意默认必须为空：若默认非空，存量未显式登记 grantTypes 的客户端
+     * 在 refresh_token/password 等流程会被新校验直接拒绝
+     *
+     * @var array<string>
+     */
+    protected array $grantTypes = [];
 
     /** @var array<string> */
     protected array $scopes = [];
@@ -69,6 +75,9 @@ class SaOAuth2Client
         return $this;
     }
 
+    /**
+     * @return array<string>
+     */
     public function getRedirectUris(): array
     {
         return $this->redirectUris;

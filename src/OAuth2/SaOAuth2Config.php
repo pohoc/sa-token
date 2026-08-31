@@ -39,6 +39,12 @@ class SaOAuth2Config
     // id_token 签发者 URL
     protected string $issuer = '';
 
+    // 客户端密钥连续失败多少次后临时锁定（防爆破）
+    protected int $clientSecretMaxFailures = 10;
+
+    // 客户端密钥失败计数窗口（秒）
+    protected int $clientFailureWindow = 300;
+
     /**
      * @param array<string, mixed> $config
      */
@@ -132,6 +138,28 @@ class SaOAuth2Config
     public function setIssuer(string $issuer): static
     {
         $this->issuer = $issuer;
+        return $this;
+    }
+
+    public function getClientSecretMaxFailures(): int
+    {
+        return $this->clientSecretMaxFailures;
+    }
+
+    public function setClientSecretMaxFailures(int $clientSecretMaxFailures): static
+    {
+        $this->clientSecretMaxFailures = $clientSecretMaxFailures;
+        return $this;
+    }
+
+    public function getClientFailureWindow(): int
+    {
+        return $this->clientFailureWindow;
+    }
+
+    public function setClientFailureWindow(int $clientFailureWindow): static
+    {
+        $this->clientFailureWindow = $clientFailureWindow;
         return $this;
     }
 }
