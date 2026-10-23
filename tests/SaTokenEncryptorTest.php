@@ -105,6 +105,21 @@ class SaTokenEncryptorTest extends TestCase
         $this->assertEquals('sm4-integrity', $encryptor->decrypt($encrypted));
     }
 
+    public function testCheckedSm4DecryptRejectsLegacyUnkeyedIntegrity(): void
+    {
+        $encryptor = $this->createSm4Encryptor();
+        $options = new \CryptoSm\SM4\Sm4Options();
+        $iv = $options->getIv();
+        $key = $this->getDerivedKey($encryptor);
+        $ciphertext = \CryptoSm\SM4\Sm4::encrypt('legacy-data', $key, $options);
+        $legacyHmac = \CryptoSm\SM3\Sm3::sm3($iv . $ciphertext);
+        $legacyPayload = base64_encode(hex2bin($legacyHmac) . hex2bin($iv) . hex2bin($ciphertext));
+
+        // 普通解密保留迁移兼容；安全敏感读取不得把公开可重算的摘要当作认证。
+        $this->assertSame('legacy-data', $encryptor->decrypt($legacyPayload));
+        $this->assertNull($encryptor->decryptChecked($legacyPayload));
+    }
+
     public function testAesTamperDetection(): void
     {
         $encryptor = $this->createAesEncryptor();
@@ -125,6 +140,7 @@ class SaTokenEncryptorTest extends TestCase
         $tampered = chr((ord($decoded[0]) ^ 0xFF) & 0xFF) . substr($decoded, 1);
         $tamperedEncoded = base64_encode($tampered);
         $this->assertEquals($tamperedEncoded, $encryptor->decrypt($tamperedEncoded));
+        $this->assertNull($encryptor->decryptChecked($tamperedEncoded));
     }
 
     public function testAesDisabledPassthrough(): void

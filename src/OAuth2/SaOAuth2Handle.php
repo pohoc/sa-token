@@ -1025,7 +1025,11 @@ class SaOAuth2Handle
 
     protected function decryptValue(string $value): string
     {
-        return $this->getEncryptor()->decrypt($value);
+        $decrypted = $this->getEncryptor()->decryptChecked($value);
+        if ($decrypted === null) {
+            throw new SaTokenException('OAuth2 存储数据完整性校验失败');
+        }
+        return $decrypted;
     }
 
     protected function getDao(): SaTokenDaoInterface

@@ -159,6 +159,29 @@ class SaTokenEncryptor
             return $data;
         }
 
+        if ($this->useSm && $this->isCiphertext($data)) {
+            $decoded = base64_decode($data, true);
+            if ($decoded === false) {
+                return null;
+            }
+
+            $hmac = bin2hex(substr($decoded, 0, 32));
+            $iv = bin2hex(substr($decoded, 32, 16));
+            $ciphertext = bin2hex(substr($decoded, 48));
+            $expectedHmac = HmacSm3::hmac($this->macKey, $iv . $ciphertext);
+            if (!hash_equals($expectedHmac, $hmac)) {
+                // 旧版无密钥 SM3 摘要可由任何存储写入者重算，不构成完整性校验。
+                return null;
+            }
+
+            try {
+                $options = (new Sm4Options())->setIv($iv);
+                return Sm4::decrypt($ciphertext, $this->key, $options);
+            } catch (\Throwable) {
+                return null;
+            }
+        }
+
         $plaintext = $this->decrypt($data);
         if ($plaintext === $data && $this->isCiphertext($data)) {
             return null;

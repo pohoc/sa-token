@@ -77,7 +77,11 @@ class TokenManager
 
     protected function decryptValue(string $value): string
     {
-        return $this->getEncryptor()->decrypt($value);
+        $decrypted = $this->getEncryptor()->decryptChecked($value);
+        if ($decrypted === null) {
+            throw new SaTokenException('Token 存储数据完整性校验失败');
+        }
+        return $decrypted;
     }
 
     public function createTokenValue(mixed $loginId, string $loginType, string $prefix = ''): string
@@ -127,9 +131,8 @@ class TokenManager
         // 冲突时按 maxTryTimes 重新生成重试（自定义生成器输出固定值时重试耗尽后抛出）
         $maxTries = max(1, $this->getConfig()->getMaxTryTimes());
         for ($attempt = 0; $attempt < $maxTries; $attempt++) {
-            if (!$this->getDao()->exists(self::TOKEN_PREFIX . $tokenValue)) {
-                $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-                $this->getDao()->set(self::TOKEN_PREFIX . $tokenValue, $this->encryptValue($loginIdStr), $effectiveTimeout);
+            $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+            if ($this->getDao()->setIfNotExists(self::TOKEN_PREFIX . $tokenValue, $this->encryptValue($loginIdStr), $effectiveTimeout)) {
                 return $this->finalizeToken($tokenValue, $loginId, $loginType, $deviceType, $effectiveTimeout);
             }
             $tokenValue = $this->createTokenValue($loginId, $loginType);
@@ -195,7 +198,11 @@ class TokenManager
         if ($value === null) {
             return null;
         }
-        $loginId = $this->decryptValue($value);
+        try {
+            $loginId = $this->decryptValue($value);
+        } catch (SaTokenException) {
+            return null;
+        }
 
         $config = $this->getConfig();
         if ($config->getJwtMode() === 'mixed') {

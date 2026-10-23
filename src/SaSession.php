@@ -62,7 +62,10 @@ class SaSession
         }
 
         $encryptor = self::getEncryptor();
-        $decrypted = $encryptor->decrypt($json);
+        $decrypted = $encryptor->decryptChecked($json);
+        if ($decrypted === null) {
+            throw new \SaToken\Exception\SaTokenException('会话数据完整性校验失败');
+        }
 
         $session = new static($sessionId, true);
         $dataMap = SaFoxUtil::fromJson($decrypted);
@@ -256,7 +259,10 @@ class SaSession
         $json = SaToken::getDao()->get($this->id);
         if ($json !== null) {
             $encryptor = self::getEncryptor();
-            $decrypted = $encryptor->decrypt($json);
+            $decrypted = $encryptor->decryptChecked($json);
+            if ($decrypted === null) {
+                throw new \SaToken\Exception\SaTokenException('会话数据完整性校验失败');
+            }
             $data = SaFoxUtil::fromJson($decrypted);
             /** @var array<string, mixed> $data */
             $this->dataMap = is_array($data) ? $data : [];

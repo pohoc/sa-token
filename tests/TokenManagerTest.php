@@ -60,6 +60,27 @@ class TokenManagerTest extends TestCase
         $this->assertEquals('10001', $loginId);
     }
 
+    public function testTamperedEncryptedLoginIdMakesTokenInvalid(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'timeout' => 300,
+            'tokenEncrypt' => true,
+            'tokenEncryptKey' => str_repeat('k', 32),
+        ]));
+
+        $token = $this->manager->createTokenValue(10002, 'login');
+        $this->manager->saveToken($token, 10002, 'login', 'PC', 300);
+        $recordKey = TokenManager::TOKEN_PREFIX . $token;
+        $encrypted = $this->dao->get($recordKey);
+        self::assertNotNull($encrypted);
+        $decoded = base64_decode($encrypted, true);
+        self::assertNotFalse($decoded);
+        $tampered = chr((ord($decoded[0]) ^ 0xFF) & 0xFF) . substr($decoded, 1);
+        $this->dao->set($recordKey, base64_encode($tampered), 300);
+
+        $this->assertNull($this->manager->getLoginIdByToken($token));
+    }
+
     public function testDeleteToken(): void
     {
         $token = $this->manager->createTokenValue(10001, 'login');
