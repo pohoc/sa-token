@@ -295,12 +295,18 @@ class SaOAuth2Test extends TestCase
         $this->assertNotEmpty($accessToken->getAccessToken());
     }
 
-    protected function requestFromIp(string $ip): \Psr\Http\Message\ServerRequestInterface
+    protected function requestFromIp(string $ip): object
     {
-        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
-        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => $ip]);
-        $request->method('getHeader')->willReturn([]);
-        return $request;
+        return new class ($ip) {
+            public function __construct(private string $ip)
+            {
+            }
+
+            public function getClientIp(): string
+            {
+                return $this->ip;
+            }
+        };
     }
 
     public function testExchangeTokenByCodeWithWrongClientId(): void

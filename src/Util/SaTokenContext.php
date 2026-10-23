@@ -161,6 +161,25 @@ class SaTokenContext
             $serverParams = $request->getServerParams();
             $addr = $serverParams['REMOTE_ADDR'] ?? null;
             $remoteAddr = is_string($addr) ? $addr : null;
+        } elseif (is_object($request)) {
+            // Framework request wrappers commonly expose the resolved address
+            // directly (Laravel/Symfony: getClientIp; ThinkPHP: ip). Prefer
+            // that over forwarded headers, whose trust is adapter-specific.
+            foreach (['getClientIp', 'ip'] as $method) {
+                if (method_exists($request, $method)) {
+                    $addr = $request->$method();
+                    if (is_string($addr) && $addr !== '') {
+                        $remoteAddr = $addr;
+                        break;
+                    }
+                }
+            }
+
+            if ($remoteAddr === null && method_exists($request, 'getServerParams')) {
+                $serverParams = $request->getServerParams();
+                $addr = is_array($serverParams) ? ($serverParams['REMOTE_ADDR'] ?? null) : null;
+                $remoteAddr = is_string($addr) ? $addr : null;
+            }
         }
 
         if (empty(self::$trustedProxies)) {

@@ -520,6 +520,10 @@ $server->on('request', function (Request $request, Response $response) {
         public function cookie($name) {
             return $this->request->cookie[$name] ?? null;
         }
+        public function getClientIp() {
+            $ip = $this->request->server['remote_addr'] ?? null;
+            return is_string($ip) ? $ip : null;
+        }
     };
 
     SaTokenContext::setRequest($wrappedRequest);

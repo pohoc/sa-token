@@ -40,6 +40,27 @@ class SaTokenContextTest extends TestCase
         $this->assertNull(SaTokenContext::getRequest());
     }
 
+    public function testGetClientIpFromFrameworkRequest(): void
+    {
+        SaTokenContext::setRequest(new class () {
+            public function getClientIp(): string
+            {
+                return '198.51.100.24';
+            }
+        });
+
+        $this->assertSame('198.51.100.24', SaTokenContext::getClientIp());
+    }
+
+    public function testGetClientIpFromPsr7ServerParams(): void
+    {
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '203.0.113.10']);
+        SaTokenContext::setRequest($request);
+
+        $this->assertSame('203.0.113.10', SaTokenContext::getClientIp());
+    }
+
     public function testSetAndGetResponse(): void
     {
         $response = new \stdClass();
