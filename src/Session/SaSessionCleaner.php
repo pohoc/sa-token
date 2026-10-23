@@ -50,6 +50,8 @@ class SaSessionCleaner
         'oauth2:at:',
         'oauth2:rt:',
         'oauth2:rt:used:',
+        'oauth2:family:',
+        'oauth2:refresh:',
         'oauth2:client:fail:',
         'satoken:audit:',
     ];
