@@ -367,7 +367,7 @@ class SaSsoHandle
     /**
      * 处理单点注销回调
      *
-     * 配置了 clientSecret 时强制验证请求签名（认证中心应使用
+     * 必须配置 clientSecret 并验证请求签名（认证中心应使用
      * buildSloCallbackParams / SaSsoTemplate::signParams 生成带 sign 的参数），
      * 防止任何人伪造 loginId 强制注销全站用户
      *
@@ -379,17 +379,18 @@ class SaSsoHandle
     public function doSloCallback(mixed $loginId, ?array $params = null): void
     {
         $clientSecret = $this->config->getClientSecret();
-        if ($clientSecret !== '') {
-            if ($params === null || !isset($params['sign']) || !is_string($params['sign'])) {
-                throw new SaTokenException('SSO 单点注销回调缺少签名，拒绝处理');
-            }
-            if (!$this->template->verifySign($params, $clientSecret, 300)) {
-                throw new SaTokenException('SSO 单点注销回调签名验证失败（或已过期）');
-            }
-            $signedLoginId = isset($params['loginId']) && is_scalar($params['loginId']) ? (string) $params['loginId'] : null;
-            if ($signedLoginId === null || $signedLoginId !== SaFoxUtil::toString($loginId)) {
-                throw new SaTokenException('SSO 单点注销回调 loginId 与签名数据不一致');
-            }
+        if ($clientSecret === '') {
+            throw new SaTokenException('处理 SSO 单点注销回调必须配置 clientSecret');
+        }
+        if ($params === null || !isset($params['sign']) || !is_string($params['sign'])) {
+            throw new SaTokenException('SSO 单点注销回调缺少签名，拒绝处理');
+        }
+        if (!$this->template->verifySign($params, $clientSecret, 300)) {
+            throw new SaTokenException('SSO 单点注销回调签名验证失败（或已过期）');
+        }
+        $signedLoginId = isset($params['loginId']) && is_scalar($params['loginId']) ? (string) $params['loginId'] : null;
+        if ($signedLoginId === null || $signedLoginId !== SaFoxUtil::toString($loginId)) {
+            throw new SaTokenException('SSO 单点注销回调 loginId 与签名数据不一致');
         }
 
         StpUtil::logoutByLoginId($loginId);
@@ -402,15 +403,17 @@ class SaSsoHandle
      */
     public function buildSloCallbackParams(mixed $loginId): array
     {
+        $clientSecret = $this->config->getClientSecret();
+        if ($clientSecret === '') {
+            throw new SaTokenException('生成 SSO 单点注销回调参数必须配置 clientSecret');
+        }
+
         $params = [
             'loginId'   => SaFoxUtil::toString($loginId),
             'timestamp' => (string) time(),
         ];
 
-        $clientSecret = $this->config->getClientSecret();
-        if ($clientSecret !== '') {
-            $params = $this->template->signParams($params, $clientSecret);
-        }
+        $params = $this->template->signParams($params, $clientSecret);
 
         return $params;
     }

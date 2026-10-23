@@ -644,7 +644,7 @@ $params = $sso->buildSloCallbackParams($loginId);
 $sso->doSloCallback($loginId, $params);
 ```
 
-配置 `clientSecret` 后，`doSloCallback` 会强制验签（回调参数必须包含 `sign`），防止伪造注销请求。
+`doSloCallback` 必须配置 `clientSecret` 并验签（回调参数必须包含 `sign`），否则拒绝处理，防止伪造注销请求。
 
 ## OAuth2.0
 

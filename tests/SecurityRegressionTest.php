@@ -833,6 +833,22 @@ class SecurityRegressionTest extends TestCase
         $this->assertFalse(StpUtil::isLogin());
     }
 
+    public function testSloCallbackRejectsWhenNoSharedSecretIsConfigured(): void
+    {
+        $handle = new SaSsoHandle(new SaSsoConfig());
+        $loginResult = StpUtil::login(40004);
+        $this->actAsToken($loginResult->getAccessToken());
+
+        try {
+            $handle->doSloCallback(40004);
+            $this->fail('未配置共享密钥时不得接受未经认证的注销回调');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('clientSecret', $e->getMessage());
+        }
+
+        $this->assertTrue(StpUtil::isLogin(), '拒绝未认证的 SLO 回调时必须保留现有会话');
+    }
+
     public function testSloCallbackRequiresSignedLoginId(): void
     {
         $handle = new SaSsoHandle(new SaSsoConfig([
