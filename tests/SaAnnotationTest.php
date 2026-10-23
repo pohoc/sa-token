@@ -39,6 +39,23 @@ class SaAnnotationTestLoginController
     }
 }
 
+class SaAnnotationTestProtectedBaseController
+{
+    #[SaCheckLogin]
+    public function protectedAction(): string
+    {
+        return 'base';
+    }
+}
+
+class SaAnnotationTestOverrideController extends SaAnnotationTestProtectedBaseController
+{
+    public function protectedAction(): string
+    {
+        return 'override';
+    }
+}
+
 #[SaCheckLogin]
 class SaAnnotationTestClassLevelController
 {
@@ -318,6 +335,18 @@ class SaAnnotationTest extends TestCase
     {
         SaAnnotationProcessor::process(SaAnnotationTestIgnoreClassController::class, 'anything');
         $this->assertTrue(true);
+    }
+
+    public function testOverriddenMethodInheritsSecurityAnnotations(): void
+    {
+        $attributes = SaAnnotationProcessor::getMethodAttributes(
+            SaAnnotationTestOverrideController::class,
+            'protectedAction'
+        );
+        $this->assertNotEmpty(array_filter($attributes, static fn (object $attribute): bool => $attribute instanceof SaCheckLogin));
+
+        $this->expectException(NotLoginException::class);
+        SaAnnotationProcessor::process(SaAnnotationTestOverrideController::class, 'protectedAction');
     }
 
     public function testClassLevelAttributeAppliesToAllMethods(): void

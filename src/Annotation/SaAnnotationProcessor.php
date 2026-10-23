@@ -16,7 +16,6 @@ class SaAnnotationProcessor
             return;
         }
         $reflectionClass = new ReflectionClass($class);
-        $reflectionMethod = $reflectionClass->getMethod($method);
 
         // 类级注解必须沿继承链合并：开发者习惯把 #[SaCheckLogin] 标在
         // BaseController 上，getAttributes() 不含父类会让继承式鉴权整体静默失效
@@ -24,7 +23,22 @@ class SaAnnotationProcessor
         for ($c = $reflectionClass; $c !== false; $c = $c->getParentClass()) {
             $classAttributes = array_merge($classAttributes, $c->getAttributes());
         }
-        $methodAttributes = $reflectionMethod->getAttributes();
+        // 重写方法仍需保留基类方法上的鉴权约束；否则仅覆盖业务实现就会
+        // 静默移除 #[SaCheckLogin]/权限注解。按声明类去重，避免未重写的方法重复读取。
+        $methodAttributes = [];
+        $seenMethodDeclarations = [];
+        for ($c = $reflectionClass; $c !== false; $c = $c->getParentClass()) {
+            if (!$c->hasMethod($method)) {
+                continue;
+            }
+            $reflectedMethod = $c->getMethod($method);
+            $declaration = $reflectedMethod->getDeclaringClass()->getName();
+            if (isset($seenMethodDeclarations[$declaration])) {
+                continue;
+            }
+            $seenMethodDeclarations[$declaration] = true;
+            $methodAttributes = array_merge($methodAttributes, $reflectedMethod->getAttributes());
+        }
 
         foreach ($methodAttributes as $attr) {
             if ($attr->getName() === SaIgnore::class) {
@@ -101,11 +115,24 @@ class SaAnnotationProcessor
             return [];
         }
         $reflectionClass = new ReflectionClass($class);
-        $reflectionMethod = $reflectionClass->getMethod($method);
 
         $result = [];
-        $classAttrs = $reflectionClass->getAttributes();
-        $methodAttrs = $reflectionMethod->getAttributes();
+        $classAttrs = [];
+        $methodAttrs = [];
+        $seenMethodDeclarations = [];
+        for ($c = $reflectionClass; $c !== false; $c = $c->getParentClass()) {
+            $classAttrs = array_merge($classAttrs, $c->getAttributes());
+            if (!$c->hasMethod($method)) {
+                continue;
+            }
+            $reflectedMethod = $c->getMethod($method);
+            $declaration = $reflectedMethod->getDeclaringClass()->getName();
+            if (isset($seenMethodDeclarations[$declaration])) {
+                continue;
+            }
+            $seenMethodDeclarations[$declaration] = true;
+            $methodAttrs = array_merge($methodAttrs, $reflectedMethod->getAttributes());
+        }
 
         foreach (array_merge($classAttrs, $methodAttrs) as $attr) {
             if (str_starts_with($attr->getName(), 'SaToken\\Annotation\\')) {
