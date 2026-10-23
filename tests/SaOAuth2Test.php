@@ -89,6 +89,25 @@ class SaOAuth2Test extends TestCase
         $this->assertNull($this->handle->getClient('unknown'));
     }
 
+    public function testAccessTokenIssuanceRequiresRegisteredClientAndValidLoginId(): void
+    {
+        try {
+            $this->handle->generateAccessToken('unknown-client', 10001);
+            $this->fail('不能为未注册客户端签发令牌');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('未注册的客户端', $e->getMessage());
+        }
+
+        foreach ([null, '', false, true, [], new \stdClass()] as $loginId) {
+            try {
+                $this->handle->generateAccessToken('test-client', $loginId);
+                $this->fail('无效 loginId 不得获得 OAuth 令牌');
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('loginId', $e->getMessage());
+            }
+        }
+    }
+
     public function testImplicitStrategyHonorsGlobalGrantTypeAllowList(): void
     {
         $client = new SaOAuth2Client([

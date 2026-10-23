@@ -614,9 +614,10 @@ class SaOAuth2Handle
      */
     public function generateAccessToken(string $clientId, mixed $loginId, string $scope = ''): SaOAuth2AccessToken
     {
-        $client = $this->getClient($clientId);
-        if ($client !== null) {
-            $this->validateScopeForClient($client, $scope);
+        $client = $this->validateClient($clientId);
+        $this->validateScopeForClient($client, $scope);
+        if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
+            throw new SaTokenException('loginId 不能为空且必须是非布尔标量');
         }
 
         $tokenStr = SaFoxUtil::randomString(64);
