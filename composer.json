@@ -26,7 +26,7 @@
         "source": "https://github.com/pohoc/sa-token"
     },
     "require": {
-        "php": "^8.1",
+        "php": "^8.2",
         "ext-openssl": "*",
         "firebase/php-jwt": "^7.0",
         "pohoc/crypto-sm": "^0.3",

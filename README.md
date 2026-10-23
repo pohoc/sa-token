@@ -1,7 +1,7 @@
 # Sa-Token PHP
 
 <p align="center">
-<img src="https://img.shields.io/badge/PHP-8.1%20~%208.5-777BB4?style=flat-square&logo=php&logoColor=white" alt="PHP Version">
+<img src="https://img.shields.io/badge/PHP-8.2%20~%208.5-777BB4?style=flat-square&logo=php&logoColor=white" alt="PHP Version">
 <img src="https://img.shields.io/github/license/pohoc/sa-token?style=flat-square&label=License" alt="License">
 </p>
 
@@ -47,7 +47,7 @@
 
 ## 环境要求
 
-- PHP >= 8.1
+- PHP >= 8.2
 - ext-openssl
 - ext-redis（可选：使用 Redis 存储适配器时需要）
 

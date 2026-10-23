@@ -111,7 +111,7 @@ class SaTokenEncryptorTest extends TestCase
         $encrypted = $encryptor->encrypt('important-data');
         $decoded = base64_decode($encrypted, true);
         $this->assertNotFalse($decoded);
-        $tampered = substr($decoded, 0, 40) . chr(ord($decoded[40]) ^ 0xFF) . substr($decoded, 41);
+        $tampered = substr($decoded, 0, 40) . chr((ord($decoded[40]) ^ 0xFF) & 0xFF) . substr($decoded, 41);
         $tamperedEncoded = base64_encode($tampered);
         $this->assertEquals($tamperedEncoded, $encryptor->decrypt($tamperedEncoded));
     }
@@ -122,7 +122,7 @@ class SaTokenEncryptorTest extends TestCase
         $encrypted = $encryptor->encrypt('important-data');
         $decoded = base64_decode($encrypted, true);
         $this->assertNotFalse($decoded);
-        $tampered = chr(ord($decoded[0]) ^ 0xFF) . substr($decoded, 1);
+        $tampered = chr((ord($decoded[0]) ^ 0xFF) & 0xFF) . substr($decoded, 1);
         $tamperedEncoded = base64_encode($tampered);
         $this->assertEquals($tamperedEncoded, $encryptor->decrypt($tamperedEncoded));
     }
@@ -263,7 +263,7 @@ class SaTokenEncryptorTest extends TestCase
         $encrypted = $encryptor->encrypt('important-data');
         $decoded = base64_decode($encrypted, true);
         $this->assertNotFalse($decoded);
-        $tampered = substr($decoded, 0, 40) . chr(ord($decoded[40]) ^ 0xFF) . substr($decoded, 41);
+        $tampered = substr($decoded, 0, 40) . chr((ord($decoded[40]) ^ 0xFF) & 0xFF) . substr($decoded, 41);
         $tamperedEncoded = base64_encode($tampered);
         $this->assertEquals($tamperedEncoded, $encryptor->decrypt($tamperedEncoded));
     }
@@ -277,7 +277,7 @@ class SaTokenEncryptorTest extends TestCase
         $encrypted = $encryptor->encrypt('important-data');
         $decoded = base64_decode($encrypted, true);
         $this->assertNotFalse($decoded);
-        $tampered = chr(ord($decoded[0]) ^ 0xFF) . substr($decoded, 1);
+        $tampered = chr((ord($decoded[0]) ^ 0xFF) & 0xFF) . substr($decoded, 1);
         $tamperedEncoded = base64_encode($tampered);
         $this->assertEquals($tamperedEncoded, $encryptor->decrypt($tamperedEncoded));
     }
