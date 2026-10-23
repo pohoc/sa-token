@@ -207,6 +207,24 @@ class SaOAuth2Test extends TestCase
         $this->assertFalse($code->isExpired());
     }
 
+    public function testAuthorizationCodeIssuanceHonorsClientGrantAllowList(): void
+    {
+        $this->handle->registerClient(new SaOAuth2Client([
+            'clientId'     => 'password-only-client',
+            'clientSecret' => 'password-only-secret',
+            'redirectUris' => ['https://example.com/callback'],
+            'grantTypes'   => ['password'],
+        ]));
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('未被授权使用此授权模式');
+        $this->handle->generateAuthorizationCode(
+            'password-only-client',
+            10001,
+            'https://example.com/callback'
+        );
+    }
+
     public function testGenerateAuthorizationCodeWithUnregisteredClient(): void
     {
         $this->expectException(SaTokenException::class);

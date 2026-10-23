@@ -98,6 +98,7 @@ class SaOAuth2Handle
     public function generateAuthorizationCode(string $clientId, mixed $loginId, string $redirectUri, string $scope = '', string $codeChallenge = '', string $codeChallengeMethod = '', string $nonce = ''): SaOAuth2AuthorizationCode
     {
         $client = $this->validateClient($clientId);
+        $this->validateGrantTypeForClient($client, 'authorization_code');
         $this->validateRedirectUri($clientId, $redirectUri);
         $this->validateScopeForClient($client, $scope);
 
