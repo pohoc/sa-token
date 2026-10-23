@@ -89,6 +89,20 @@ class SaOAuth2Test extends TestCase
         $this->assertNull($this->handle->getClient('unknown'));
     }
 
+    public function testClientSecretRotationIsObservedByOtherHandleInstances(): void
+    {
+        $otherHandle = new SaOAuth2Handle($this->config);
+        $this->assertNotNull($otherHandle->getClient('test-client'));
+
+        $rotatedClient = new SaOAuth2Client(array_merge($this->testClient->toArray(), [
+            'clientSecret' => 'rotated-client-secret-32-bytes-long',
+        ]));
+        $this->handle->registerClient($rotatedClient);
+
+        $this->expectException(SaTokenException::class);
+        $otherHandle->tokenByClientCredentials('test-client', $this->clientSecret);
+    }
+
     public function testAccessTokenIssuanceRequiresRegisteredClientAndValidLoginId(): void
     {
         try {

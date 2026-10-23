@@ -27,11 +27,6 @@ class SaOAuth2Handle
 
     protected const CLIENT_PREFIX = 'oauth2:client:';
 
-    /**
-     * @var array<string, SaOAuth2Client>
-     */
-    protected array $clientRegistry = [];
-
     public function __construct(SaOAuth2Config $config)
     {
         $this->config = $config;
@@ -61,7 +56,6 @@ class SaOAuth2Handle
                 throw new SaTokenException("注册客户端 {$client->getClientId()} 必须提供非空的 clientSecret");
             }
         }
-        $this->clientRegistry[$client->getClientId()] = $client;
         $this->getDao()->set(
             self::CLIENT_PREFIX . $client->getClientId(),
             $this->encryptValue(SaFoxUtil::toJson($client->toArray())),
@@ -71,10 +65,9 @@ class SaOAuth2Handle
 
     public function getClient(string $clientId): ?SaOAuth2Client
     {
-        if (isset($this->clientRegistry[$clientId])) {
-            return $this->clientRegistry[$clientId];
-        }
-
+        // Client secrets and redirect/grant allowlists can be rotated from a
+        // different process. Always read the shared DAO so cached credentials
+        // cannot remain valid after revocation or rotation.
         $json = $this->getDao()->get(self::CLIENT_PREFIX . $clientId);
         if ($json === null) {
             return null;
@@ -86,9 +79,7 @@ class SaOAuth2Handle
         }
         /** @var array<string, mixed> $data */
 
-        $client = new SaOAuth2Client($data);
-        $this->clientRegistry[$clientId] = $client;
-        return $client;
+        return new SaOAuth2Client($data);
     }
 
     /**
