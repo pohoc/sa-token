@@ -562,6 +562,8 @@ SaToken::init([
 $token = StpUtil::loginStateless(10001);
 ```
 
+无状态 JWT 若启用正值 `activityTimeout`，会额外在 DAO 保存短期活动标记；标记缺失或超过活动窗口会使 Token 失效。
+
 ### SM3 签名
 
 ```php
@@ -1242,6 +1244,8 @@ try {
 | `cookieSameSite` | string | `'Strict'` | Cookie SameSite：`Strict` / `Lax` / `None` |
 | `tokenFingerprint` | bool | `false` | 是否启用 Token 指纹绑定（IP + User-Agent） |
 | `storage` | array | `['type' => 'memory']` | 存储层配置，`type`: `memory` / `file` / `redis`；`file` 可配 `path`、`scanLimit`，`redis` 可配 `url` 或 `host` / `port` / `username` / `password` / `database` / `timeout`；PSR-16 请用 `SaToken::setDao()` |
+
+启用正值 `activityTimeout` 时，Token 签发即创建活动标记，每次有效请求刷新标记；标记缺失或已过期会让 Token 失效，不会自动恢复。升级前已存在但没有活动标记的会话需要重新登录。
 
 ### 加密配置
 

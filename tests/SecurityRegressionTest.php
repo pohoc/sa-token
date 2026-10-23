@@ -474,6 +474,41 @@ class SecurityRegressionTest extends TestCase
         StpUtil::checkPermission('danger');
     }
 
+    public function testExpiredActivityMarkerCannotReviveAnIdleToken(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'activityTimeout' => 1,
+        ])));
+
+        $token = StpUtil::login(20012)->getAccessToken();
+        $this->assertNotNull(SaToken::getDao()->get(TokenManager::LAST_ACTIVE_PREFIX . $token));
+        $this->actAsToken($token);
+        $this->assertTrue(StpUtil::isLogin());
+
+        sleep(2);
+
+        $this->assertFalse(StpUtil::isLogin(), '活动时间标记过期后，Token 不得因缺少标记而恢复有效');
+    }
+
+    public function testStatelessJwtEnforcesConfiguredActivityTimeout(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'activityTimeout' => 60,
+            'jwtStateless'    => true,
+            'jwtSecretKey'    => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ])));
+
+        $logic = SaToken::getStpLogic('login');
+        $token = $logic->loginStateless(20013);
+        $this->assertNotNull(SaToken::getDao()->get(TokenManager::LAST_ACTIVE_PREFIX . $token));
+        $this->actAsToken($token);
+        $this->assertTrue(StpUtil::isLogin());
+
+        SaToken::getDao()->set(TokenManager::LAST_ACTIVE_PREFIX . $token, (string) (time() - 120), 300);
+
+        $this->assertFalse(StpUtil::isLogin(), '无状态 JWT 也必须遵守启用的活动超时配置');
+    }
+
     public function testSwitchedIdentityCannotBypassFingerprintInPermissionChecks(): void
     {
         SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [

@@ -204,6 +204,7 @@ class StpLogic
 
         $jwt = $this->getJwt();
         $tokenValue = $jwt->createStatelessToken($loginId, $this->loginType, $timeout);
+        $this->tokenManager->updateLastActiveToNow($tokenValue);
 
         $this->writeTokenToResponse($tokenValue, $parameter);
 
@@ -565,6 +566,15 @@ class StpLogic
             return null;
         }
 
+        if ($this->getConfig()->getActivityTimeout() > 0) {
+            $lastActive = $this->tokenManager->getLastActiveTime($tokenValue);
+            if ($lastActive === null
+                || SaFoxUtil::getTime() - $lastActive > $this->getConfig()->getActivityTimeout()) {
+                return null;
+            }
+            $this->tokenManager->updateLastActiveToNow($tokenValue);
+        }
+
         return $subject;
     }
 
@@ -653,6 +663,7 @@ class StpLogic
         }
 
         $this->tokenManager->renewTimeout($tokenValue, $timeout);
+        $this->tokenManager->updateLastActiveToNow($tokenValue);
     }
 
     /**
@@ -712,7 +723,10 @@ class StpLogic
 
         $lastActive = $this->tokenManager->getLastActiveTime($tokenValue);
         if ($lastActive === null) {
-            return;
+            // Tokens issued while activity tracking is enabled always get an
+            // initial marker. Missing state (including expired marker TTL) must
+            // fail closed instead of restoring an idle session.
+            throw new NotLoginException('Token 活动状态不存在，请重新登录', NotLoginException::TOKEN_TIMEOUT);
         }
 
         if (SaFoxUtil::getTime() - $lastActive > $config->getActivityTimeout()) {

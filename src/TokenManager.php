@@ -144,7 +144,9 @@ class TokenManager
                     if (!$this->isBlacklisted($tokenValue)
                         && $this->getDao()->setIfNotExists(self::TOKEN_PREFIX . $tokenValue, $this->encryptValue($loginIdStr), $effectiveTimeout)) {
                         $this->clearTokenBoundState($tokenValue, $loginType);
-                        return $this->finalizeToken($tokenValue, $loginId, $loginType, $deviceType, $effectiveTimeout);
+                        $finalizedToken = $this->finalizeToken($tokenValue, $loginId, $loginType, $deviceType, $effectiveTimeout);
+                        $this->updateLastActiveToNow($tokenValue);
+                        return $finalizedToken;
                     }
                 } finally {
                     $this->releaseLock($tokenLockKey);
@@ -414,6 +416,10 @@ class TokenManager
         if ($config->getActivityTimeout() <= 0) {
             return;
         }
+
+        // The marker intentionally expires after the idle window. Its creation at
+        // issuance plus fail-closed handling of a missing marker makes expiry an
+        // unambiguous signal that the Token was inactive for too long.
         $this->getDao()->set(self::LAST_ACTIVE_PREFIX . $tokenValue, $this->encryptValue((string) SaFoxUtil::getTime()), $config->getActivityTimeout());
     }
 
