@@ -42,7 +42,7 @@ sa-token 通过 `SaTokenContext` 提供跨框架兼容层，支持以下请求/�
 ### 响应方法
 - `withHeader(name, value)` / `withAddedHeader(name, value)` - PSR-7 标准
 - `header(name, value)` - ThinkPHP/Laravel 风格
-- `cookie(name, value, ...)` - 通用风格
+- ThinkPHP `Response::cookie(name, value, options)` 使用选项数组；Laravel/Symfony 响应通过 `HeaderBag::setCookie()` 写入，保留 SaToken 配置的过期时间、Secure、HttpOnly 和 SameSite 属性
 
 ---
 

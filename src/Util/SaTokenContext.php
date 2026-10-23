@@ -490,11 +490,6 @@ class SaTokenContext
             return $response->withAddedHeader('Set-Cookie', $cookieStr);
         }
 
-        if (is_object($response) && method_exists($response, 'cookie')) {
-            $response->cookie($name, $value, $timeout > 0 ? time() + $timeout : 0, $path, $domain, $secure, $httpOnly);
-            return $response;
-        }
-
         if (
             is_object($response)
             && isset($response->headers)
@@ -515,6 +510,28 @@ class SaTokenContext
                 $sameSite !== '' ? $sameSite : null
             );
             $response->headers->setCookie($cookie);
+            return $response;
+        }
+
+        if (is_object($response) && method_exists($response, 'getCookie') && method_exists($response, 'cookie')) {
+            // ThinkPHP Response::cookie() takes one options array; its Cookie
+            // manager interprets numeric expire values as relative seconds.
+            $response->cookie($name, $value, [
+                'expire' => $timeout > 0 ? $timeout : 0,
+                'path' => $path,
+                'domain' => $domain,
+                'secure' => $secure,
+                'httponly' => $httpOnly,
+                'samesite' => $sameSite,
+            ]);
+            return $response;
+        }
+
+        if (is_object($response) && method_exists($response, 'cookie')) {
+            // Framework cookie() signatures differ: Laravel expects a lifetime
+            // in minutes and cannot accept this adapter's SameSite option. Prefer
+            // a Symfony Cookie on responses exposing HeaderBag::setCookie().
+            $response->cookie($name, $value, $timeout > 0 ? time() + $timeout : 0, $path, $domain, $secure, $httpOnly);
         }
 
         return $response;

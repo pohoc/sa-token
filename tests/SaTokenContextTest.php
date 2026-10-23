@@ -330,4 +330,88 @@ class SaTokenContextTest extends TestCase
         $this->assertSame('symfony-cookie', $cookie->value ?? null);
         $this->assertSame('None', $cookie->sameSite ?? null);
     }
+
+    public function testLaravelStyleResponseUsesSymfonyCookieAttributesWhenAvailable(): void
+    {
+        if (!class_exists(\Symfony\Component\HttpFoundation\Cookie::class)) {
+            require_once __DIR__ . '/Fixtures/SymfonyHttpFoundationCookieStub.php';
+        }
+
+        $headers = new SymfonyHeaderBagStub();
+        $response = new class ($headers) {
+            /** @var array<int, bool|int|string> */
+            public array $cookieCalls = [];
+
+            public function __construct(public SymfonyHeaderBagStub $headers)
+            {
+            }
+
+            public function cookie(string $name, string $value, int $minutes, string $path, string $domain, bool $secure, bool $httpOnly): void
+            {
+                $this->cookieCalls = [$name, $value, $minutes, $path, $domain, $secure, $httpOnly];
+            }
+        };
+        SaTokenContext::setResponse($response);
+
+        SaTokenContext::setCookie('satoken', 'laravel-cookie', 3600, '/', 'example.com', true, true, 'Strict');
+
+        $this->assertSame([], $response->cookieCalls, '应优先使用 Symfony Cookie，避免 Laravel 分钟参数与配置丢失');
+        $this->assertCount(1, $headers->cookies);
+        $cookie = $headers->cookies[0];
+        $this->assertSame('Strict', $cookie->sameSite ?? null);
+        $this->assertGreaterThanOrEqual(time() + 3599, (int) $cookie->expire);
+        $this->assertLessThanOrEqual(time() + 3601, (int) $cookie->expire);
+    }
+
+    public function testThinkPhpStyleResponseReceivesCookieOptionsArray(): void
+    {
+        $cookieManager = new ThinkPhpCookieManagerStub();
+        $response = new ThinkPhpResponseStub($cookieManager);
+        SaTokenContext::setResponse($response);
+
+        SaTokenContext::setCookie('satoken', 'think-cookie', 3600, '/auth', 'example.com', true, true, 'Strict');
+
+        $this->assertSame([
+            'satoken',
+            'think-cookie',
+            [
+                'expire' => 3600,
+                'path' => '/auth',
+                'domain' => 'example.com',
+                'secure' => true,
+                'httponly' => true,
+                'samesite' => 'Strict',
+            ],
+        ], $cookieManager->lastSet);
+    }
+}
+
+class ThinkPhpCookieManagerStub
+{
+    /** @var array{0: string, 1: string, 2: array<string, bool|int|string>}|null */
+    public ?array $lastSet = null;
+
+    /** @param array<string, bool|int|string> $options */
+    public function set(string $name, string $value, array $options): void
+    {
+        $this->lastSet = [$name, $value, $options];
+    }
+}
+
+class ThinkPhpResponseStub
+{
+    public function __construct(private ThinkPhpCookieManagerStub $cookieManager)
+    {
+    }
+
+    public function getCookie(): ThinkPhpCookieManagerStub
+    {
+        return $this->cookieManager;
+    }
+
+    /** @param array<string, bool|int|string> $options */
+    public function cookie(string $name, string $value, array $options): void
+    {
+        $this->cookieManager->set($name, $value, $options);
+    }
 }
