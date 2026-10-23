@@ -376,6 +376,16 @@ class SaSsoTest extends TestCase
         (new SaSsoHandle($config))->buildLoginUrl('https://app.example.com/callback');
     }
 
+    public function testBuildLoginUrlRejectsNonHttpLocalEndpointScheme(): void
+    {
+        $config = new SaSsoConfig([
+            'loginUrl' => 'javascript://localhost/login',
+        ]);
+
+        $this->expectException(SaTokenException::class);
+        (new SaSsoHandle($config))->buildLoginUrl();
+    }
+
     public function testBuildLoginUrlAllowsLocalHttpRedirect(): void
     {
         $config = new SaSsoConfig([

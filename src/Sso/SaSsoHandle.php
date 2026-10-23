@@ -322,9 +322,11 @@ class SaSsoHandle
     {
         $parsed = parse_url($url);
         $scheme = strtolower((string) ($parsed['scheme'] ?? ''));
-        $host = strtolower((string) ($parsed['host'] ?? ''));
-        $isLocal = $host === 'localhost' || $host === '127.0.0.1' || $host === '::1';
-        if ($scheme !== 'https' && !$isLocal) {
+        $host = strtolower(rtrim((string) ($parsed['host'] ?? ''), '.'));
+        $isLocal = in_array(trim($host, '[]'), ['localhost', '127.0.0.1', '::1'], true);
+        if (!is_array($parsed) || !isset($parsed['host']) || $host === ''
+            || !in_array($scheme, ['https', 'http'], true)
+            || ($scheme !== 'https' && !$isLocal)) {
             throw new SaTokenException("SSO {$configName} 必须使用 HTTPS 协议");
         }
     }
