@@ -435,15 +435,24 @@ class SaOAuth2Handle
             $this->getDao()->delete($this->buildAccessTokenKey($rtData->getAccessToken()));
         }
 
-        // 生成新的访问令牌
-        $accessToken = $this->generateAccessToken($clientId, $rtData->getLoginId(), $rtData->getScope());
-
-        // 如果配置为每次生成新的刷新令牌，新 RT 归入同一家族
+        // 刷新时先签发不带 RT 的访问令牌，随后按轮换配置创建唯一 RT 并与 AT 一起持久化。
+        $accessToken = $this->generateAccessToken($clientId, $rtData->getLoginId(), $rtData->getScope(), $familyId, false);
         $newRefreshTokenValue = '';
-        if ($this->config->isNewRefreshToken()) {
-            $newRefreshToken = $this->createRefreshToken($clientId, $rtData->getLoginId(), $accessToken->getAccessToken(), $rtData->getScope(), $familyId !== '' ? $familyId : '');
-            $accessToken->setRefreshToken($newRefreshToken->getRefreshToken());
+        if ($this->config->isNewRefreshToken() && $this->config->getRefreshTokenTimeout() > 0) {
+            $newRefreshToken = $this->createRefreshToken(
+                $clientId,
+                $rtData->getLoginId(),
+                $accessToken->getAccessToken(),
+                $rtData->getScope(),
+                $familyId
+            );
             $newRefreshTokenValue = $newRefreshToken->getRefreshToken();
+            $accessToken->setRefreshToken($newRefreshTokenValue);
+            $this->getDao()->set(
+                $this->buildAccessTokenKey($accessToken->getAccessToken()),
+                $this->encryptValue(SaFoxUtil::toJson($accessToken->toArray())),
+                $accessToken->getExpiresIn()
+            );
         }
 
         // 将新签发的 AT/RT 登记进家族标记，重用检测时一并撤销
@@ -699,8 +708,13 @@ class SaOAuth2Handle
      * scope 在此做最终兜底校验：请求 scope 必须是客户端注册 scopes 的子集，
      * 防止任何入口（策略类/直接调用）自授权未授予的权限
      */
-    public function generateAccessToken(string $clientId, mixed $loginId, string $scope = ''): SaOAuth2AccessToken
-    {
+    public function generateAccessToken(
+        string $clientId,
+        mixed $loginId,
+        string $scope = '',
+        string $refreshFamilyId = '',
+        bool $includeRefreshToken = true
+    ): SaOAuth2AccessToken {
         $client = $this->validateClient($clientId);
         $this->validateScopeForClient($client, $scope);
         if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
@@ -720,8 +734,8 @@ class SaOAuth2Handle
         ]);
 
         // 生成刷新令牌
-        if ($this->config->getRefreshTokenTimeout() > 0) {
-            $refreshToken = $this->createRefreshToken($clientId, $loginId, $tokenStr, $scope);
+        if ($includeRefreshToken && $this->config->getRefreshTokenTimeout() > 0) {
+            $refreshToken = $this->createRefreshToken($clientId, $loginId, $tokenStr, $scope, $refreshFamilyId);
             $accessToken->setRefreshToken($refreshToken->getRefreshToken());
         }
 

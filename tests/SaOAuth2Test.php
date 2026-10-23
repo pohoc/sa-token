@@ -476,6 +476,36 @@ class SaOAuth2Test extends TestCase
         $this->assertNull($this->handle->validateAccessToken($accessToken->getAccessToken()));
     }
 
+    public function testRevokingRotatedAccessTokenAlsoRevokesReturnedRefreshToken(): void
+    {
+        $code = $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback');
+        $initial = $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
+        $rotated = $this->handle->refreshToken((string) $initial->getRefreshToken(), 'test-client', $this->clientSecret);
+        $rotatedRefreshToken = $rotated->getRefreshToken();
+        $this->assertNotNull($rotatedRefreshToken);
+
+        $this->handle->revokeAccessToken($rotated->getAccessToken());
+        $this->assertNull($this->handle->validateAccessToken($rotated->getAccessToken()));
+
+        try {
+            $this->handle->refreshToken($rotatedRefreshToken, 'test-client', $this->clientSecret);
+            $this->fail('撤销访问令牌后，其返回的刷新令牌也必须失效');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('无效的刷新令牌', $e->getMessage());
+        }
+    }
+
+    public function testRefreshTokenRotationCanBeDisabled(): void
+    {
+        $this->config->setIsNewRefreshToken(false);
+        $code = $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback');
+        $initial = $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
+        $this->assertNotNull($initial->getRefreshToken());
+
+        $rotated = $this->handle->refreshToken((string) $initial->getRefreshToken(), 'test-client', $this->clientSecret);
+        $this->assertNull($rotated->getRefreshToken());
+    }
+
     // ======== SaOAuth2Manager 测试 ========
 
     public function testManagerWithArrayConfig(): void
