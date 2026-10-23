@@ -1166,6 +1166,8 @@ $interceptor->handleIncoming();
 $outHeaders = $interceptor->handleOutgoing();
 ```
 
+接收端拦截器会按 `setLoginType()` 配置验证 Token；若请求头声明了不同的 `X-Sa-Login-Type`，请求将被拒绝。
+
 ## 事件监听
 
 ```php

@@ -209,6 +209,34 @@ class SaRpcContextTest extends TestCase
         $this->assertTrue(true);
     }
 
+    public function testRpcInterceptorEnforcesConfiguredLoginType(): void
+    {
+        $token = SaToken::getStpLogic('user')->login(10004)->getAccessToken();
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token'      => $token,
+            'X-Sa-Login-Id'   => '10004',
+            'X-Sa-Login-Type' => 'user',
+        ]));
+
+        $interceptor = (new SaRpcInterceptor())->setLoginType('admin');
+
+        $this->expectException(SaTokenException::class);
+        $interceptor->handleIncoming();
+    }
+
+    public function testRpcInterceptorUsesConfiguredLoginTypeWhenHeaderIsMissing(): void
+    {
+        $token = SaToken::getStpLogic('admin')->login(10005)->getAccessToken();
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token'    => $token,
+            'X-Sa-Login-Id' => '10005',
+        ]));
+
+        (new SaRpcInterceptor())->setLoginType('admin')->handleIncoming();
+
+        $this->assertTrue(true);
+    }
+
     public function testRpcInterceptorOutgoing(): void
     {
         $loginResult = StpUtil::login(10001);

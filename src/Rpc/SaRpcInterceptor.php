@@ -38,7 +38,7 @@ class SaRpcInterceptor
         }
 
         if ($this->validateToken) {
-            SaRpcContext::extractAndValidate();
+            SaRpcContext::extractAndValidate($this->loginType);
         }
 
         if ($this->autoLogin) {

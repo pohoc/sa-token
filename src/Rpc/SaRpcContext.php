@@ -59,14 +59,18 @@ class SaRpcContext
         return $request;
     }
 
-    public static function extractAndValidate(): void
+    public static function extractAndValidate(?string $expectedLoginType = null): void
     {
         $tokenValue = SaTokenContext::getHeader(self::$tokenHeaderName);
         if ($tokenValue === null) {
             throw new SaTokenException('RPC 请求缺少 Token 信息');
         }
 
-        $loginType = SaTokenContext::getHeader(self::$loginTypeHeaderName) ?? 'login';
+        $forwardedLoginType = SaTokenContext::getHeader(self::$loginTypeHeaderName);
+        if ($expectedLoginType !== null && $forwardedLoginType !== null && $forwardedLoginType !== $expectedLoginType) {
+            throw new SaTokenException('RPC LoginType 与拦截器配置不匹配');
+        }
+        $loginType = $expectedLoginType ?? $forwardedLoginType ?? 'login';
         $stpLogic = SaToken::getStpLogic($loginType);
 
         $loginId = $stpLogic->getLoginIdByToken($tokenValue);
