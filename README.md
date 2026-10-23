@@ -1075,6 +1075,8 @@ SaToken::init([
 
 设备信息自动检测（User-Agent 解析）：设备类型（PC/Mobile/Tablet）、设备名称（微信/钉钉/支付宝/Web）、操作系统、浏览器。
 
+启用 `tokenEncrypt` 后，设备管理记录中的 Token 字段也会加密保存；未加密的历史记录会在更新时逐步迁移。
+
 ## 敏感操作验证
 
 OTP 验证码与安全令牌：

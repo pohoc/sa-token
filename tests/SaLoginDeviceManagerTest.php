@@ -73,6 +73,59 @@ class SaLoginDeviceManagerTest extends TestCase
         $this->assertTrue($this->logic->getTokenManager()->isTokenValid($token));
     }
 
+    public function testDeviceRecordDoesNotExposeTokenWhenTokenEncryptionIsEnabled(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenName'        => 'satoken',
+            'timeout'          => 86400,
+            'isReadHeader'     => false,
+            'isReadCookie'     => false,
+            'isReadBody'       => false,
+            'isWriteCookie'    => false,
+            'isWriteHeader'    => false,
+            'deviceManagement' => true,
+            'tokenEncrypt'     => true,
+            'tokenEncryptKey'  => 'device-record-test-encryption-key-32-bytes',
+        ]));
+
+        $token = $this->logic->login(10001, (new SaLoginParameter())->setDevice(new SaLoginDevice()))->getAccessToken();
+        $devices = $this->logic->getDeviceList(10001);
+        $key = SaLoginDeviceManager::getKey(10001, 'login') . ':' . $devices[0]->getDeviceId();
+        $storedRecord = $this->dao->get($key);
+
+        $this->assertNotNull($storedRecord);
+        $this->assertStringNotContainsString($token, $storedRecord);
+
+        $this->logic->kickoutDevice(10001, $devices[0]->getDeviceId());
+        $this->assertNull($this->logic->getTokenManager()->getLoginIdByToken($token));
+    }
+
+    public function testKickoutAllDevicesPreservesExceptTokenWhenTokenEncryptionIsEnabled(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenName'        => 'satoken',
+            'timeout'          => 86400,
+            'isReadHeader'     => false,
+            'isReadCookie'     => false,
+            'isReadBody'       => false,
+            'isWriteCookie'    => false,
+            'isWriteHeader'    => false,
+            'deviceManagement' => true,
+            'tokenEncrypt'     => true,
+            'tokenEncryptKey'  => 'device-record-test-encryption-key-32-bytes',
+        ]));
+
+        $keepToken = $this->logic->login(10001, (new SaLoginParameter())->setDeviceType('pc')->setDevice(new SaLoginDevice(['deviceType' => 'pc'])))->getAccessToken();
+        $removeToken = $this->logic->login(10001, (new SaLoginParameter())->setDeviceType('mobile')->setDevice(new SaLoginDevice(['deviceType' => 'mobile'])))->getAccessToken();
+
+        $this->assertCount(2, $this->logic->getDeviceList(10001));
+        $this->assertSame('10001', $this->logic->getTokenManager()->getLoginIdByToken($keepToken));
+        $this->assertSame('10001', $this->logic->getTokenManager()->getLoginIdByToken($removeToken));
+        $this->assertSame(1, $this->logic->kickoutAllDevices(10001, $keepToken));
+        $this->assertSame('10001', $this->logic->getTokenManager()->getLoginIdByToken($keepToken));
+        $this->assertNull($this->logic->getTokenManager()->getLoginIdByToken($removeToken));
+    }
+
     public function testMultipleDeviceLogin(): void
     {
         $this->logic->login(10001);
