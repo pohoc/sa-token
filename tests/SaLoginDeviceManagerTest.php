@@ -7,6 +7,7 @@ namespace SaToken\Tests;
 use PHPUnit\Framework\TestCase;
 use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoMemory;
+use SaToken\Dao\SaTokenDaoPsr16;
 use SaToken\Data\SaLoginDevice;
 use SaToken\SaLoginParameter;
 use SaToken\SaToken;
@@ -250,6 +251,31 @@ class SaLoginDeviceManagerTest extends TestCase
             fn (string $token): bool => $this->logic->getTokenManager()->getLoginIdByToken($token) !== null
         );
         $this->assertCount(0, $remaining);
+    }
+
+    public function testKickoutAllDevicesUsesSessionIndexWhenDaoCannotSearchKeys(): void
+    {
+        SaToken::setDao(new SaTokenDaoPsr16(new ArrayPsr16Cache()));
+        $device = new SaLoginDevice([
+            'deviceType' => 'pc',
+            'deviceName' => 'PSR-16 device',
+            'ip' => '192.0.2.201',
+        ]);
+        $token = $this->logic->login(
+            'psr16-device-account',
+            (new SaLoginParameter())->setDeviceType('psr16-device-a')->setDevice($device)->setIsShare(false)
+        )->getAccessToken();
+        $keepToken = $this->logic->login(
+            'psr16-device-account',
+            (new SaLoginParameter())
+                ->setDeviceType('psr16-device-b')
+                ->setDevice(new SaLoginDevice(['deviceName' => 'PSR-16 second device', 'ip' => '192.0.2.202']))
+                ->setIsShare(false)
+        )->getAccessToken();
+
+        $this->assertSame(1, $this->logic->kickoutAllDevices('psr16-device-account', $keepToken));
+        $this->assertNull($this->logic->getTokenManager()->getLoginIdByToken($token));
+        $this->assertSame('psr16-device-account', $this->logic->getTokenManager()->getLoginIdByToken($keepToken));
     }
 
     public function testKickoutAllDevicesExceptToken(): void

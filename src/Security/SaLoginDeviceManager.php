@@ -142,18 +142,55 @@ class SaLoginDeviceManager
         }
 
         try {
-            $devices = self::loadDeviceList($loginId, $loginType, true);
-            $count = 0;
+            if (SaToken::getConfig()->isJwtStateless()) {
+                if ($exceptToken === null) {
+                    $logic->kickout($loginId);
+                    $devices = self::loadDeviceList($loginId, $loginType, true);
+                    return count($devices);
+                }
 
+                $devices = self::loadDeviceList($loginId, $loginType, true);
+                $count = 0;
+                foreach ($devices as $device) {
+                    if ($device->getTokenValue() === $exceptToken) {
+                        continue;
+                    }
+                    self::kickoutDevice($loginId, $device->getDeviceId(), $loginType);
+                    $count++;
+                }
+                return $count;
+            }
+
+            // The session list is the authoritative index for stateful logins;
+            // DAO search is optional and unavailable in PSR-16 adapters.
+            $tokenManager = $logic->getTokenManager();
+            $sessions = $tokenManager->getTokenListByLoginId($loginId, $loginType);
+            $count = 0;
+            foreach ($sessions as $session) {
+                $tokenValue = is_string($session['tokenValue'] ?? null) ? $session['tokenValue'] : '';
+                if ($tokenValue === '' || ($exceptToken !== null && $tokenValue === $exceptToken)
+                    || !$tokenManager->isTokenValid($tokenValue)) {
+                    continue;
+                }
+                $logic->kickoutByTokenValue($tokenValue);
+                $count++;
+            }
+
+            // Cleanup metadata only after the authoritative sessions are revoked;
+            // adapters without key search and damaged device records must not
+            // prevent the security operation itself.
+            $devices = self::loadDeviceList($loginId, $loginType, true);
+            $devicePrefix = self::getKey($loginId, $loginType) . ':';
+            $deviceCount = 0;
             foreach ($devices as $device) {
                 if ($exceptToken !== null && $device->getTokenValue() === $exceptToken) {
                     continue;
                 }
-                self::kickoutDevice($loginId, $device->getDeviceId(), $loginType);
-                $count++;
+                SaToken::getDao()->delete($devicePrefix . $device->getDeviceId());
+                $deviceCount++;
             }
 
-            return $count;
+            return max($count, $deviceCount);
         } finally {
             $logic->getTokenManager()->releaseLock($lockKey);
         }
