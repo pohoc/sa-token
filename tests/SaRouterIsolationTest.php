@@ -142,6 +142,36 @@ class SaRouterIsolationTest extends TestCase
         $this->assertTrue($checked, 'path() 省略前导斜杠时仍须匹配受保护路由规则');
     }
 
+    public function testEncodedPathSeparatorsMatchDecodedFrameworkRoutes(): void
+    {
+        SaTokenContext::setRequest(new class () {
+            public function getPathInfo(): string
+            {
+                return '/admin%2Fpanel';
+            }
+        });
+
+        $checked = false;
+        SaRouter::match('/admin/panel')->check(function () use (&$checked): void {
+            $checked = true;
+        });
+
+        SaTokenContext::clear();
+        $this->assertTrue($checked, '受保护路径规则必须与框架一次 URL 解码后的路由路径一致');
+    }
+
+    public function testEncodedPathIsDecodedOnlyOnce(): void
+    {
+        SaRouter::setCurrentPath('/admin%252Fpanel');
+
+        $checked = false;
+        SaRouter::match('/admin%2Fpanel')->check(function () use (&$checked): void {
+            $checked = true;
+        });
+
+        $this->assertTrue($checked, '双重编码路径只能解码一层，与框架路由器保持一致');
+    }
+
     public function testFullResetClearsAllState(): void
     {
         SaTokenContext::setContextId('ctx-x');

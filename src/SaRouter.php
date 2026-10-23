@@ -146,6 +146,12 @@ class SaRouter
             return '/';
         }
 
+        // Symfony/Laravel route matchers compare one rawurldecode()'d path.
+        // Apply the same single decoding step before authorization matching so
+        // encoded separators cannot make a protected route look like another
+        // path. Do not decode repeatedly: %252F must remain %2F here.
+        $path = rawurldecode($path);
+
         return str_starts_with($path, '/') ? $path : '/' . $path;
     }
 
