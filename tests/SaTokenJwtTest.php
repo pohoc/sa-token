@@ -27,6 +27,18 @@ class SaTokenJwtTest extends TestCase
         $this->assertStringContainsString('.', $token); // JWT 格式：header.payload.signature
     }
 
+    public function testCreateTokenRejectsInvalidLoginIdTypes(): void
+    {
+        foreach ([null, '', false, true, [], new \stdClass()] as $loginId) {
+            try {
+                $this->jwt->createToken($loginId, 'login');
+                $this->fail('无效 loginId 应被拒绝');
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('loginId', $e->getMessage());
+            }
+        }
+    }
+
     public function testCreateTokenWithTimeout(): void
     {
         $token = $this->jwt->createToken(10001, 'login', 3600);

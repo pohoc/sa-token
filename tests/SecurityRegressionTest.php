@@ -725,6 +725,15 @@ class SecurityRegressionTest extends TestCase
 
         // 数字 0 是合法标量 ID，不得与 false 混为同一身份。
         $this->assertNotEmpty(StpUtil::login(0)->getAccessToken());
+
+        foreach ([false, true, [], new \stdClass()] as $invalidStatelessLoginId) {
+            try {
+                SaToken::getStpLogic('login')->loginStateless($invalidStatelessLoginId);
+                $this->fail('无状态登录必须拒绝无效 loginId');
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('loginId', $e->getMessage());
+            }
+        }
     }
 
     public function testAnnotationInheritsClassLevelAttributes(): void

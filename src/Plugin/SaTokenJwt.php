@@ -29,6 +29,10 @@ class SaTokenJwt
      */
     public function createToken(mixed $loginId, string $loginType, ?int $timeout = null, array $extraClaims = []): string
     {
+        if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
+            throw new SaTokenException('loginId 不能为空且必须是非布尔标量');
+        }
+
         if ($this->secretKey === '') {
             throw new SaTokenException('JWT 密钥未配置');
         }
@@ -42,7 +46,7 @@ class SaTokenJwt
         $payload = [
             'iat'  => $now,
             'jti'  => bin2hex(random_bytes(16)),
-            'sub'  => is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : ''),
+            'sub'  => (string) $loginId,
             'type' => $loginType,
         ];
 
