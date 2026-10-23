@@ -142,6 +142,28 @@ class SaOAuth2Test extends TestCase
         );
     }
 
+    public function testPublicClientCannotInheritImplicitGrantFromGlobalAllowList(): void
+    {
+        $config = new SaOAuth2Config(['grantTypes' => ['authorization_code', 'implicit']]);
+        $handle = new SaOAuth2Handle($config);
+        $handle->registerClient(new SaOAuth2Client([
+            'clientId'     => 'public-implicit-client',
+            'clientSecret' => '',
+            'redirectUris' => ['https://example.com/callback'],
+            // Empty means global grant allowlist for confidential clients.
+            'grantTypes'   => [],
+        ]));
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('公开客户端只允许使用授权码模式');
+        (new ImplicitStrategy($handle))->authorize(
+            'public-implicit-client',
+            10001,
+            '',
+            'https://example.com/callback'
+        );
+    }
+
     public function testImplicitStrategyRequiresRegisteredRedirectUri(): void
     {
         $config = new SaOAuth2Config(['grantTypes' => ['authorization_code', 'implicit']]);

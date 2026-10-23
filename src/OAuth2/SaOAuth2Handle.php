@@ -965,6 +965,10 @@ class SaOAuth2Handle
      */
     protected function validateGrantTypeForClient(SaOAuth2Client $client, string $grantType): void
     {
+        if ($client->getClientSecret() === '' && $grantType !== 'authorization_code') {
+            throw new SaTokenException('公开客户端只允许使用授权码模式并强制 PKCE');
+        }
+
         $allowed = $client->getGrantTypes();
         if ($allowed === []) {
             $allowed = $this->config->getGrantTypes();
