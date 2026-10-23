@@ -165,6 +165,11 @@ class SaAnnotationTestIgnoredMethodBaseController
     }
 }
 
+#[SaCheckLogin]
+class SaAnnotationTestProtectedInheritedIgnoreMethodController extends SaAnnotationTestIgnoredMethodBaseController
+{
+}
+
 class SaAnnotationTestProtectedIgnoreMethodSubclassController extends SaAnnotationTestIgnoredMethodBaseController
 {
     #[SaCheckLogin]
@@ -397,6 +402,12 @@ class SaAnnotationTest extends TestCase
     {
         $this->expectException(NotLoginException::class);
         SaAnnotationProcessor::process(SaAnnotationTestProtectedIgnoreMethodSubclassController::class, 'overridablePublicAction');
+    }
+
+    public function testSubclassLoginRequirementOverridesInheritedIgnoredMethod(): void
+    {
+        $this->expectException(NotLoginException::class);
+        SaAnnotationProcessor::process(SaAnnotationTestProtectedInheritedIgnoreMethodController::class, 'overridablePublicAction');
     }
 
     public function testOverriddenMethodInheritsSecurityAnnotations(): void

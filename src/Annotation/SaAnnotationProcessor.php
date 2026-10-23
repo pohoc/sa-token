@@ -19,14 +19,18 @@ class SaAnnotationProcessor
         $targetMethod = $reflectionClass->hasMethod($method) ? $reflectionClass->getMethod($method) : null;
         $targetMethodDeclaration = $targetMethod?->getDeclaringClass()->getName();
         $targetMethodAttributes = $targetMethod?->getAttributes() ?? [];
+        $hasMoreSpecificAuthorization = self::hasAuthorizationAttribute($reflectionClass->getAttributes())
+            || ($targetMethodDeclaration === $reflectionClass->getName()
+                && self::hasAuthorizationAttribute($targetMethodAttributes));
         foreach ($targetMethodAttributes as $attr) {
             if ($attr->getName() === SaIgnore::class) {
-                return;
+                // 当前类直接声明的 method-level ignore 是明确的 opt-out；
+                // 继承来的 ignore 不能抵消子类新增的类级授权要求。
+                if ($targetMethodDeclaration === $reflectionClass->getName() || !$hasMoreSpecificAuthorization) {
+                    return;
+                }
             }
         }
-
-        $hasMoreSpecificAuthorization = $targetMethodDeclaration === $reflectionClass->getName()
-            && self::hasAuthorizationAttribute($targetMethodAttributes);
 
         // 类级注解必须沿继承链合并：开发者习惯把 #[SaCheckLogin] 标在
         // BaseController 上，getAttributes() 不含父类会让继承式鉴权整体静默失效
@@ -71,7 +75,8 @@ class SaAnnotationProcessor
             }
             $seenMethodDeclarations[$declaration] = true;
             $attributes = $reflectedMethod->getAttributes();
-            if ($declaration !== $targetMethodDeclaration) {
+            if ($declaration !== $targetMethodDeclaration
+                || ($hasMoreSpecificAuthorization && $declaration !== $reflectionClass->getName())) {
                 $attributes = array_values(array_filter(
                     $attributes,
                     static fn (\ReflectionAttribute $attribute): bool => $attribute->getName() !== SaIgnore::class
