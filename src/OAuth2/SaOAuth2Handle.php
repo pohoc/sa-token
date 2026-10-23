@@ -1107,10 +1107,14 @@ class SaOAuth2Handle
     protected function getClientSecretForSigning(): string
     {
         $jwtSecretKey = SaToken::getConfig()->getJwtSecretKey();
-        if ($jwtSecretKey !== '') {
-            return $jwtSecretKey;
+        if ($jwtSecretKey === '') {
+            throw new SaTokenException('OAuth2 ID Token 签名需要配置 jwtSecretKey');
         }
-        throw new SaTokenException('OAuth2 ID Token 签名需要配置 jwtSecretKey');
+        if (strlen($jwtSecretKey) < 32) {
+            throw new SaTokenException('OAuth2 ID Token 的 HS256 密钥长度不足，至少需要 32 字节');
+        }
+
+        return $jwtSecretKey;
     }
 
     protected function base64UrlEncode(string $data): string

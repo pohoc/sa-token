@@ -554,7 +554,8 @@ Token 自包含所有信息，无需 DAO 存储：
 
 ```php
 SaToken::init([
-    'jwtSecretKey' => 'your-secret-key',
+    // 通过密钥管理服务注入预生成的随机密钥，至少 32 字节
+    'jwtSecretKey' => getenv('SA_TOKEN_JWT_SECRET_KEY') ?: '',
     'jwtStateless' => true,
 ]);
 
@@ -655,7 +656,8 @@ $sso->doSloCallback($loginId, $params);
 ```php
 SaToken::init([
     // 签发 id_token（OpenID Connect）必需
-    'jwtSecretKey' => 'your-jwt-secret-key',
+    // 通过密钥管理服务注入预生成的随机密钥，至少 32 字节
+    'jwtSecretKey' => getenv('SA_TOKEN_JWT_SECRET_KEY') ?: '',
     'oauth2' => [
         'grantTypes'           => ['authorization_code', 'password'],
         'codeTimeout'          => 60,

@@ -81,6 +81,15 @@ class SaOAuth2OpenIdTest extends TestCase
         $this->assertGreaterThan($idToken->getIssuedAt(), $idToken->getExpiresAt());
     }
 
+    public function testGenerateIdTokenRejectsShortSigningKey(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(['jwtSecretKey' => 'short-secret']));
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('至少需要 32 字节');
+        $this->handle->generateIdToken('test-client', 10001, 'openid');
+    }
+
     public function testIdTokenContainsJwtString(): void
     {
         $idToken = $this->handle->generateIdToken('test-client', 10001, 'openid');
