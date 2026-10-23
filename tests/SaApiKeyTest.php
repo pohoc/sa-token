@@ -109,6 +109,38 @@ class SaApiKeyTest extends TestCase
         $api->checkApiKey();
     }
 
+    public function testCheckApiKeyRejectsEmptySecretBeforeCallingValidator(): void
+    {
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'api-key' => 'my-key',
+            'api-secret' => '',
+        ]));
+
+        $api = new SaApiKey();
+        $api->setValidator(static function (): int {
+            self::fail('空凭据不应传递给自定义校验器');
+        });
+
+        $this->expectException(SaTokenException::class);
+        $api->checkApiKey();
+    }
+
+    public function testRegisterKeyRejectsEmptyCredentials(): void
+    {
+        $api = new SaApiKey();
+
+        $this->expectException(SaTokenException::class);
+        $api->registerKey('my-key', '   ', 10001);
+    }
+
+    public function testSetKeyRegistryRejectsEmptySecret(): void
+    {
+        $api = new SaApiKey();
+
+        $this->expectException(SaTokenException::class);
+        $api->setKeyRegistry(['my-key' => ['secret' => '', 'loginId' => 10001]]);
+    }
+
     public function testCheckApiKeyWithCustomValidator(): void
     {
         $request = $this->mockRequestWithHeaders([

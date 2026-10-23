@@ -37,7 +37,7 @@ class SaApiKey
         $apiKey = SaTokenContext::getHeader($this->keyHeaderName);
         $apiSecret = SaTokenContext::getHeader($this->secretHeaderName);
 
-        if ($apiKey === null || $apiSecret === null) {
+        if ($apiKey === null || $apiSecret === null || trim($apiKey) === '' || trim($apiSecret) === '') {
             throw new SaTokenException('缺少 API Key 或 Secret');
         }
 
@@ -108,6 +108,10 @@ class SaApiKey
 
     public function registerKey(string $apiKey, string $apiSecret, mixed $loginId = null): void
     {
+        if (trim($apiKey) === '' || trim($apiSecret) === '') {
+            throw new SaTokenException('注册 API Key 必须提供非空 Key 和 Secret');
+        }
+
         $this->keyRegistry[$apiKey] = [
             'secret'  => $apiSecret,
             'loginId' => $loginId,
@@ -119,6 +123,13 @@ class SaApiKey
      */
     public function setKeyRegistry(array $registry): static
     {
+        foreach ($registry as $apiKey => $entry) {
+            if (!is_string($apiKey) || trim($apiKey) === '' || !is_array($entry)
+                || !is_string($entry['secret'] ?? null) || trim($entry['secret']) === '') {
+                throw new SaTokenException('API Key 注册表中的 Key 和 Secret 必须为非空字符串');
+            }
+        }
+
         $this->keyRegistry = $registry;
         return $this;
     }
