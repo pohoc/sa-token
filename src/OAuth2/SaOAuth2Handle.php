@@ -247,6 +247,79 @@ class SaOAuth2Handle
      */
     public function refreshToken(string $refreshToken, string $clientId, string $clientSecret): SaOAuth2AccessToken
     {
+        // 同一家族的不同 RT 也必须串行处理：否则旧 RT 重放撤销家族时，
+        // 并发子 RT 可能在撤销完成后继续签发并登记新访问令牌。
+        $client = $this->validateClientWithSecret($clientId, $clientSecret);
+        $this->validateGrantTypeForClient($client, 'refresh_token');
+
+        $lockValue = bin2hex(random_bytes(16));
+        $tokenLockKey = 'oauth2:refresh:token:' . hash('sha256', $refreshToken);
+        $this->acquireRefreshLock($tokenLockKey, $lockValue);
+
+        try {
+            // 必须在拿到单 RT 锁后重新解析家族：若请求在前一请求消费 RT 的
+            // 窗口中启动，它此时才能读到已写入的 consumed 标记并加入同一家族锁。
+            $familyLockKey = 'oauth2:refresh:' . $this->getRefreshTokenFamilyLockIdentity($refreshToken);
+            $this->acquireRefreshLock($familyLockKey, $lockValue);
+            try {
+                return $this->refreshTokenUnlocked($refreshToken, $clientId, $clientSecret);
+            } finally {
+                $this->releaseRefreshLock($familyLockKey, $lockValue);
+            }
+        } finally {
+            $this->releaseRefreshLock($tokenLockKey, $lockValue);
+        }
+    }
+
+    protected function acquireRefreshLock(string $lockKey, string $lockValue): void
+    {
+        $dao = $this->getDao();
+        for ($attempt = 0; $attempt <= 100; $attempt++) {
+            if ($dao->setIfNotExists($lockKey, $lockValue, 120)) {
+                return;
+            }
+            if ($attempt < 100) {
+                usleep(10000);
+            }
+        }
+
+        throw new SaTokenException('刷新令牌正在处理中，请重试');
+    }
+
+    protected function releaseRefreshLock(string $lockKey, string $lockValue): void
+    {
+        $dao = $this->getDao();
+        if ($dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
+            $dao->compareAndDelete($lockKey, $lockValue);
+        } elseif ($dao->get($lockKey) === $lockValue) {
+            $dao->delete($lockKey);
+        }
+    }
+
+    /**
+     * 获取刷新锁身份；家族 RT 共用同一把锁，旧版无家族数据时退回单 RT 锁。
+     */
+    protected function getRefreshTokenFamilyLockIdentity(string $refreshToken): string
+    {
+        $tokenHash = hash('sha256', $refreshToken);
+        $consumedFamily = $this->getDao()->get('oauth2:rt:consumed:' . $tokenHash);
+        if (is_string($consumedFamily) && $consumedFamily !== '') {
+            return 'family:' . hash('sha256', $consumedFamily);
+        }
+
+        $json = $this->getDao()->get($this->buildRefreshTokenKey($refreshToken));
+        if ($json !== null) {
+            $data = SaFoxUtil::fromJson($this->decryptValue($json));
+            if (is_array($data) && is_string($data['familyId'] ?? null) && $data['familyId'] !== '') {
+                return 'family:' . hash('sha256', $data['familyId']);
+            }
+        }
+
+        return 'legacy:' . $tokenHash;
+    }
+
+    protected function refreshTokenUnlocked(string $refreshToken, string $clientId, string $clientSecret): SaOAuth2AccessToken
+    {
         $client = $this->validateClientWithSecret($clientId, $clientSecret);
         $this->validateGrantTypeForClient($client, 'refresh_token');
 

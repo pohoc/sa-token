@@ -302,6 +302,34 @@ class SaOAuth2Test extends TestCase
         $this->assertNotEquals($accessToken->getAccessToken(), $newAccessToken->getAccessToken());
     }
 
+    public function testRefreshTokenReplayRevokesTheWholeFamily(): void
+    {
+        $code = $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback');
+        $initial = $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
+        $oldRefreshToken = $initial->getRefreshToken();
+        $this->assertNotNull($oldRefreshToken);
+
+        $rotated = $this->handle->refreshToken($oldRefreshToken, 'test-client', $this->clientSecret);
+        $childRefreshToken = $rotated->getRefreshToken();
+        $this->assertNotNull($childRefreshToken);
+        $this->assertNotNull($this->handle->validateAccessToken($rotated->getAccessToken()));
+
+        try {
+            $this->handle->refreshToken($oldRefreshToken, 'test-client', $this->clientSecret);
+            $this->fail('重放旧刷新令牌应被拒绝');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('已被使用', $e->getMessage());
+        }
+
+        $this->assertNull($this->handle->validateAccessToken($rotated->getAccessToken()));
+        try {
+            $this->handle->refreshToken($childRefreshToken, 'test-client', $this->clientSecret);
+            $this->fail('家族撤销后，派生刷新令牌必须失效');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('无效的刷新令牌', $e->getMessage());
+        }
+    }
+
     public function testRefreshTokenWithInvalidToken(): void
     {
         $this->expectException(SaTokenException::class);
