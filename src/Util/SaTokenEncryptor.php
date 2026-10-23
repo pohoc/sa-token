@@ -224,11 +224,17 @@ class SaTokenEncryptor
         return $this->useSm ? strlen($decoded) >= 64 : strlen($decoded) >= 48;
     }
 
+    protected function isUnitTestRuntime(): bool
+    {
+        // Environment variables are deployer-controlled and must never opt a
+        // production process into a predictable fallback encryption key.
+        return defined('PHPUNIT_COMPOSER_INSTALL');
+    }
+
     protected function deriveAesKey(string $key): string
     {
         if ($key === '') {
-            $isTest = defined('PHPUNIT_COMPOSER_INSTALL') || getenv('PHPUNIT_TESTING') !== false;
-            if ($isTest) {
+            if ($this->isUnitTestRuntime()) {
                 return hash_hkdf('sha256', 'sa-token-default-encrypt-key', 32, 'token-encrypt', '');
             }
             throw new SaTokenException('Sa-Token: 未配置加密密钥，请在生产环境中配置 aesKey 或 tokenEncryptKey');
@@ -242,8 +248,7 @@ class SaTokenEncryptor
     protected function deriveSm4Key(string $key): string
     {
         if ($key === '') {
-            $isTest = defined('PHPUNIT_COMPOSER_INSTALL') || getenv('PHPUNIT_TESTING') !== false;
-            if ($isTest) {
+            if ($this->isUnitTestRuntime()) {
                 return substr(bin2hex(hash_hkdf('sha256', 'sa-token-default-sm4-key', 32, 'token-encrypt-sm4', '')), 0, 32);
             }
             throw new SaTokenException('Sa-Token: 未配置 SM4 加密密钥，请在生产环境中配置 sm4Key 或 tokenEncryptKey');

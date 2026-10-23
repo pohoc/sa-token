@@ -6,10 +6,39 @@ namespace SaToken\Tests;
 
 use CryptoSm\SM4\Sm4;
 use PHPUnit\Framework\TestCase;
+use SaToken\Exception\SaTokenException;
 use SaToken\Util\SaTokenEncryptor;
 
 class SaTokenEncryptorTest extends TestCase
 {
+    public function testPhpunitTestingEnvironmentVariableDoesNotEnableEmptyEncryptionKey(): void
+    {
+        $previousValue = getenv('PHPUNIT_TESTING');
+        putenv('PHPUNIT_TESTING=0');
+
+        try {
+            foreach (['intl', 'sm'] as $cryptoType) {
+                try {
+                    new class (true, '', $cryptoType) extends SaTokenEncryptor {
+                        protected function isUnitTestRuntime(): bool
+                        {
+                            return false;
+                        }
+                    };
+                    $this->fail("{$cryptoType} 加密不能仅因 PHPUNIT_TESTING 环境变量而接受空密钥");
+                } catch (SaTokenException $e) {
+                    $this->assertStringContainsString('未配置', $e->getMessage());
+                }
+            }
+        } finally {
+            if ($previousValue === false) {
+                putenv('PHPUNIT_TESTING');
+            } else {
+                putenv('PHPUNIT_TESTING=' . $previousValue);
+            }
+        }
+    }
+
     private function createAesEncryptor(bool $enabled = true, string $key = ''): SaTokenEncryptor
     {
         if ($key === '') {
