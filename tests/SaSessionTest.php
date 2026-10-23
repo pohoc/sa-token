@@ -7,6 +7,7 @@ namespace SaToken\Tests;
 use PHPUnit\Framework\TestCase;
 use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoMemory;
+use SaToken\Exception\SaTokenException;
 use SaToken\SaSession;
 use SaToken\SaToken;
 
@@ -85,6 +86,24 @@ class SaSessionTest extends TestCase
         // 重新从存储层加载，应该不存在
         $loaded = SaSession::getBySessionId('test-session-6');
         $this->assertNull($loaded);
+    }
+
+    public function testDestroyWaitsForConcurrentSessionMutationLock(): void
+    {
+        $sessionId = 'test-session-destroy-lock';
+        $session = new SaSession($sessionId);
+        $session->set('key', 'value');
+        $lockKey = 'satoken:session:lock:' . $sessionId;
+        $this->assertTrue(SaToken::getDao()->setIfNotExists($lockKey, 'other-writer', 5));
+
+        try {
+            $session->destroy();
+            $this->fail('持有会话修改锁时 destroy 应等待并拒绝删除');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('会话并发冲突', $e->getMessage());
+        }
+
+        $this->assertNotNull(SaSession::getBySessionId($sessionId));
     }
 
     public function testPersistence(): void

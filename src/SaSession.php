@@ -181,8 +181,29 @@ class SaSession
      */
     public function destroy(): void
     {
-        $this->dataMap = [];
-        SaToken::getDao()->delete($this->id);
+        $dao = SaToken::getDao();
+        $lockKey = 'satoken:session:lock:' . $this->id;
+        $lockValue = bin2hex(random_bytes(16));
+
+        for ($i = 0; $i < 10; $i++) {
+            if ($dao->setIfNotExists($lockKey, $lockValue, 5)) {
+                try {
+                    $dao->delete($this->id);
+                    $this->dataMap = [];
+                    $this->loaded = true;
+                    return;
+                } finally {
+                    if ($dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
+                        $dao->compareAndDelete($lockKey, $lockValue);
+                    } elseif ($dao->get($lockKey) === $lockValue) {
+                        $dao->delete($lockKey);
+                    }
+                }
+            }
+            usleep(50000);
+        }
+
+        throw new \SaToken\Exception\SaTokenException('会话并发冲突：锁获取超时，请稍后重试');
     }
 
     /**
