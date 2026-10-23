@@ -708,6 +708,11 @@ class SecurityRegressionTest extends TestCase
         // 严格 host 匹配不受影响
         $this->assertFalse($ref->invoke($handle, 'https://evilexample.com'));
         $this->assertFalse($ref->invoke($handle, 'https://app.example.com.evil.com'));
+
+        // PHP treats the backslash as user-info while browsers normalize it to a path
+        // separator; accepting this string sends the eventual redirect to evil.example.com.
+        $this->assertFalse($ref->invoke($handle, 'https://evil.example.com\\@app.example.com/callback'));
+        $this->assertFalse($ref->invoke($handle, 'https://user@app.example.com/callback'));
     }
 
     // ======== SaSign 强制防重放 ========

@@ -462,6 +462,17 @@ class SaSsoHandle
             return false;
         }
 
+        // parse_url and browser URL parsers interpret backslashes differently.
+        // For example, PHP treats https://evil.example\\@app.example.com as
+        // user-info on app.example.com while browsers navigate to evil.example.
+        // Reject parser-ambiguous URL characters and user-info before host matching.
+        if (preg_match('/[\\\\\x00-\x20\x7f]/', $url) === 1
+            || array_key_exists('user', $parsed)
+            || array_key_exists('pass', $parsed)
+            || array_key_exists('fragment', $parsed)) {
+            return false;
+        }
+
         // scheme 白名单：javascript://、data:// 等伪协议的 host 可以与白名单匹配，
         // 一旦放行就会在浏览器中执行任意脚本（XSS），只允许 http/https
         $scheme = strtolower((string) $parsed['scheme']);
