@@ -486,6 +486,7 @@ class TokenManager
 
     public function renewTimeout(string $tokenValue, int $timeout): void
     {
+        SaTokenTimeout::validate($timeout);
         $this->getDao()->expire(self::TOKEN_PREFIX . $tokenValue, $timeout);
     }
 

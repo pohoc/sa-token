@@ -71,6 +71,15 @@ class TokenManagerTest extends TestCase
         $this->manager->saveToken($token, 'zero-timeout-user', 'login', '', 0);
     }
 
+    public function testRenewTimeoutRejectsZeroInsteadOfMakingTokenPermanent(): void
+    {
+        $token = $this->manager->createTokenValue('renew-zero-timeout-user', 'login');
+        $this->manager->saveToken($token, 'renew-zero-timeout-user', 'login', '', 300);
+
+        $this->expectException(SaTokenException::class);
+        $this->manager->renewTimeout($token, 0);
+    }
+
     public function testSaveTokenRequiresAccountLock(): void
     {
         $loginId = 'save-lock-user';

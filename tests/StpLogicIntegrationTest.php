@@ -89,6 +89,14 @@ class StpLogicIntegrationTest extends TestCase
         new SaLoginParameter(['timeout' => 0]);
     }
 
+    public function testRenewTimeoutRejectsZero(): void
+    {
+        $this->loginAndGetToken('renew-zero-timeout-user');
+
+        $this->expectException(SaTokenException::class);
+        $this->logic->renewTimeout(0);
+    }
+
     // ======== getSession 集成测试 ========
 
     public function testGetSessionRequiresLogin(): void
