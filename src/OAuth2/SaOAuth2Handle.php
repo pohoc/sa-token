@@ -553,7 +553,7 @@ class SaOAuth2Handle
         $this->validateGrantTypeForClient($client, 'password');
 
         // 密码模式是暴露在公网的用户凭据验证端点，必须接入防暴力锁定：
-        // 连续失败达到 antiBruteMaxFailures 后该用户名临时锁定（原子计数）
+        // 同一来源 IP 连续失败达到 antiBruteMaxFailures 后临时锁定（原子计数）
         SaAntiBruteUtil::checkAndThrow($username);
 
         // 用户验证由外部回调处理
@@ -563,7 +563,7 @@ class SaOAuth2Handle
             throw new SaTokenException('用户名或密码错误');
         }
 
-        SaAntiBruteUtil::clearFailures($username);
+        SaAntiBruteUtil::clearCurrentSourceFailures($username);
 
         return $this->generateAccessToken($clientId, $loginId, $scope);
     }

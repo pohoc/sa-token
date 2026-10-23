@@ -992,7 +992,7 @@ Token 存储加密器 `SaTokenEncryptor::decrypt()` 同样默认拒绝旧版无�
 
 ## 防暴力破解
 
-登录失败次数记录与账号自动锁定：
+登录失败次数按账号和来源 IP 分别记录；单一来源达到阈值后只会锁定该来源，避免匿名请求通过猜测用户名锁住其他用户。显式调用 `lock()` / `unlockAccount()` 仍按账号全局生效。部署在代理后时，应正确配置可信代理与客户端 IP 解析；若请求上下文无法解析来源 IP，失败记录会共享 `unknown` 来源。分布式来源的全局限流应由网关或应用层补充。
 
 ```php
 StpUtil::checkAntiBrute('user@example.com');
@@ -1019,7 +1019,7 @@ SaToken::init([
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
-| `antiBruteMaxFailures` | int | `0` | 最大失败次数，`0` 不限制 |
+| `antiBruteMaxFailures` | int | `5` | 单一来源的最大失败次数，`0` 不限制 |
 | `antiBruteLockDuration` | int | `600` | 锁定时长（秒） |
 
 ## IP 异常检测

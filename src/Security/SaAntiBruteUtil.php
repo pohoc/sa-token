@@ -6,6 +6,7 @@ namespace SaToken\Security;
 
 use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
+use SaToken\Util\SaTokenContext;
 
 class SaAntiBruteUtil
 {
@@ -31,29 +32,65 @@ class SaAntiBruteUtil
         return self::getKey($account, $loginType) . ':lock';
     }
 
-    protected static function getCountKey(string $account, string $loginType = 'login'): string
+    protected static function getEpochKey(string $account, string $loginType = 'login'): string
     {
-        return self::getKey($account, $loginType) . ':cnt';
+        return self::getKey($account, $loginType) . ':epoch';
+    }
+
+    protected static function getEpoch(string $account, string $loginType = 'login'): int
+    {
+        $epoch = SaToken::getDao()->get(self::getEpochKey($account, $loginType));
+        return $epoch !== null && ctype_digit($epoch) ? (int) $epoch : 0;
+    }
+
+    protected static function getIpSuffix(): string
+    {
+        $ip = SaTokenContext::getClientIp();
+        return hash('sha256', $ip !== null && $ip !== '' ? $ip : 'unknown');
+    }
+
+    protected static function getIpCountPrefix(string $account, string $loginType = 'login'): string
+    {
+        return self::getKey($account, $loginType) . ':ip-count:';
+    }
+
+    protected static function getIpLockPrefix(string $account, string $loginType = 'login'): string
+    {
+        return self::getKey($account, $loginType) . ':ip-lock:';
+    }
+
+    protected static function getIpCountKey(string $account, string $loginType = 'login'): string
+    {
+        return self::getIpCountPrefix($account, $loginType) . self::getEpoch($account, $loginType) . ':' . self::getIpSuffix();
+    }
+
+    protected static function getIpLockKey(string $account, string $loginType = 'login'): string
+    {
+        return self::getIpLockPrefix($account, $loginType) . self::getEpoch($account, $loginType) . ':' . self::getIpSuffix();
+    }
+
+    protected static function getLockUntil(string $key): int
+    {
+        $value = SaToken::getDao()->get($key);
+        return $value !== null && ctype_digit($value) ? (int) $value : 0;
     }
 
     public static function isAccountLocked(string $account, string $loginType = 'login'): bool
     {
-        $dao = SaToken::getDao();
-        $lockUntil = $dao->get(self::getLockKey($account, $loginType));
-
-        return $lockUntil !== null && (int) $lockUntil > time();
+        $lockUntil = max(
+            self::getLockUntil(self::getLockKey($account, $loginType)),
+            self::getLockUntil(self::getIpLockKey($account, $loginType))
+        );
+        return $lockUntil > time();
     }
 
     public static function getRemainingLockTime(string $account, string $loginType = 'login'): int
     {
-        $dao = SaToken::getDao();
-        $lockUntil = $dao->get(self::getLockKey($account, $loginType));
-
-        if ($lockUntil === null) {
-            return 0;
-        }
-
-        $remaining = (int) $lockUntil - time();
+        $lockUntil = max(
+            self::getLockUntil(self::getLockKey($account, $loginType)),
+            self::getLockUntil(self::getIpLockKey($account, $loginType))
+        );
+        $remaining = $lockUntil - time();
         return $remaining > 0 ? $remaining : 0;
     }
 
@@ -64,11 +101,16 @@ class SaAntiBruteUtil
         $maxFailures = $config->getAntiBruteMaxFailures();
         $lockDuration = $config->getAntiBruteLockDuration();
 
-        // 原子递增失败计数：读-改-写在并发爆破下会互相覆盖，导致锁定阈值形同虚设
-        $failCount = $dao->increment(self::getCountKey($account, $loginType), 1, 86400);
+        // 限制按账号+来源 IP 计数，避免任何人仅凭已知账号名就锁死受害者。
+        // 单来源仍按原子计数阻止在线爆破；分布式防护需在上游配置全局速率限制。
+        $failCount = $dao->increment(self::getIpCountKey($account, $loginType), 1, 86400);
 
         if ($maxFailures > 0 && $lockDuration > 0 && $failCount >= $maxFailures) {
-            self::lock($account, $loginType, $lockDuration);
+            $dao->set(
+                self::getIpLockKey($account, $loginType),
+                (string) (time() + $lockDuration),
+                $lockDuration + 60
+            );
         }
     }
 
@@ -97,19 +139,27 @@ class SaAntiBruteUtil
     {
         $dao = SaToken::getDao();
         $dao->delete(self::getLockKey($account, $loginType));
+        $dao->increment(self::getEpochKey($account, $loginType));
     }
 
     public static function clearFailures(string $account, string $loginType = 'login'): void
     {
         $dao = SaToken::getDao();
-        $dao->delete(self::getCountKey($account, $loginType));
         $dao->delete(self::getLockKey($account, $loginType));
+        $dao->increment(self::getEpochKey($account, $loginType));
+    }
+
+    public static function clearCurrentSourceFailures(string $account, string $loginType = 'login'): void
+    {
+        $dao = SaToken::getDao();
+        $dao->delete(self::getIpCountKey($account, $loginType));
+        $dao->delete(self::getIpLockKey($account, $loginType));
     }
 
     public static function getFailCount(string $account, string $loginType = 'login'): int
     {
         $dao = SaToken::getDao();
-        $count = $dao->get(self::getCountKey($account, $loginType));
+        $count = $dao->get(self::getIpCountKey($account, $loginType));
 
         return $count !== null ? (int) $count : 0;
     }
@@ -119,8 +169,10 @@ class SaAntiBruteUtil
      */
     public static function getSecurityInfo(string $account, string $loginType = 'login'): array
     {
-        $lockUntil = SaToken::getDao()->get(self::getLockKey($account, $loginType));
-        $lockedUntilInt = $lockUntil !== null ? (int) $lockUntil : 0;
+        $lockedUntilInt = max(
+            self::getLockUntil(self::getLockKey($account, $loginType)),
+            self::getLockUntil(self::getIpLockKey($account, $loginType))
+        );
 
         return [
             'failCount' => self::getFailCount($account, $loginType),

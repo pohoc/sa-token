@@ -159,11 +159,6 @@ trait StpLogicSecurityTrait
         }
 
         SaAntiBruteUtil::recordFailure($account, $this->loginType);
-
-        if (SaAntiBruteUtil::getFailCount($account, $this->loginType) >= $maxFailures) {
-            $lockDuration = $config->getAntiBruteLockDuration();
-            SaAntiBruteUtil::lock($account, $this->loginType, $lockDuration);
-        }
     }
 
     protected function clearAntiBruteFailures(mixed $loginId): void
@@ -173,7 +168,10 @@ trait StpLogicSecurityTrait
             return;
         }
 
-        SaAntiBruteUtil::clearFailures(is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : ''), $this->loginType);
+        SaAntiBruteUtil::clearCurrentSourceFailures(
+            is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : ''),
+            $this->loginType
+        );
     }
 
     public function isAccountLocked(string $account): bool
