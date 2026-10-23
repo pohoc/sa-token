@@ -18,7 +18,7 @@ class SaApiKey
     /** @var callable(string, string): mixed|null */
     protected $validator = null;
 
-    /** @var array<string, array{secret: string, loginId: mixed}> */
+    /** @var array<array-key, array{secret: string, loginId: mixed}> */
     protected array $keyRegistry = [];
 
     /**
@@ -119,12 +119,12 @@ class SaApiKey
     }
 
     /**
-     * @param array<string, array{secret: string, loginId: mixed}> $registry
+     * @param array<array-key, array{secret: string, loginId: mixed}> $registry
      */
     public function setKeyRegistry(array $registry): static
     {
         foreach ($registry as $apiKey => $entry) {
-            if ((!is_string($apiKey) && !is_int($apiKey)) || trim((string) $apiKey) === '' || !is_array($entry)
+            if (trim((string) $apiKey) === '' || !is_array($entry)
                 || !is_string($entry['secret'] ?? null) || trim($entry['secret']) === '') {
                 throw new SaTokenException('API Key 注册表中的 Key 和 Secret 必须为非空字符串');
             }
