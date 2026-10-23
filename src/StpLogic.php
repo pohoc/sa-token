@@ -134,8 +134,6 @@ class StpLogic
 
             $this->writeTokenToResponse($tokenValue, $parameter);
 
-            $this->getEvent()->onLogin($this->loginType, $loginId, $tokenValue, $parameter);
-
             $this->clearAntiBruteFailures($loginId);
 
             if ($config->isDeviceManagement()) {
@@ -146,6 +144,10 @@ class StpLogic
         } finally {
             $this->tokenManager->releaseLock($lockKey);
         }
+
+        // 监听器由调用方实现且可能执行网络 I/O；不要让不受控回调占用 5 秒租约锁，
+        // 否则锁过期后另一个登录请求会与当前回调所在的临界区并发执行。
+        $this->getEvent()->onLogin($this->loginType, $loginId, $tokenValue, $parameter);
 
         return $result;
     }
