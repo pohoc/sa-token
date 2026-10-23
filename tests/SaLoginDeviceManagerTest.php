@@ -163,6 +163,44 @@ class SaLoginDeviceManagerTest extends TestCase
         $this->assertNull($this->logic->getTokenManager()->getLoginIdByToken($removeToken));
     }
 
+    public function testStatelessKickoutAllDevicesPreservesOnlyExceptTokenOnSharedDevice(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenName'        => 'satoken',
+            'timeout'          => 86400,
+            'activityTimeout'  => -1,
+            'isReadHeader'     => false,
+            'isReadCookie'     => false,
+            'isWriteCookie'    => false,
+            'isWriteHeader'    => false,
+            'deviceManagement' => true,
+            'jwtStateless'     => true,
+            'jwtSecretKey'     => 'test-stateless-device-secret-32-bytes-long',
+        ]));
+
+        $loginId = 'stateless-device-account';
+        $firstToken = $this->logic->loginStateless($loginId);
+        $secondToken = $this->logic->loginStateless($loginId);
+        $deviceData = [
+            'deviceType' => 'pc',
+            'deviceName' => 'Shared workstation',
+            'ip'         => '192.0.2.45',
+        ];
+        $firstDevice = new SaLoginDevice($deviceData);
+        $secondDevice = new SaLoginDevice($deviceData);
+        SaLoginDeviceManager::registerDevice($loginId, 'login', $firstDevice, $firstToken, $this->logic);
+        SaLoginDeviceManager::registerDevice($loginId, 'login', $secondDevice, $secondToken, $this->logic);
+
+        self::assertSame($firstDevice->getDeviceId(), $secondDevice->getDeviceId());
+        self::assertSame($loginId, $this->logic->getLoginIdByToken($firstToken));
+        self::assertSame($loginId, $this->logic->getLoginIdByToken($secondToken));
+
+        $this->logic->kickoutAllDevices($loginId, $secondToken);
+
+        self::assertNull($this->logic->getLoginIdByToken($firstToken));
+        self::assertSame($loginId, $this->logic->getLoginIdByToken($secondToken));
+    }
+
     public function testMultipleDeviceLogin(): void
     {
         $this->logic->login(10001);

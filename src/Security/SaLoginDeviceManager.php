@@ -204,11 +204,29 @@ class SaLoginDeviceManager
                 $devices = self::loadDeviceList($loginId, $loginType, true);
                 $count = 0;
                 foreach ($devices as $device) {
-                    if ($device->getTokenValue() === $exceptToken) {
-                        continue;
+                    $deviceKey = self::getKey($loginId, $loginType) . ':' . $device->getDeviceId();
+                    $remainingTokens = [];
+                    $revokedToken = false;
+                    foreach (self::loadDeviceTokenValues($deviceKey) as $tokenValue) {
+                        if ($tokenValue === $exceptToken) {
+                            $remainingTokens[] = $tokenValue;
+                            continue;
+                        }
+                        $logic->kickoutByTokenValue($tokenValue);
+                        $revokedToken = true;
                     }
-                    self::kickoutDevice($loginId, $device->getDeviceId(), $loginType, $logic);
-                    $count++;
+
+                    if ($remainingTokens !== []) {
+                        // A device can hold several non-shared tokens. Preserve only
+                        // the explicitly exempted bearer, not every token on that device.
+                        $device->setTokenValue($exceptToken);
+                        SaToken::getDao()->update($deviceKey, self::encodeDevice($device, $remainingTokens));
+                    } else {
+                        SaToken::getDao()->delete($deviceKey);
+                    }
+                    if ($revokedToken) {
+                        $count++;
+                    }
                 }
                 return $count;
             }
