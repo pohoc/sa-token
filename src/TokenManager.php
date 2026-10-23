@@ -41,6 +41,11 @@ class TokenManager
         return str_replace(['%', ':'], ['%25', '%3A'], $component);
     }
 
+    public static function buildLoginIdKey(string $loginType, string $loginId): string
+    {
+        return self::LOGIN_ID_PREFIX . self::encodeKeyComponent($loginType) . ':' . self::encodeKeyComponent($loginId);
+    }
+
     protected ?SaTokenEncryptor $encryptor = null;
 
     protected ?SaTokenJwt $jwtInstance = null;
@@ -201,7 +206,7 @@ class TokenManager
     protected function finalizeToken(string $tokenValue, mixed $loginId, string $loginType, string $deviceType, ?int $effectiveTimeout): string
     {
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-        $loginIdKey = self::LOGIN_ID_PREFIX . $loginType . ':' . $loginIdStr;
+        $loginIdKey = self::buildLoginIdKey($loginType, $loginIdStr);
         $existingTokens = $this->getTokenListByLoginId($loginId, $loginType);
         $tokenData = [
             'tokenValue' => $tokenValue,
@@ -322,7 +327,7 @@ class TokenManager
     public function getTokenListByLoginId(mixed $loginId, string $loginType): array
     {
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-        $loginIdKey = self::LOGIN_ID_PREFIX . $loginType . ':' . $loginIdStr;
+        $loginIdKey = self::buildLoginIdKey($loginType, $loginIdStr);
         $json = $this->getDao()->get($loginIdKey);
         if ($json === null) {
             return [];
@@ -362,7 +367,7 @@ class TokenManager
 
         try {
             $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-            $loginIdKey = self::LOGIN_ID_PREFIX . $loginType . ':' . $loginIdStr;
+            $loginIdKey = self::buildLoginIdKey($loginType, $loginIdStr);
             $existingTokens = $this->getTokenListByLoginId($loginId, $loginType);
             $newTokens = array_values(array_filter($existingTokens, fn ($item) => $item['tokenValue'] !== $tokenValue));
 
@@ -453,7 +458,7 @@ class TokenManager
             }
 
             $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-            $keysToDelete[] = self::LOGIN_ID_PREFIX . $loginType . ':' . $loginIdStr;
+            $keysToDelete[] = self::buildLoginIdKey($loginType, $loginIdStr);
             $keysToDelete[] = self::buildSessionId($loginType, $loginIdStr);
 
             if (count($keysToDelete) > 0) {

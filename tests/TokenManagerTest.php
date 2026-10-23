@@ -63,6 +63,22 @@ class TokenManagerTest extends TestCase
         $this->assertEquals('10001', $loginId);
     }
 
+    public function testLoginTokenListsAreIsolatedAcrossDelimitedLoginTypes(): void
+    {
+        $userToken = $this->manager->createTokenValue('admin:42', 'user');
+        $this->manager->saveToken($userToken, 'admin:42', 'user');
+        $adminToken = $this->manager->createTokenValue('42', 'user:admin');
+        $this->manager->saveToken($adminToken, '42', 'user:admin');
+
+        self::assertCount(1, $this->manager->getTokenListByLoginId('admin:42', 'user'));
+        self::assertCount(1, $this->manager->getTokenListByLoginId('42', 'user:admin'));
+
+        $this->manager->deleteAllTokenByLoginId('admin:42', 'user');
+
+        self::assertFalse($this->manager->isTokenValid($userToken));
+        self::assertTrue($this->manager->isTokenValid($adminToken));
+    }
+
     public function testSaveTokenRejectsZeroTimeoutInsteadOfCreatingPermanentToken(): void
     {
         $token = $this->manager->createTokenValue('zero-timeout-user', 'login');
