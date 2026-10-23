@@ -126,9 +126,9 @@ class SaTokenJwt
         if (!is_string($alg)) {
             throw new SaTokenException('JWT Header alg 字段必须为字符串');
         }
-        $allowedAlgs = ['HS256', 'SM3'];
-        if (!in_array($alg, $allowedAlgs, true)) {
-            throw new SaTokenException('JWT 不支持的算法：' . $alg . '，仅允许：' . implode(', ', $allowedAlgs));
+        $expectedAlg = $this->cryptoType === 'sm' ? 'SM3' : 'HS256';
+        if ($alg !== $expectedAlg) {
+            throw new SaTokenException('JWT 算法与当前 cryptoType 配置不匹配');
         }
 
         $signingInput = $headerB64 . '.' . $payloadB64;

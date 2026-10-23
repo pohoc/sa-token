@@ -27,6 +27,19 @@ class SaTokenJwtTest extends TestCase
         $this->assertStringContainsString('.', $token); // JWT 格式：header.payload.signature
     }
 
+    public function testParseTokenRejectsAlgorithmOutsideConfiguredCryptoType(): void
+    {
+        $token = $this->jwt->createToken(10001, 'login');
+        $smConfiguredJwt = new SaTokenJwt([
+            'jwtSecretKey' => getenv('TEST_JWT_SECRET_KEY') ?: 'test-key-placeholder-32-bytes-lo',
+            'cryptoType' => 'sm',
+        ]);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('算法与当前 cryptoType 配置不匹配');
+        $smConfiguredJwt->parseToken($token);
+    }
+
     public function testCreateTokenRejectsInvalidLoginIdTypes(): void
     {
         foreach ([null, '', false, true, [], new \stdClass()] as $loginId) {
