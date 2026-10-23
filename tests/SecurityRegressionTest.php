@@ -17,6 +17,7 @@ use SaToken\SaToken;
 use SaToken\Sso\SaSsoConfig;
 use SaToken\Sso\SaSsoHandle;
 use SaToken\StpUtil;
+use SaToken\TokenManager;
 use SaToken\Util\SaTokenContext;
 
 /**
@@ -271,6 +272,38 @@ class SecurityRegressionTest extends TestCase
 
         $this->assertSame('20007', StpUtil::getLoginId());
         $this->assertFalse(StpUtil::isSafe('payment'));
+    }
+
+    public function testSwitchedIdentityCannotBypassActivityTimeoutInPermissionChecks(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'activityTimeout' => 60,
+        ])));
+        $this->permissionProvider(['danger']);
+
+        $token = StpUtil::login(20010)->getAccessToken();
+        $this->actAsToken($token);
+        StpUtil::getStpLogic()->switchTo(90002);
+        SaToken::getDao()->set(TokenManager::LAST_ACTIVE_PREFIX . $token, (string) (time() - 120), 300);
+
+        $this->expectException(NotLoginException::class);
+        StpUtil::checkPermission('danger');
+    }
+
+    public function testSwitchedIdentityCannotBypassFingerprintInPermissionChecks(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'tokenFingerprint' => true,
+        ])));
+        $this->permissionProvider(['danger']);
+
+        $token = StpUtil::login(20011)->getAccessToken();
+        $this->actAsToken($token);
+        StpUtil::getStpLogic()->switchTo(90003);
+        StpUtil::getStpLogic()->getTokenManager()->saveFingerprint($token, hash('sha256', 'different-device'), 300);
+
+        $this->expectException(NotLoginException::class);
+        StpUtil::checkPermission('danger');
     }
 
     public function testRevokedTokenValueCannotBeReissuedWhileBlacklisted(): void

@@ -378,18 +378,20 @@ class StpLogic
             return null;
         }
 
-        // 检查身份切换
-        $switchTo = $this->tokenManager->getSwitchTo($tokenValue, $this->loginType);
-        if ($switchTo !== null) {
-            return $switchTo;
-        }
-
-        // 更新活跃时间
+        // 所有以登录 ID 为入口的授权检查都必须执行完整的会话约束。
+        // 先验证指纹与活动超时，再读取身份切换值，避免切换分支绕过约束。
         try {
+            $this->checkFingerprint($tokenValue);
             $this->checkActivityTimeout($tokenValue);
             $this->tokenManager->updateLastActiveToNow($tokenValue);
         } catch (NotLoginException) {
             return null;
+        }
+
+        // 检查身份切换
+        $switchTo = $this->tokenManager->getSwitchTo($tokenValue, $this->loginType);
+        if ($switchTo !== null) {
+            return $switchTo;
         }
 
         return $loginId;
