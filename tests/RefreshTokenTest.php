@@ -228,6 +228,26 @@ class RefreshTokenTest extends TestCase
         $this->assertFalse(StpUtil::isRefreshTokenValid($refreshToken));
     }
 
+    public function testRevokeRefreshTokenDoesNotRaceAnInFlightRefresh(): void
+    {
+        $loginId = 10030;
+        $accessToken = StpUtil::login($loginId)->getAccessToken();
+        $refreshToken = StpUtil::createRefreshToken($accessToken);
+        $lockKey = \SaToken\TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', (string) $loginId);
+        $this->assertTrue(SaToken::getDao()->setIfNotExists($lockKey, 'refresh-in-progress', 5));
+
+        try {
+            StpUtil::revokeRefreshToken($refreshToken);
+            $this->fail('刷新正在处理时撤销不得报告成功');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('正在处理中', $e->getMessage());
+        } finally {
+            SaToken::getDao()->delete($lockKey);
+        }
+
+        $this->assertTrue(StpUtil::isRefreshTokenValid($refreshToken));
+    }
+
     public function testRevokeInvalidRefreshToken(): void
     {
         $result = StpUtil::revokeRefreshToken('nonexistent-token');

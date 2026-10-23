@@ -123,11 +123,31 @@ trait StpLogicRefreshTokenTrait
 
     public function revokeRefreshToken(string $refreshToken): bool
     {
-        if (!$this->tokenManager->isRefreshTokenValid($refreshToken)) {
+        $data = $this->tokenManager->getRefreshTokenData($refreshToken);
+        $loginId = is_string($data['loginId'] ?? null) ? $data['loginId'] : '';
+        $loginType = is_string($data['loginType'] ?? null) ? $data['loginType'] : '';
+        if ($loginId === '' || $loginType !== $this->loginType) {
             return false;
         }
-        $this->tokenManager->deleteRefreshToken($refreshToken);
-        return true;
+
+        $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', $loginId);
+        if (!$this->tokenManager->acquireLock($lockKey, 5)) {
+            throw new SaTokenException('同账号会话正在处理中，请稍后重试');
+        }
+        try {
+            // 刷新与撤销共用账号锁；锁内重读，避免把刷新中已消费的 RT 报告为已撤销。
+            $current = $this->tokenManager->getRefreshTokenData($refreshToken);
+            if ($current === null
+                || ($current['loginId'] ?? null) !== $loginId
+                || ($current['loginType'] ?? null) !== $this->loginType) {
+                return false;
+            }
+
+            $this->tokenManager->deleteRefreshToken($refreshToken);
+            return true;
+        } finally {
+            $this->tokenManager->releaseLock($lockKey);
+        }
     }
 
     public function revokeRefreshTokenByAccessToken(string $accessToken): bool
@@ -136,12 +156,25 @@ trait StpLogicRefreshTokenTrait
         if ($loginId === null) {
             return false;
         }
-        $refreshToken = $this->tokenManager->getRefreshTokenByAccessToken($loginId, $this->loginType, $accessToken);
-        if ($refreshToken === null) {
-            return false;
+
+        $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', (string) $loginId);
+        if (!$this->tokenManager->acquireLock($lockKey, 5)) {
+            throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
-        $this->tokenManager->deleteRefreshToken($refreshToken);
-        return true;
+        try {
+            if ($this->tokenManager->getLoginIdByToken($accessToken) !== (string) $loginId) {
+                return false;
+            }
+            $refreshToken = $this->tokenManager->getRefreshTokenByAccessToken($loginId, $this->loginType, $accessToken);
+            if ($refreshToken === null) {
+                return false;
+            }
+
+            $this->tokenManager->deleteRefreshToken($refreshToken);
+            return true;
+        } finally {
+            $this->tokenManager->releaseLock($lockKey);
+        }
     }
 
     public function isRefreshTokenValid(string $refreshToken): bool
