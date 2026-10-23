@@ -516,7 +516,8 @@ class SaSsoHandle
         }
 
         // scheme 白名单：javascript://、data:// 等伪协议的 host 可以与白名单匹配，
-        // 一旦放行就会在浏览器中执行任意脚本（XSS），只允许 http/https
+        // 一旦放行就会在浏览器中执行任意脚本（XSS），只允许 http/https。
+        // SSO 回调会携带一次性 ticket，非本机 HTTP 会让链路观察者窃取并抢先兑换。
         $scheme = strtolower((string) $parsed['scheme']);
         if (!in_array($scheme, ['https', 'http'], true)) {
             return false;
@@ -525,6 +526,10 @@ class SaSsoHandle
         // 大小写与尾点归一化（EXAMPLE.com. 与 example.com 是同一主机）
         $host = strtolower((string) $parsed['host']);
         $host = rtrim($host, '.');
+        $isLocal = in_array(trim($host, '[]'), ['localhost', '127.0.0.1', '::1'], true);
+        if ($scheme !== 'https' && !$isLocal) {
+            return false;
+        }
 
         foreach ($allowDomains as $pattern) {
             if (!is_string($pattern) || $pattern === '') {

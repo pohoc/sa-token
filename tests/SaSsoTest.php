@@ -350,6 +350,32 @@ class SaSsoTest extends TestCase
         $this->assertStringContainsString('client_id=app-1', $url);
     }
 
+    public function testBuildLoginUrlRejectsInsecureNonLocalRedirect(): void
+    {
+        $config = new SaSsoConfig([
+            'loginUrl'     => 'https://auth.example.com/login',
+            'clientId'     => 'app-1',
+            'allowDomains' => ['app.example.com'],
+        ]);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('SSO 回调域名不在允许列表中');
+        (new SaSsoHandle($config))->buildLoginUrl('http://app.example.com/callback');
+    }
+
+    public function testBuildLoginUrlAllowsLocalHttpRedirect(): void
+    {
+        $config = new SaSsoConfig([
+            'loginUrl'     => 'http://localhost:8080/login',
+            'clientId'     => 'local-app',
+            'allowDomains' => ['localhost'],
+        ]);
+
+        $url = (new SaSsoHandle($config))->buildLoginUrl('http://localhost:8080/callback');
+
+        $this->assertStringContainsString(rawurlencode('http://localhost:8080/callback'), $url);
+    }
+
     public function testBuildLoginUrlWithoutClientId(): void
     {
         $config = new SaSsoConfig([
