@@ -208,6 +208,44 @@ class SecurityRegressionTest extends TestCase
         $this->assertSame('29999', StpUtil::getStpLogic()->getLoginIdByToken($jwt));
     }
 
+    public function testLogoutRevokesStatelessJwt(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'isReadHeader' => true,
+        ]));
+        $jwt = (new \SaToken\Plugin\SaTokenJwt([
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]))->createStatelessToken(29998, 'login', 3600);
+        $this->actAsToken($jwt);
+
+        $this->assertTrue(StpUtil::isLogin());
+        StpUtil::logout();
+
+        $this->assertTrue(StpUtil::isTokenRevoked($jwt));
+        $this->assertFalse(StpUtil::isLogin());
+    }
+
+    public function testKickoutByTokenRevokesStatelessJwt(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'isReadHeader' => true,
+        ]));
+        $jwt = (new \SaToken\Plugin\SaTokenJwt([
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]))->createStatelessToken(29997, 'login', 3600);
+        $this->actAsToken($jwt);
+
+        $this->assertTrue(StpUtil::isLogin());
+        StpUtil::kickoutByTokenValue($jwt);
+
+        $this->assertTrue(StpUtil::isTokenRevoked($jwt));
+        $this->assertFalse(StpUtil::isLogin());
+    }
+
     // ======== C2: 吊销黑名单必须覆盖权限校验层 ========
 
     public function testRevokedTokenFailsPermissionChecks(): void

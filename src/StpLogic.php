@@ -224,6 +224,16 @@ class StpLogic
             return;
         }
 
+        if ($this->getConfig()->isJwtStateless()) {
+            $loginId = $this->getStatelessLoginIdByToken($tokenValue);
+            if ($loginId === null || !$this->revokeToken($tokenValue)) {
+                return;
+            }
+            $this->clearTokenFromResponse();
+            $this->getEvent()->onLogout($this->loginType, $loginId, $tokenValue);
+            return;
+        }
+
         $loginId = $this->tokenManager->getLoginIdByToken($tokenValue);
         if ($loginId === null) {
             return;
@@ -259,6 +269,15 @@ class StpLogic
      */
     public function kickoutByTokenValue(string $tokenValue): void
     {
+        if ($this->getConfig()->isJwtStateless()) {
+            $loginId = $this->getStatelessLoginIdByToken($tokenValue);
+            if ($loginId === null || !$this->revokeToken($tokenValue)) {
+                return;
+            }
+            $this->getEvent()->onKickout($this->loginType, $loginId, $tokenValue);
+            return;
+        }
+
         $loginId = $this->tokenManager->getLoginIdByToken($tokenValue);
         if ($loginId === null) {
             return;
