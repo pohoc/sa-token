@@ -210,6 +210,51 @@ class TokenManagerTest extends TestCase
         self::assertFalse($this->manager->isRefreshTokenValid($refreshToken));
     }
 
+    public function testAccountLogoutCanFindRefreshTokenAfterAccessTokenExpires(): void
+    {
+        $loginId = 'short-access-long-refresh-user';
+        $accessToken = $this->manager->createTokenValue($loginId, 'login');
+        $this->manager->saveToken($accessToken, $loginId, 'login', 'PC', 1);
+        $refreshToken = $this->manager->createTokenValue($loginId, 'login', 'srt_');
+        $this->manager->saveRefreshToken($refreshToken, $accessToken, $loginId, 'login', 10);
+
+        $indexKey = TokenManager::buildLoginIdKey('login', $loginId);
+        self::assertGreaterThan($this->manager->getTokenTimeout($accessToken), $this->dao->getTimeout($indexKey));
+
+        sleep(2);
+
+        self::assertFalse($this->manager->isTokenValid($accessToken));
+        self::assertCount(1, $this->manager->getTokenListByLoginId($loginId, 'login'));
+        $this->manager->deleteAllTokenByLoginId($loginId, 'login');
+
+        self::assertFalse($this->manager->isRefreshTokenValid($refreshToken));
+    }
+
+    public function testRefreshTokenExtendsLegacyAccountIndexDuringUpgrade(): void
+    {
+        $loginId = 'legacy:refresh-user';
+        $loginType = 'user';
+        $accessToken = $this->manager->createTokenValue($loginId, $loginType);
+        $this->manager->saveToken($accessToken, $loginId, $loginType, 'PC', 1);
+        $legacyList = $this->manager->getTokenListByLoginId($loginId, $loginType);
+        $this->dao->delete(TokenManager::buildLoginIdKey($loginType, $loginId));
+        $json = json_encode($legacyList);
+        self::assertIsString($json);
+        $encrypt = new \ReflectionMethod(TokenManager::class, 'encryptValue');
+        $encrypted = $encrypt->invoke($this->manager, $json);
+        self::assertIsString($encrypted);
+        $this->dao->set(TokenManager::LOGIN_ID_PREFIX . $loginType . ':' . $loginId, $encrypted);
+
+        $refreshToken = $this->manager->createTokenValue($loginId, $loginType, 'srt_');
+        $this->manager->saveRefreshToken($refreshToken, $accessToken, $loginId, $loginType, 10);
+
+        self::assertNotNull($this->dao->get(TokenManager::buildLoginIdKey($loginType, $loginId)));
+        sleep(2);
+        self::assertCount(1, $this->manager->getTokenListByLoginId($loginId, $loginType));
+        $this->manager->deleteAllTokenByLoginId($loginId, $loginType);
+        self::assertFalse($this->manager->isRefreshTokenValid($refreshToken));
+    }
+
     public function testTokenTimeout(): void
     {
         $token = $this->manager->createTokenValue(10001, 'login');

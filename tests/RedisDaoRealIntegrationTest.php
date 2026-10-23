@@ -6,6 +6,8 @@ namespace SaToken\Tests;
 
 use PHPUnit\Framework\TestCase;
 use SaToken\Dao\SaTokenDaoRedis;
+use SaToken\SaToken;
+use SaToken\TokenManager;
 
 class RedisDaoRealIntegrationTest extends TestCase
 {
@@ -64,6 +66,36 @@ class RedisDaoRealIntegrationTest extends TestCase
         $this->dao->delete($key);
         $this->assertNull($this->dao->get($key));
         $this->assertFalse($this->dao->exists($key));
+    }
+
+    public function testRefreshTokenKeepsAccountIndexAliveAgainstRealRedis(): void
+    {
+        SaToken::reset();
+        SaToken::setDao($this->dao);
+        $manager = new TokenManager();
+        $loginType = 'redis-refresh-test';
+        $loginId = 'user-' . bin2hex(random_bytes(8));
+        $accessToken = $manager->createTokenValue($loginId, $loginType);
+        $refreshToken = $manager->createTokenValue($loginId, $loginType, 'srt_');
+
+        try {
+            $manager->saveToken($accessToken, $loginId, $loginType, 'PC', 5);
+            $manager->saveRefreshToken($refreshToken, $accessToken, $loginId, $loginType, 30);
+
+            $indexKey = TokenManager::buildLoginIdKey($loginType, $loginId);
+            $this->assertGreaterThan($manager->getTokenTimeout($accessToken), $this->dao->getTimeout($indexKey));
+
+            $manager->deleteAllTokenByLoginId($loginId, $loginType);
+            $this->assertFalse($manager->isRefreshTokenValid($refreshToken));
+        } finally {
+            $this->redis->del([
+                TokenManager::TOKEN_PREFIX . $accessToken,
+                TokenManager::REFRESH_TOKEN_PREFIX . $refreshToken,
+                TokenManager::REFRESH_TOKEN_MAP_PREFIX . $loginType . ':' . $loginId . ':' . $accessToken,
+                TokenManager::buildLoginIdKey($loginType, $loginId),
+            ]);
+            SaToken::reset();
+        }
     }
 
     public function testDeleteIfExpiredAgainstRealRedis(): void

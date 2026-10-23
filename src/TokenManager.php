@@ -269,6 +269,17 @@ class TokenManager
             if ($tokenTimeout > $listTimeout) {
                 $listTimeout = $tokenTimeout;
             }
+            $refreshToken = $this->getRefreshTokenByAccessToken($loginIdStr, $loginType, $itemTokenValue);
+            if ($refreshToken !== null) {
+                $refreshTimeout = $this->getRefreshTokenTimeout($refreshToken);
+                if ($refreshTimeout === -1) {
+                    $listTimeout = null;
+                    break;
+                }
+                if ($refreshTimeout > $listTimeout) {
+                    $listTimeout = $refreshTimeout;
+                }
+            }
         }
 
         $this->getDao()->set(
@@ -817,6 +828,7 @@ class TokenManager
 
             $mapKey = self::buildRefreshTokenMapKey($loginIdStr, $loginType, $accessToken);
             $this->getDao()->set($mapKey, $this->encryptValue($refreshToken), $effectiveTimeout);
+            $this->extendLoginIdListTimeout($loginIdStr, $loginType, $timeout);
         } finally {
             $this->releaseLock($loginLockKey);
         }
@@ -904,6 +916,59 @@ class TokenManager
     {
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
         return self::REFRESH_TOKEN_MAP_PREFIX . $loginType . ':' . $loginIdStr . ':' . $accessToken;
+    }
+
+    protected function extendLoginIdListTimeout(string $loginId, string $loginType, int $refreshTimeout): void
+    {
+        $key = self::buildLoginIdKey($loginType, $loginId);
+        $currentTimeout = $this->getDao()->getTimeout($key);
+        if ($currentTimeout === -2) {
+            // A pre-upgrade account may still have a legacy list that is read
+            // through the collision-filtered compatibility path. Migrate that
+            // list before extending it so old sessions remain revocable too.
+            $tokens = $this->getTokenListByLoginId($loginId, $loginType);
+            if ($tokens === []) {
+                return;
+            }
+
+            $timeout = $this->getDao()->getTimeout(self::buildLegacyLoginIdKey($loginType, $loginId));
+            $listTimeout = $timeout === -1 || $refreshTimeout === -1 ? null : max(1, $timeout, $refreshTimeout);
+            foreach ($tokens as $item) {
+                $tokenValue = is_string($item['tokenValue'] ?? null) ? $item['tokenValue'] : '';
+                if ($tokenValue === '') {
+                    continue;
+                }
+                $tokenTimeout = $this->getTokenTimeout($tokenValue);
+                if ($tokenTimeout === -1) {
+                    $listTimeout = null;
+                    break;
+                }
+                if ($tokenTimeout > 0 && $listTimeout !== null) {
+                    $listTimeout = max($listTimeout, $tokenTimeout);
+                }
+                $linkedRefreshToken = $this->getRefreshTokenByAccessToken($loginId, $loginType, $tokenValue);
+                if ($linkedRefreshToken !== null) {
+                    $linkedTimeout = $this->getRefreshTokenTimeout($linkedRefreshToken);
+                    if ($linkedTimeout === -1) {
+                        $listTimeout = null;
+                        break;
+                    }
+                    if ($linkedTimeout > 0 && $listTimeout !== null) {
+                        $listTimeout = max($listTimeout, $linkedTimeout);
+                    }
+                }
+            }
+            $json = SaFoxUtil::toJson($tokens);
+            $this->getDao()->set($key, $this->encryptValue($json), $listTimeout);
+            return;
+        }
+
+        if ($currentTimeout === -1 || $refreshTimeout === -1) {
+            $this->getDao()->expire($key, -1);
+            return;
+        }
+
+        $this->getDao()->expire($key, max($currentTimeout, $refreshTimeout));
     }
 
     public function deleteRefreshTokenByAccessToken(mixed $loginId, string $loginType, string $accessToken): void
