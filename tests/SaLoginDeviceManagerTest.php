@@ -69,7 +69,8 @@ class SaLoginDeviceManagerTest extends TestCase
         $this->assertEquals('pc', $savedDevice->getDeviceType());
         $this->assertEquals('Chrome Browser', $savedDevice->getDeviceName());
         $this->assertEquals('192.168.1.100', $savedDevice->getIp());
-        $this->assertEquals($token, $savedDevice->getTokenValue());
+        $this->assertSame('', $savedDevice->getTokenValue());
+        $this->assertTrue($this->logic->getTokenManager()->isTokenValid($token));
     }
 
     public function testMultipleDeviceLogin(): void
@@ -105,6 +106,7 @@ class SaLoginDeviceManagerTest extends TestCase
         $this->assertNotNull($foundDevice);
         $this->assertEquals('mobile', $foundDevice->getDeviceType());
         $this->assertEquals('iPhone', $foundDevice->getDeviceName());
+        $this->assertSame('', $foundDevice->getTokenValue());
     }
 
     public function testFindNonExistentDevice(): void
@@ -201,7 +203,9 @@ class SaLoginDeviceManagerTest extends TestCase
 
         $devices = $this->logic->getDeviceList(10001);
         $this->assertCount(1, $devices);
-        $this->assertEquals($tokenToKeep, $devices[0]->getTokenValue());
+        $this->assertSame('', $devices[0]->getTokenValue());
+        $this->assertSame('10001', $this->logic->getTokenManager()->getLoginIdByToken($tokenToKeep));
+        $this->assertNull($this->logic->getTokenManager()->getLoginIdByToken($tokenToRemove));
     }
 
     public function testDeviceIdUniqueness(): void

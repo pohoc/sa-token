@@ -67,6 +67,14 @@ class SaLoginDeviceManager
      */
     public static function getDeviceList(mixed $loginId, string $loginType = 'login'): array
     {
+        return self::loadDeviceList($loginId, $loginType, false);
+    }
+
+    /**
+     * @return array<SaLoginDevice>
+     */
+    protected static function loadDeviceList(mixed $loginId, string $loginType, bool $includeToken): array
+    {
         $dao = SaToken::getDao();
         $keyPrefix = self::getKey($loginId, $loginType) . ':';
         $results = $dao->search($keyPrefix, '', 0, 100);
@@ -81,7 +89,11 @@ class SaLoginDeviceManager
                 continue;
             }
             /** @var array<string, mixed> $data */
-            $devices[] = new SaLoginDevice($data);
+            $device = new SaLoginDevice($data);
+            if (!$includeToken) {
+                $device->setTokenValue('');
+            }
+            $devices[] = $device;
         }
 
         usort($devices, fn ($a, $b) => $b->getLoginTime() - $a->getLoginTime());
@@ -116,7 +128,7 @@ class SaLoginDeviceManager
 
     public static function kickoutAllDevices(mixed $loginId, string $loginType = 'login', ?string $exceptToken = null): int
     {
-        $devices = self::getDeviceList($loginId, $loginType);
+        $devices = self::loadDeviceList($loginId, $loginType, true);
         $count = 0;
 
         foreach ($devices as $device) {
@@ -132,6 +144,11 @@ class SaLoginDeviceManager
 
     public static function findDevice(mixed $loginId, string $deviceId, string $loginType = 'login'): ?SaLoginDevice
     {
+        return self::loadDevice($loginId, $deviceId, $loginType, false);
+    }
+
+    protected static function loadDevice(mixed $loginId, string $deviceId, string $loginType, bool $includeToken): ?SaLoginDevice
+    {
         $dao = SaToken::getDao();
         $key = self::getKey($loginId, $loginType) . ':' . $deviceId;
         $data = $dao->get($key);
@@ -146,12 +163,16 @@ class SaLoginDeviceManager
         }
 
         /** @var array<string, mixed> $decoded */
-        return new SaLoginDevice($decoded);
+        $device = new SaLoginDevice($decoded);
+        if (!$includeToken) {
+            $device->setTokenValue('');
+        }
+        return $device;
     }
 
     public static function updateLastActive(mixed $loginId, string $deviceId, string $loginType = 'login'): void
     {
-        $device = self::findDevice($loginId, $deviceId, $loginType);
+        $device = self::loadDevice($loginId, $deviceId, $loginType, true);
         if ($device === null) {
             return;
         }
