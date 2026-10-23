@@ -18,15 +18,9 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
 
     protected SaTokenDaoFile $atomicLockDao;
 
-    /** @var array<string, int> */
-    protected array $ttlMap = [];
-
-    protected int $createdAt;
-
     public function __construct(CacheInterface $cache, ?string $lockDirectory = null)
     {
         $this->cache = $cache;
-        $this->createdAt = time();
         $uid = function_exists('posix_geteuid') ? (string) posix_geteuid() : (string) getmyuid();
         $defaultLockDirectory = rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR)
             . DIRECTORY_SEPARATOR . 'sa-token-psr16-' . hash('sha256', $uid);
@@ -38,6 +32,10 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
         try {
             $value = $this->cache->get($this->normalizeKey($key));
             if ($value === null) {
+                return null;
+            }
+            $expiresAt = $this->getSharedExpiresAt($key);
+            if ($expiresAt !== null && $expiresAt <= time()) {
                 return null;
             }
             if (is_string($value)) {
@@ -68,10 +66,10 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
             if (!$this->cache->set($this->normalizeKey($key), $value, $effectiveTimeout)) {
                 return false;
             }
-            if ($effectiveTimeout !== null) {
-                $this->ttlMap[$key] = time() + $effectiveTimeout;
-            } else {
-                unset($this->ttlMap[$key]);
+            $expiresAt = $effectiveTimeout !== null ? (string) (time() + $effectiveTimeout) : 'permanent';
+            if (!$this->cache->set($this->normalizeTtlKey($key), $expiresAt, $effectiveTimeout)) {
+                $this->cache->delete($this->normalizeKey($key));
+                return false;
             }
             return true;
         } catch (InvalidArgumentException) {
@@ -102,9 +100,7 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
     {
         try {
             $deleted = $this->cache->delete($this->normalizeKey($key));
-            if ($deleted) {
-                unset($this->ttlMap[$key]);
-            }
+            $this->cache->delete($this->normalizeTtlKey($key));
             return $deleted;
         } catch (InvalidArgumentException) {
             return false;
@@ -113,19 +109,21 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
 
     public function getTimeout(string $key): int
     {
-        if (isset($this->ttlMap[$key])) {
-            $remaining = $this->ttlMap[$key] - time();
-            if ($remaining <= 0) {
-                unset($this->ttlMap[$key]);
-                return -2;
-            }
-            return $remaining;
-        }
-
         if (!$this->exists($key)) {
             return -2;
         }
-        return -1;
+
+        try {
+            $expiresAt = $this->getSharedExpiresAt($key);
+            if ($expiresAt === null) {
+                // Missing metadata is treated as legacy/permanent for compatibility.
+                return -1;
+            }
+            $remaining = $expiresAt - time();
+            return $remaining > 0 ? $remaining : -2;
+        } catch (InvalidArgumentException) {
+            return -1;
+        }
     }
 
     public function expire(string $key, int $timeout): void
@@ -163,10 +161,23 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
     public function exists(string $key): bool
     {
         try {
-            return $this->cache->has($this->normalizeKey($key));
+            if (!$this->cache->has($this->normalizeKey($key))) {
+                return false;
+            }
+            $expiresAt = $this->getSharedExpiresAt($key);
+            return $expiresAt === null || $expiresAt > time();
         } catch (InvalidArgumentException) {
             return false;
         }
+    }
+
+    protected function getSharedExpiresAt(string $key): ?int
+    {
+        $value = $this->cache->get($this->normalizeTtlKey($key));
+        if (!is_string($value) || !ctype_digit($value)) {
+            return null;
+        }
+        return (int) $value;
     }
 
     public function deleteMultiple(array $keys): void
@@ -207,12 +218,22 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
         return 'sat_' . substr(hash('sha256', $key), 0, 60);
     }
 
+    /** TTL metadata uses a disjoint physical namespace from user values. */
+    protected function normalizeTtlKey(string $key): string
+    {
+        return 'sat_ttl_' . substr(hash('sha256', $key), 0, 56);
+    }
+
     public function increment(string $key, int $amount = 1, ?int $timeout = null): int
     {
         return $this->withAtomicLock($key, function () use ($key, $amount, $timeout): int {
             $current = $this->get($key);
-            $newValue = max(0, ($current === null ? 0 : (int) $current) + $amount);
             $effectiveTimeout = $current === null ? $timeout : $this->getTimeout($key);
+            $newValue = max(0, ($current === null || $effectiveTimeout === -2 ? 0 : (int) $current) + $amount);
+            if ($effectiveTimeout === -2) {
+                $this->deleteCache($key);
+                $effectiveTimeout = $timeout;
+            }
             $writeTimeout = $effectiveTimeout !== null && $effectiveTimeout >= 0
                 ? max(1, $effectiveTimeout)
                 : null;

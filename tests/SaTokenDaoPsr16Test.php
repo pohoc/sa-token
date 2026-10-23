@@ -93,8 +93,34 @@ class SaTokenDaoPsr16Test extends TestCase
     public function testGetTimeoutExistingKey(): void
     {
         $this->dao->set('key1', 'value1');
-        // PSR-16 无法获取 TTL，默认返回 -1（永不过期）
+        // 无 TTL 的键使用共享 metadata 表示为永久键
         $this->assertEquals(-1, $this->dao->getTimeout('key1'));
+    }
+
+    public function testTtlIsPreservedAcrossAdapterInstances(): void
+    {
+        $this->dao->set('shared-counter', '1', 120);
+        $secondDao = new SaTokenDaoPsr16($this->cache);
+        $remaining = $secondDao->getTimeout('shared-counter');
+
+        $this->assertGreaterThan(0, $remaining);
+        $this->assertLessThanOrEqual(120, $remaining);
+
+        $this->assertSame(2, $secondDao->increment('shared-counter', 1, 120));
+        $thirdDao = new SaTokenDaoPsr16($this->cache);
+        $remainingAfterIncrement = $thirdDao->getTimeout('shared-counter');
+        $this->assertGreaterThan(0, $remainingAfterIncrement);
+        $this->assertLessThanOrEqual($remaining, $remainingAfterIncrement);
+    }
+
+    public function testExpiredSharedCounterStartsAgainWithNewTtl(): void
+    {
+        $this->dao->set('expired-counter', '8', 1);
+        sleep(2);
+        $secondDao = new SaTokenDaoPsr16($this->cache);
+
+        $this->assertSame(1, $secondDao->increment('expired-counter', 1, 60));
+        $this->assertGreaterThan(0, $secondDao->getTimeout('expired-counter'));
     }
 
     // ======== expire ========
