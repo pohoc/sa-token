@@ -409,7 +409,7 @@ class SaOAuth2Handle
 
             // 本次消费对应的旧 AT 登记进家族
             if ($rtData->getAccessToken() !== '') {
-                $this->appendToTokenFamily($familyMarkerKey, $rtData->getAccessToken(), '', $markerTimeout);
+                $this->updateTokenFamilyCurrentDescendants($familyMarkerKey, $rtData->getAccessToken(), '', $markerTimeout);
             }
         } else {
             $this->getDao()->set($legacyMarkerKey, $this->encryptValue(SaFoxUtil::toJson([
@@ -449,7 +449,12 @@ class SaOAuth2Handle
 
         // 将新签发的 AT/RT 登记进家族标记，重用检测时一并撤销
         if ($familyId !== '') {
-            $this->appendToTokenFamily('oauth2:family:' . hash('sha256', $familyId), $accessToken->getAccessToken(), $newRefreshTokenValue, $markerTimeout);
+            $this->updateTokenFamilyCurrentDescendants(
+                'oauth2:family:' . hash('sha256', $familyId),
+                $accessToken->getAccessToken(),
+                $newRefreshTokenValue,
+                $markerTimeout
+            );
         }
 
         return $accessToken;
@@ -504,7 +509,7 @@ class SaOAuth2Handle
         }
     }
 
-    protected function appendToTokenFamily(string $familyMarkerKey, string $accessToken, string $childRefreshToken, int $markerTimeout): void
+    protected function updateTokenFamilyCurrentDescendants(string $familyMarkerKey, string $accessToken, string $childRefreshToken, int $markerTimeout): void
     {
         $markerJson = $this->getDao()->get($familyMarkerKey);
         if ($markerJson === null) {
@@ -514,12 +519,12 @@ class SaOAuth2Handle
         if (!is_array($marker)) {
             return;
         }
-        $tokens = is_array($marker['tokens'] ?? null) ? $marker['tokens'] : [];
-        $tokens[] = $accessToken;
-        $childRts = is_array($marker['childRts'] ?? null) ? $marker['childRts'] : [];
-        if ($childRefreshToken !== '') {
-            $childRts[] = $childRefreshToken;
-        }
+        // Refresh rotation has a single active descendant: the previous AT is
+        // deleted before its replacement is registered, and the consumed RT is
+        // already unavailable. Keeping history here makes an active family grow
+        // without bound; consumed-RT markers retain replay detection separately.
+        $tokens = [$accessToken];
+        $childRts = $childRefreshToken !== '' ? [$childRefreshToken] : [];
         $this->getDao()->set($familyMarkerKey, $this->encryptValue(SaFoxUtil::toJson([
             'tokens'    => $tokens,
             'childRts'  => $childRts,

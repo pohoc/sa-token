@@ -362,6 +362,47 @@ class SaOAuth2Test extends TestCase
         $this->assertNotEquals($accessToken->getAccessToken(), $newAccessToken->getAccessToken());
     }
 
+    public function testRefreshFamilyMetadataStaysBoundedAndOldReuseRevokesCurrentDescendants(): void
+    {
+        $code = $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback');
+        $accessToken = $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
+        $originalRefreshToken = $accessToken->getRefreshToken();
+        self::assertNotNull($originalRefreshToken);
+
+        $getRefreshData = new \ReflectionMethod($this->handle, 'getRefreshTokenData');
+        $originalData = $getRefreshData->invoke($this->handle, $originalRefreshToken);
+        self::assertInstanceOf(SaOAuth2RefreshToken::class, $originalData);
+        $familyMarkerKey = 'oauth2:family:' . hash('sha256', $originalData->getFamilyId());
+
+        $refreshToken = $originalRefreshToken;
+        for ($rotation = 0; $rotation < 5; $rotation++) {
+            $accessToken = $this->handle->refreshToken($refreshToken, 'test-client', $this->clientSecret);
+            $refreshToken = $accessToken->getRefreshToken();
+            self::assertNotNull($refreshToken);
+
+            $markerJson = SaToken::getDao()->get($familyMarkerKey);
+            self::assertNotNull($markerJson);
+            $marker = json_decode($markerJson, true);
+            self::assertIsArray($marker);
+            $familyTokens = $marker['tokens'] ?? [];
+            $familyRefreshTokens = $marker['childRts'] ?? [];
+            self::assertIsArray($familyTokens);
+            self::assertIsArray($familyRefreshTokens);
+            self::assertLessThanOrEqual(2, count($familyTokens));
+            self::assertLessThanOrEqual(1, count($familyRefreshTokens));
+        }
+
+        try {
+            $this->handle->refreshToken($originalRefreshToken, 'test-client', $this->clientSecret);
+            $this->fail('旧 refresh token 重放必须撤销整个活跃家族');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('已被使用', $e->getMessage());
+        }
+
+        $this->assertNull($this->handle->validateAccessToken($accessToken->getAccessToken()));
+        $this->assertNull($getRefreshData->invoke($this->handle, $refreshToken));
+    }
+
     public function testRefreshTokenReplayRevokesTheWholeFamily(): void
     {
         $code = $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback');
