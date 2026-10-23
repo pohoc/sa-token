@@ -867,11 +867,13 @@ class TokenManager
     public function acquireLock(string $key, int $ttl = 5): bool
     {
         $lockKey = self::LOCK_PREFIX . $key;
+        $stateKey = SaTokenContext::getContextId() . "\0" . $lockKey;
 
         // 可重入：本实例已持有该锁（如 login 持锁调用 deleteToken）时直接放行，
-        // 避免嵌套获取导致 5 秒自阻塞
-        if (isset($this->lockValues[$lockKey])) {
-            $this->lockDepths[$lockKey] = ($this->lockDepths[$lockKey] ?? 1) + 1;
+        // 避免嵌套获取导致 5 秒自阻塞。实例会跨请求复用，因此本地所有权必须按
+        // 请求/协程上下文隔离；否则另一个协程会被误判为同一持有者并绕过分布式锁。
+        if (isset($this->lockValues[$stateKey])) {
+            $this->lockDepths[$stateKey] = ($this->lockDepths[$stateKey] ?? 1) + 1;
             return true;
         }
 
@@ -879,8 +881,8 @@ class TokenManager
 
         $acquired = $this->getDao()->setIfNotExists($lockKey, $lockValue, $ttl > 0 ? $ttl : null);
         if ($acquired) {
-            $this->lockValues[$lockKey] = $lockValue;
-            $this->lockDepths[$lockKey] = 1;
+            $this->lockValues[$stateKey] = $lockValue;
+            $this->lockDepths[$stateKey] = 1;
         }
         return $acquired;
     }
@@ -888,14 +890,15 @@ class TokenManager
     public function releaseLock(string $key): void
     {
         $lockKey = self::LOCK_PREFIX . $key;
-        $lockValue = $this->lockValues[$lockKey] ?? null;
+        $stateKey = SaTokenContext::getContextId() . "\0" . $lockKey;
+        $lockValue = $this->lockValues[$stateKey] ?? null;
         if ($lockValue === null) {
             return;
         }
 
-        $depth = $this->lockDepths[$lockKey] ?? 1;
+        $depth = $this->lockDepths[$stateKey] ?? 1;
         if ($depth > 1) {
-            $this->lockDepths[$lockKey] = $depth - 1;
+            $this->lockDepths[$stateKey] = $depth - 1;
             return;
         }
 
@@ -906,7 +909,7 @@ class TokenManager
             $dao->delete($lockKey);
         }
 
-        unset($this->lockValues[$lockKey]);
-        unset($this->lockDepths[$lockKey]);
+        unset($this->lockValues[$stateKey]);
+        unset($this->lockDepths[$stateKey]);
     }
 }

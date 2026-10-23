@@ -9,6 +9,7 @@ use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoMemory;
 use SaToken\SaToken;
 use SaToken\TokenManager;
+use SaToken\Util\SaTokenContext;
 use SaToken\Util\SaTokenEncryptor;
 
 class TokenManagerTest extends TestCase
@@ -33,6 +34,7 @@ class TokenManagerTest extends TestCase
 
     protected function tearDown(): void
     {
+        SaTokenContext::setContextId('default');
         SaToken::reset();
     }
 
@@ -302,5 +304,21 @@ class TokenManagerTest extends TestCase
         $this->manager->releaseLock($key);
         $this->assertTrue($otherManager->acquireLock($key, 5));
         $otherManager->releaseLock($key);
+    }
+
+    public function testLockOwnershipIsIsolatedByRequestContext(): void
+    {
+        $key = 'login:shared-manager';
+        SaTokenContext::setContextId('context-a');
+        $this->assertTrue($this->manager->acquireLock($key, 5));
+
+        SaTokenContext::setContextId('context-b');
+        $this->assertFalse($this->manager->acquireLock($key, 5));
+
+        SaTokenContext::setContextId('context-a');
+        $this->manager->releaseLock($key);
+        SaTokenContext::setContextId('context-b');
+        $this->assertTrue($this->manager->acquireLock($key, 5));
+        $this->manager->releaseLock($key);
     }
 }
