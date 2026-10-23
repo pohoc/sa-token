@@ -142,6 +142,38 @@ class SaAnnotationTestIgnoreClassController
     }
 }
 
+#[SaIgnore]
+class SaAnnotationTestIgnoredBaseController
+{
+    public function inheritedPublicAction(): string
+    {
+        return 'public';
+    }
+}
+
+#[SaCheckLogin]
+class SaAnnotationTestProtectedIgnoreSubclassController extends SaAnnotationTestIgnoredBaseController
+{
+}
+
+class SaAnnotationTestIgnoredMethodBaseController
+{
+    #[SaIgnore]
+    public function overridablePublicAction(): string
+    {
+        return 'public';
+    }
+}
+
+class SaAnnotationTestProtectedIgnoreMethodSubclassController extends SaAnnotationTestIgnoredMethodBaseController
+{
+    #[SaCheckLogin]
+    public function overridablePublicAction(): string
+    {
+        return 'protected';
+    }
+}
+
 class SaAnnotationTestMixedController
 {
     #[SaCheckLogin]
@@ -335,6 +367,18 @@ class SaAnnotationTest extends TestCase
     {
         SaAnnotationProcessor::process(SaAnnotationTestIgnoreClassController::class, 'anything');
         $this->assertTrue(true);
+    }
+
+    public function testChildLoginRequirementOverridesIgnoredBaseClass(): void
+    {
+        $this->expectException(NotLoginException::class);
+        SaAnnotationProcessor::process(SaAnnotationTestProtectedIgnoreSubclassController::class, 'inheritedPublicAction');
+    }
+
+    public function testOverriddenLoginRequirementOverridesIgnoredBaseMethod(): void
+    {
+        $this->expectException(NotLoginException::class);
+        SaAnnotationProcessor::process(SaAnnotationTestProtectedIgnoreMethodSubclassController::class, 'overridablePublicAction');
     }
 
     public function testOverriddenMethodInheritsSecurityAnnotations(): void

@@ -17,11 +17,45 @@ class SaAnnotationProcessor
         }
         $reflectionClass = new ReflectionClass($class);
 
+        $targetMethod = $reflectionClass->hasMethod($method) ? $reflectionClass->getMethod($method) : null;
+        $targetMethodDeclaration = $targetMethod?->getDeclaringClass()->getName();
+        $targetMethodAttributes = $targetMethod?->getAttributes() ?? [];
+        foreach ($targetMethodAttributes as $attr) {
+            if ($attr->getName() === SaIgnore::class) {
+                return;
+            }
+        }
+
+        $hasMoreSpecificAuthorization = $targetMethodDeclaration === $reflectionClass->getName()
+            && self::hasAuthorizationAttribute($targetMethodAttributes);
+
         // 类级注解必须沿继承链合并：开发者习惯把 #[SaCheckLogin] 标在
         // BaseController 上，getAttributes() 不含父类会让继承式鉴权整体静默失效
         $classAttributes = [];
         for ($c = $reflectionClass; $c !== false; $c = $c->getParentClass()) {
-            $classAttributes = array_merge($classAttributes, $c->getAttributes());
+            $attributes = $c->getAttributes();
+            $hasIgnore = false;
+            foreach ($attributes as $attr) {
+                if ($attr->getName() === SaIgnore::class) {
+                    $hasIgnore = true;
+                    break;
+                }
+            }
+
+            if ($hasIgnore) {
+                // Concrete class opt-out remains authoritative. An inherited
+                // opt-out cannot cancel a stricter class/method declaration
+                // added by a subclass.
+                if ($c->getName() === $reflectionClass->getName() || !$hasMoreSpecificAuthorization) {
+                    return;
+                }
+                continue;
+            }
+
+            $classAttributes = array_merge($classAttributes, $attributes);
+            if (self::hasAuthorizationAttribute($attributes)) {
+                $hasMoreSpecificAuthorization = true;
+            }
         }
         // 重写方法仍需保留基类方法上的鉴权约束；否则仅覆盖业务实现就会
         // 静默移除 #[SaCheckLogin]/权限注解。按声明类去重，避免未重写的方法重复读取。
@@ -37,7 +71,14 @@ class SaAnnotationProcessor
                 continue;
             }
             $seenMethodDeclarations[$declaration] = true;
-            $methodAttributes = array_merge($methodAttributes, $reflectedMethod->getAttributes());
+            $attributes = $reflectedMethod->getAttributes();
+            if ($declaration !== $targetMethodDeclaration) {
+                $attributes = array_values(array_filter(
+                    $attributes,
+                    static fn (\ReflectionAttribute $attribute): bool => $attribute->getName() !== SaIgnore::class
+                ));
+            }
+            $methodAttributes = array_merge($methodAttributes, $attributes);
         }
 
         foreach ($methodAttributes as $attr) {
@@ -100,6 +141,24 @@ class SaAnnotationProcessor
                 }
             }
         }
+    }
+
+    /** @param array<\ReflectionAttribute<object>> $attributes */
+    protected static function hasAuthorizationAttribute(array $attributes): bool
+    {
+        foreach ($attributes as $attribute) {
+            if (in_array($attribute->getName(), [
+                SaCheckLogin::class,
+                SaCheckPermission::class,
+                SaCheckRole::class,
+                SaCheckSafe::class,
+                SaCheckDisable::class,
+            ], true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public static function processCallable(callable $callable): void
