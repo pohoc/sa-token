@@ -150,8 +150,8 @@ class SaTokenEncryptor
 
     /**
      * 解密并校验完整性，失败时返回 null（区别于"数据不存在"）。
-     * decrypt() 出于兼容存量明文/迁移场景会静默返回原文，无法感知篡改；
-     * 对安全敏感的读取路径建议使用本方法。
+     * 加密开启时只接受密文，拒绝未认证明文，防止攻击者用明文主体替换 DAO 中的密文。
+     * 需要迁移旧明文数据时，应在启用加密前显式迁移数据。
      */
     public function decryptChecked(string $data): ?string
     {
@@ -159,7 +159,11 @@ class SaTokenEncryptor
             return $data;
         }
 
-        if ($this->useSm && $this->isCiphertext($data)) {
+        if (!$this->isCiphertext($data)) {
+            return null;
+        }
+
+        if ($this->useSm) {
             $decoded = base64_decode($data, true);
             if ($decoded === false) {
                 return null;
@@ -183,7 +187,7 @@ class SaTokenEncryptor
         }
 
         $plaintext = $this->decrypt($data);
-        if ($plaintext === $data && $this->isCiphertext($data)) {
+        if ($plaintext === $data) {
             return null;
         }
         return $plaintext;

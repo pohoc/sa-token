@@ -165,6 +165,14 @@ class SaTokenEncryptorTest extends TestCase
         $this->assertSame($data, $encryptor->decrypt($data));
     }
 
+    public function testCheckedDecryptRejectsPlaintextWhenEncryptionIsEnabled(): void
+    {
+        $encryptor = $this->createAesEncryptor();
+
+        $this->assertNull($encryptor->decryptChecked('attacker-selected-login-id'));
+        $this->assertNull($encryptor->decryptChecked(base64_encode(str_repeat('x', 64))));
+    }
+
     public function testAesKeyDerivationEmptyKey(): void
     {
         $e1 = new SaTokenEncryptor(true, '', 'intl');

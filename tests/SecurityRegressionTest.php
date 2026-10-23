@@ -438,6 +438,21 @@ class SecurityRegressionTest extends TestCase
         $this->assertSame(-2, SaToken::getDao()->getTimeout('satoken:blacklist:' . $token));
     }
 
+    public function testEncryptedTokenRejectsPlaintextSubjectReplacement(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenEncrypt' => true,
+            'tokenEncryptKey' => 'test-encryption-key-at-least-32-bytes',
+        ]));
+        $token = StpUtil::login(29994)->getAccessToken();
+        $tokenKey = TokenManager::TOKEN_PREFIX . $token;
+
+        SaToken::getDao()->set($tokenKey, 'attacker-selected-login-id', 3600);
+
+        $this->assertNull(StpUtil::getStpLogic()->getLoginIdByToken($token));
+        $this->assertFalse(StpUtil::isLogin());
+    }
+
     public function testRevokingStatelessJwtWithoutExpiryKeepsItRevokedPermanently(): void
     {
         SaToken::setConfig(new SaTokenConfig([
