@@ -782,7 +782,7 @@ $signed = $sign->signParams($params, 'POST', '/api/order');
 $isValid = $sign->verifySign($signed, 'POST', '/api/order');
 ```
 
-也可通过 `setNonceValidator` 接入自定义 nonce 存储。注意不要使用 `Cache::has` 这类"先查后写"的校验器——它存在并发重放窗口，推荐使用内置存储。
+也可通过 `setNonceValidator` 接入自定义 nonce 存储。关闭内置存储（`nonceStore=false`）时必须配置该 validator，否则签名校验会拒绝请求。注意不要使用 `Cache::has` 这类"先查后写"的校验器——它存在并发重放窗口，推荐使用内置存储。
 
 签名算法仅支持 `sha256`（MD5 因碰撞风险已移除）：
 

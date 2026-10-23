@@ -93,6 +93,25 @@ class SaSignTest extends TestCase
         $this->assertTrue($this->sign->verifySign($params));
     }
 
+    public function testDisablingNonceStoreWithoutValidatorFailsClosed(): void
+    {
+        $signKey = getenv('TEST_SIGN_KEY') ?: 'test-key-placeholder-32-bytes-lo';
+        $sign = new SaSign(['key' => $signKey, 'nonceStore' => false]);
+        $params = $sign->signParams(['operation' => 'transfer']);
+
+        $this->assertFalse($sign->verifySign($params));
+    }
+
+    public function testDisablingNonceStoreUsesConfiguredExternalValidator(): void
+    {
+        $signKey = getenv('TEST_SIGN_KEY') ?: 'test-key-placeholder-32-bytes-lo';
+        $sign = new SaSign(['key' => $signKey, 'nonceStore' => false]);
+        $sign->setNonceValidator(fn (string $nonce) => true);
+        $params = $sign->signParams(['operation' => 'transfer']);
+
+        $this->assertTrue($sign->verifySign($params));
+    }
+
     public function testSha256Algorithm(): void
     {
         $this->sign->setSignAlg('sha256');

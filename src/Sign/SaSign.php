@@ -23,7 +23,7 @@ class SaSign
 
     /**
      * 是否启用内置 nonce 防重放存储（默认开启）。
-     * 关闭后防重放完全依赖外部 nonceValidator
+     * 关闭后必须配置外部 nonceValidator，否则校验 fail-closed
      */
     protected bool $nonceStoreEnabled = true;
 
@@ -110,6 +110,10 @@ class SaSign
             if (!$this->recordNonce($nonce)) {
                 return false;
             }
+        } else {
+            // 关闭内置存储代表调用方承诺接入外部防重放校验；没有 validator 时
+            // 不能把“未做防重放”当成验证通过，否则 nonce 可在有效期内无限重放。
+            return false;
         }
 
         return true;
