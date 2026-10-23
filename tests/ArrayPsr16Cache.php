@@ -67,3 +67,41 @@ class ArrayPsr16Cache implements CacheInterface
         return array_key_exists($key, $this->data);
     }
 }
+
+class StrictArrayPsr16Cache extends ArrayPsr16Cache
+{
+    protected function assertLegalKey(string $key): void
+    {
+        if ($key === '' || preg_match('/[{}()\/\\\\@:]/', $key) === 1 || strlen($key) > 64) {
+            throw new StrictPsr16InvalidArgumentException('Illegal PSR-16 cache key');
+        }
+    }
+
+    public function get(string $key, mixed $default = null): mixed
+    {
+        $this->assertLegalKey($key);
+        return parent::get($key, $default);
+    }
+
+    public function set(string $key, mixed $value, \DateInterval|int|null $ttl = null): bool
+    {
+        $this->assertLegalKey($key);
+        return parent::set($key, $value, $ttl);
+    }
+
+    public function delete(string $key): bool
+    {
+        $this->assertLegalKey($key);
+        return parent::delete($key);
+    }
+
+    public function has(string $key): bool
+    {
+        $this->assertLegalKey($key);
+        return parent::has($key);
+    }
+}
+
+class StrictPsr16InvalidArgumentException extends \InvalidArgumentException implements \Psr\SimpleCache\InvalidArgumentException
+{
+}

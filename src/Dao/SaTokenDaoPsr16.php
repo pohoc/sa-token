@@ -25,7 +25,7 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface
     public function get(string $key): ?string
     {
         try {
-            $value = $this->cache->get($key);
+            $value = $this->cache->get($this->normalizeKey($key));
             if ($value === null) {
                 return null;
             }
@@ -43,14 +43,23 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface
 
     public function set(string $key, string $value, ?int $timeout = null): void
     {
+        $this->writeCache($key, $value, $timeout);
+    }
+
+    protected function writeCache(string $key, string $value, ?int $timeout): bool
+    {
         try {
-            $this->cache->set($key, $value, $timeout);
+            if (!$this->cache->set($this->normalizeKey($key), $value, $timeout)) {
+                return false;
+            }
             if ($timeout !== null && $timeout > 0) {
                 $this->ttlMap[$key] = time() + $timeout;
             } else {
                 unset($this->ttlMap[$key]);
             }
+            return true;
         } catch (InvalidArgumentException) {
+            return false;
         }
     }
 
@@ -67,7 +76,7 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface
     public function delete(string $key): void
     {
         try {
-            $this->cache->delete($key);
+            $this->cache->delete($this->normalizeKey($key));
             unset($this->ttlMap[$key]);
         } catch (InvalidArgumentException) {
         }
@@ -121,7 +130,7 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface
     public function exists(string $key): bool
     {
         try {
-            return $this->cache->has($key);
+            return $this->cache->has($this->normalizeKey($key));
         } catch (InvalidArgumentException) {
             return false;
         }
@@ -159,8 +168,13 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface
         if ($this->exists($key)) {
             return false;
         }
-        $this->set($key, $value, $timeout);
-        return true;
+        return $this->writeCache($key, $value, $timeout);
+    }
+
+    /** PSR-16 reserves punctuation used in Sa-Token's internal namespaces. */
+    protected function normalizeKey(string $key): string
+    {
+        return 'sat_' . substr(hash('sha256', $key), 0, 60);
     }
 
     public function increment(string $key, int $amount = 1, ?int $timeout = null): int

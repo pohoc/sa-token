@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace SaToken\Tests;
 
 use PHPUnit\Framework\TestCase;
+use SaToken\Dao\SaTokenDaoPsr16;
 use SaToken\Exception\SaTokenException;
+use SaToken\SaToken;
 use SaToken\Sign\SaSign;
 
 class SaSignTest extends TestCase
@@ -41,6 +43,16 @@ class SaSignTest extends TestCase
         $params = $this->sign->signParams(['foo' => 'bar']);
 
         $this->assertTrue($this->sign->verifySign($params));
+    }
+
+    public function testPsr16DaoStillRejectsReplayedSignatures(): void
+    {
+        class_exists(ArrayPsr16Cache::class);
+        SaToken::setDao(new SaTokenDaoPsr16(new StrictArrayPsr16Cache()));
+        $params = $this->sign->signParams(['operation' => 'transfer']);
+
+        $this->assertTrue($this->sign->verifySign($params));
+        $this->assertFalse($this->sign->verifySign($params));
     }
 
     public function testVerifySignReturnsFalseForMissingSign(): void
