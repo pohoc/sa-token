@@ -186,6 +186,24 @@ class TokenManagerTest extends TestCase
         $this->assertEquals(1, $this->manager->getDisableLevel(10001, 'comment', 'login'));
     }
 
+    public function testDisableRejectsInvalidDurationsInsteadOfCreatingPermanentBan(): void
+    {
+        foreach ([0, -2, PHP_INT_MAX] as $duration) {
+            try {
+                $this->manager->disable(10002, 'comment', 1, $duration, 'login');
+                $this->fail("无效封禁时长 {$duration} 应被拒绝");
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('封禁时长', $e->getMessage());
+            }
+
+            $this->assertFalse($this->manager->isDisable(10002, 'comment', 'login'));
+        }
+
+        $this->manager->disable(10002, 'comment', 1, -1, 'login');
+        $this->assertTrue($this->manager->isDisable(10002, 'comment', 'login'));
+        $this->assertSame(-1, $this->manager->getDisableTime(10002, 'comment', 'login'));
+    }
+
     public function testUntieDisable(): void
     {
         $this->manager->disable(10001, 'comment', 1, 3600, 'login');

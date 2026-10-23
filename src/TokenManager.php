@@ -505,6 +505,7 @@ class TokenManager
 
     public function disable(mixed $loginId, string $service, int $level, int $time, string $loginType): void
     {
+        SaTokenTimeout::validate($time, '封禁时长');
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
         $key = self::DISABLE_PREFIX . $loginType . ':' . $loginIdStr . ':' . $service;
         $data = SaFoxUtil::toJson([
