@@ -6,6 +6,7 @@ namespace SaToken\Auth;
 
 use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
+use SaToken\Security\SaAntiBruteUtil;
 use SaToken\StpUtil;
 use SaToken\Util\SaTokenContext;
 
@@ -41,6 +42,8 @@ class SaApiKey
             throw new SaTokenException('缺少 API Key 或 Secret');
         }
 
+        SaAntiBruteUtil::checkAndThrow($apiKey, 'api-key');
+
         if ($this->validator !== null) {
             $loginId = ($this->validator)($apiKey, $apiSecret);
         } else {
@@ -48,8 +51,11 @@ class SaApiKey
         }
 
         if ($loginId === null || is_bool($loginId) || !is_scalar($loginId) || $loginId === '') {
+            SaAntiBruteUtil::recordFailure($apiKey, 'api-key');
             throw new SaTokenException('API Key 验证失败');
         }
+
+        SaAntiBruteUtil::clearCurrentSourceFailures($apiKey, 'api-key');
 
         // 同一 Key 已存在有效会话时直接复用：每次请求全量 login() 会触发
         // 账号级分布式锁竞争、反复触发 onLogin 事件、并在多实例部署下互相踢线

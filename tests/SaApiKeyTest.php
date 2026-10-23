@@ -11,6 +11,7 @@ use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoMemory;
 use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
+use SaToken\Security\SaAntiBruteUtil;
 use SaToken\Util\SaTokenContext;
 
 class SaApiKeyTest extends TestCase
@@ -107,6 +108,60 @@ class SaApiKeyTest extends TestCase
         $api->registerKey('my-key', 'my-secret', 10001);
         $this->expectException(SaTokenException::class);
         $api->checkApiKey();
+    }
+
+    public function testInvalidSecretAttemptsAreRateLimitedByApiKeyAndSource(): void
+    {
+        SaToken::setConfig(SaToken::getConfig()->setAntiBruteMaxFailures(2)->setAntiBruteLockDuration(60));
+        $api = new SaApiKey();
+        $api->registerKey('known-api-key', 'correct-secret', 10001);
+
+        foreach ([1, 2] as $attempt) {
+            SaTokenContext::setRequest($this->mockRequestWithHeaders([
+                'api-key' => 'known-api-key',
+                'api-secret' => 'wrong-secret-' . $attempt,
+            ]));
+            try {
+                $api->checkApiKey();
+                $this->fail('错误 API Secret 应被拒绝');
+            } catch (SaTokenException $e) {
+                $this->assertSame('API Key 验证失败', $e->getMessage());
+            }
+        }
+
+        $this->assertSame(2, SaAntiBruteUtil::getFailCount('known-api-key', 'api-key'));
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'api-key' => 'known-api-key',
+            'api-secret' => 'correct-secret',
+        ]));
+
+        $this->expectExceptionMessage('账号已被锁定');
+        $api->checkApiKey();
+    }
+
+    public function testSuccessfulApiKeyValidationClearsCurrentSourceFailures(): void
+    {
+        $api = new SaApiKey();
+        $api->registerKey('known-api-key', 'correct-secret', 10001);
+
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'api-key' => 'known-api-key',
+            'api-secret' => 'wrong-secret',
+        ]));
+        try {
+            $api->checkApiKey();
+            $this->fail('错误 API Secret 应被拒绝');
+        } catch (SaTokenException $e) {
+            $this->assertSame('API Key 验证失败', $e->getMessage());
+        }
+
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'api-key' => 'known-api-key',
+            'api-secret' => 'correct-secret',
+        ]));
+        $api->checkApiKey();
+
+        $this->assertSame(0, SaAntiBruteUtil::getFailCount('known-api-key', 'api-key'));
     }
 
     public function testCheckApiKeyRejectsEmptySecretBeforeCallingValidator(): void

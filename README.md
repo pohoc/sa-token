@@ -815,6 +815,8 @@ $apiKey->registerKey('ak-789012', 'sk-ghijkl', 10002);
 $apiKey->checkApiKey();
 ```
 
+API Key/Secret 验证失败也会使用 `antiBruteMaxFailures` / `antiBruteLockDuration`，按 API Key 和可信来源 IP 限制连续错误的 Secret 尝试；验证成功会清除当前来源的失败计数。
+
 自定义验证器：
 
 ```php
