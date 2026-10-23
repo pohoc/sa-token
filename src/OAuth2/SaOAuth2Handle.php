@@ -632,7 +632,23 @@ class SaOAuth2Handle
         $refreshToken = is_array($data) && is_string($data['refreshToken'] ?? null) ? $data['refreshToken'] : '';
 
         if ($refreshToken === '') {
-            $this->getDao()->delete($accessTokenKey);
+            $familyId = $this->getDao()->get($this->buildAccessTokenFamilyKey($accessToken));
+            if (!is_string($familyId) || $familyId === '') {
+                $this->getDao()->delete($accessTokenKey);
+                return;
+            }
+
+            // The old AT is removed during rotation. Its short-lived family
+            // index preserves the revocation link after that point.
+            $lockValue = bin2hex(random_bytes(16));
+            $familyLockKey = 'oauth2:refresh:family:' . hash('sha256', $familyId);
+            $this->acquireRefreshLock($familyLockKey, $lockValue);
+            try {
+                $this->revokeTokenFamily('oauth2:family:' . hash('sha256', $familyId));
+                $this->getDao()->delete($accessTokenKey);
+            } finally {
+                $this->releaseRefreshLock($familyLockKey, $lockValue);
+            }
             return;
         }
 
@@ -644,10 +660,18 @@ class SaOAuth2Handle
         $this->acquireRefreshLock($tokenLockKey, $lockValue);
 
         try {
-            $familyLockKey = 'oauth2:refresh:' . $this->getRefreshTokenFamilyLockIdentity($refreshToken);
+            $familyId = $this->getDao()->get($this->buildAccessTokenFamilyKey($accessToken));
+            if (!is_string($familyId) || $familyId === '') {
+                $familyLockKey = 'oauth2:refresh:' . $this->getRefreshTokenFamilyLockIdentity($refreshToken);
+            } else {
+                $familyLockKey = 'oauth2:refresh:family:' . hash('sha256', $familyId);
+            }
             $this->acquireRefreshLock($familyLockKey, $lockValue);
             try {
                 $consumedFamily = $this->getDao()->get('oauth2:rt:consumed:' . hash('sha256', $refreshToken));
+                if ((!is_string($consumedFamily) || $consumedFamily === '') && is_string($familyId) && $familyId !== '') {
+                    $consumedFamily = $familyId;
+                }
                 if (is_string($consumedFamily) && $consumedFamily !== '') {
                     $familyMarkerKey = 'oauth2:family:' . hash('sha256', $consumedFamily);
                     $this->revokeTokenFamily($familyMarkerKey);
@@ -819,6 +843,12 @@ class SaOAuth2Handle
             $this->buildRefreshTokenKey($rtStr),
             $this->encryptValue(SaFoxUtil::toJson($refreshToken->toArray())),
             $expiresIn
+        );
+        $accessTokenTimeout = $this->config->getAccessTokenTimeout();
+        $this->getDao()->set(
+            $this->buildAccessTokenFamilyKey($accessToken),
+            $refreshToken->getFamilyId(),
+            $accessTokenTimeout > 0 ? $accessTokenTimeout : null
         );
 
         return $refreshToken;
@@ -1214,6 +1244,11 @@ class SaOAuth2Handle
     protected function buildAccessTokenKey(string $token): string
     {
         return 'oauth2:at:' . $token;
+    }
+
+    protected function buildAccessTokenFamilyKey(string $token): string
+    {
+        return 'oauth2:at:family:' . hash('sha256', $token);
     }
 
     /**

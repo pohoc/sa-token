@@ -632,6 +632,18 @@ class SaOAuth2Test extends TestCase
         self::assertNull($dao->get('oauth2:rt:' . $rotated->getRefreshToken()));
     }
 
+    public function testRevokingRotatedAwayAccessTokenRevokesItsCurrentFamilyDescendant(): void
+    {
+        $code = $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback');
+        $initial = $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
+        $rotated = $this->handle->refreshToken((string) $initial->getRefreshToken(), 'test-client', $this->clientSecret);
+
+        $this->handle->revokeAccessToken($initial->getAccessToken());
+
+        self::assertNull($this->handle->validateAccessToken($rotated->getAccessToken()));
+        self::assertNull(SaToken::getDao()->get('oauth2:rt:' . $rotated->getRefreshToken()));
+    }
+
     public function testRefreshTokenRotationCanBeDisabled(): void
     {
         $this->config->setIsNewRefreshToken(false);
