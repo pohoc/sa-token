@@ -109,8 +109,8 @@ class StpLogicSecurityTest extends TestCase
         $token = 'sat_token-fingerprint-check';
         $fingerprint = $this->manager->computeFingerprint();
 
-        $this->manager->saveFingerprint($token, $fingerprint, 3600);
         $this->manager->saveToken($token, 10001, 'login', 'PC');
+        $this->manager->saveFingerprint($token, $fingerprint, 3600);
 
         SaToken::setConfig(SaToken::getConfig()->setTokenFingerprint(true));
 
@@ -129,8 +129,8 @@ class StpLogicSecurityTest extends TestCase
         $token = 'sat_token-fingerprint-fail';
         $wrongFp = hash('sha256', 'different-ip-and-ua');
 
-        $this->manager->saveFingerprint($token, $wrongFp, 3600);
         $this->manager->saveToken($token, 10001, 'login', 'PC');
+        $this->manager->saveFingerprint($token, $wrongFp, 3600);
 
         SaToken::setConfig(SaToken::getConfig()->setTokenFingerprint(true));
 
@@ -145,8 +145,8 @@ class StpLogicSecurityTest extends TestCase
         $token = 'sat_token-fingerprint-disabled';
         $wrongFp = hash('sha256', 'different-ip-and-ua');
 
-        $this->manager->saveFingerprint($token, $wrongFp, 3600);
         $this->manager->saveToken($token, 10001, 'login', 'PC');
+        $this->manager->saveFingerprint($token, $wrongFp, 3600);
 
         SaToken::setConfig(SaToken::getConfig()->setTokenFingerprint(false));
         $this->stp = new TestableStpLogic('login');

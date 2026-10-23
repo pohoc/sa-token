@@ -240,6 +240,68 @@ class SecurityRegressionTest extends TestCase
         StpUtil::checkSafe('payment');
     }
 
+    public function testReissuedTokenDoesNotInheritPreviousSwitchOrSafeState(): void
+    {
+        SaToken::setAction(new class () implements \SaToken\Action\SaTokenActionInterface {
+            public function getPermissionList(mixed $loginId, string $loginType): array
+            {
+                return [];
+            }
+
+            public function getRoleList(mixed $loginId, string $loginType): array
+            {
+                return [];
+            }
+
+            public function generateTokenValue(mixed $loginId, string $loginType): string
+            {
+                return 'fixed-reusable-token-value';
+            }
+        });
+
+        $oldToken = StpUtil::login(20006)->getAccessToken();
+        $this->actAsToken($oldToken);
+        StpUtil::getStpLogic()->switchTo(90001);
+        StpUtil::openSafe(300, 'payment');
+        StpUtil::logout();
+
+        $newToken = StpUtil::login(20007)->getAccessToken();
+        $this->assertSame($oldToken, $newToken);
+        $this->actAsToken($newToken);
+
+        $this->assertSame('20007', StpUtil::getLoginId());
+        $this->assertFalse(StpUtil::isSafe('payment'));
+    }
+
+    public function testRevokedTokenValueCannotBeReissuedWhileBlacklisted(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), ['maxTryTimes' => 2])));
+        SaToken::setAction(new class () implements \SaToken\Action\SaTokenActionInterface {
+            public function getPermissionList(mixed $loginId, string $loginType): array
+            {
+                return [];
+            }
+
+            public function getRoleList(mixed $loginId, string $loginType): array
+            {
+                return [];
+            }
+
+            public function generateTokenValue(mixed $loginId, string $loginType): string
+            {
+                return 'fixed-revoked-token-value';
+            }
+        });
+
+        $token = StpUtil::login(20008)->getAccessToken();
+        $this->actAsToken($token);
+        StpUtil::revokeToken($token);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('Token 值冲突');
+        StpUtil::login(20009);
+    }
+
     public function testRevokeTokenWithPermanentTimeoutStaysRevoked(): void
     {
         $result = StpUtil::login(20004, (new \SaToken\SaLoginParameter())->setTimeout(-1));

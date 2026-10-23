@@ -20,6 +20,8 @@ class TokenManager
     public const TOKEN_SESSION_PREFIX = 'satoken:tokenSession:';
     public const DISABLE_PREFIX = 'satoken:disable:';
     public const SAFE_PREFIX = 'satoken:safe:';
+    protected const SAFE_V2_PREFIX = 'satoken:safe:v2:';
+    protected const SAFE_SERVICES_PREFIX = 'satoken:safe:services:';
     public const SWITCH_PREFIX = 'satoken:switch:';
     public const REFRESH_TOKEN_PREFIX = 'satoken:refresh:';
     public const REFRESH_TOKEN_MAP_PREFIX = 'satoken:refreshMap:';
@@ -132,8 +134,18 @@ class TokenManager
         $maxTries = max(1, $this->getConfig()->getMaxTryTimes());
         for ($attempt = 0; $attempt < $maxTries; $attempt++) {
             $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-            if ($this->getDao()->setIfNotExists(self::TOKEN_PREFIX . $tokenValue, $this->encryptValue($loginIdStr), $effectiveTimeout)) {
-                return $this->finalizeToken($tokenValue, $loginId, $loginType, $deviceType, $effectiveTimeout);
+            $tokenLockKey = $this->tokenValueLockKey($tokenValue);
+            if ($this->acquireLock($tokenLockKey, 5)) {
+                try {
+                    // 吊销黑名单必须阻止同一 bearer 值在 TTL 内被重新签发。
+                    if (!$this->isBlacklisted($tokenValue)
+                        && $this->getDao()->setIfNotExists(self::TOKEN_PREFIX . $tokenValue, $this->encryptValue($loginIdStr), $effectiveTimeout)) {
+                        $this->clearTokenBoundState($tokenValue, $loginType);
+                        return $this->finalizeToken($tokenValue, $loginId, $loginType, $deviceType, $effectiveTimeout);
+                    }
+                } finally {
+                    $this->releaseLock($tokenLockKey);
+                }
             }
             $tokenValue = $this->createTokenValue($loginId, $loginType);
             if ($this->getConfig()->getJwtMode() === 'mixed') {
@@ -188,6 +200,26 @@ class TokenManager
 
         // mixed 模式下实际存储的是 JWT，必须返回真实值供调用方下发给客户端
         return $tokenValue;
+    }
+
+    protected function tokenValueLockKey(string $tokenValue): string
+    {
+        return 'token-value:' . hash('sha256', $tokenValue);
+    }
+
+    protected function clearTokenBoundState(string $tokenValue, string $loginType): void
+    {
+        $dao = $this->getDao();
+        $dao->delete(self::LAST_ACTIVE_PREFIX . $tokenValue);
+        $dao->delete(self::TOKEN_SESSION_PREFIX . $tokenValue);
+        $dao->delete(self::FINGERPRINT_PREFIX . $tokenValue);
+        $dao->delete(self::SWITCH_PREFIX . $loginType . ':' . $tokenValue);
+
+        $services = $this->getSafeServices($tokenValue, $loginType);
+        foreach ($services as $service) {
+            $dao->delete($this->safeStateKey($tokenValue, $service, $loginType));
+        }
+        $dao->delete($this->safeServicesKey($tokenValue, $loginType));
     }
 
     public function getLoginIdByToken(string $tokenValue): ?string
@@ -259,25 +291,33 @@ class TokenManager
 
     protected function deleteTokenLocked(string $tokenValue, mixed $loginId, string $loginType): void
     {
-        $this->getDao()->delete(self::TOKEN_PREFIX . $tokenValue);
-
-        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-        $loginIdKey = self::LOGIN_ID_PREFIX . $loginType . ':' . $loginIdStr;
-        $existingTokens = $this->getTokenListByLoginId($loginId, $loginType);
-        $newTokens = array_values(array_filter($existingTokens, fn ($item) => $item['tokenValue'] !== $tokenValue));
-
-        if (empty($newTokens)) {
-            $this->getDao()->delete($loginIdKey);
-        } else {
-            $timeout = $this->getDao()->getTimeout($loginIdKey);
-            if ($timeout !== -2) {
-                $effectiveTimeout = ($timeout === -1) ? null : $timeout;
-                $this->getDao()->set($loginIdKey, $this->encryptValue(SaFoxUtil::toJson($newTokens)), $effectiveTimeout);
-            }
+        $tokenLockKey = $this->tokenValueLockKey($tokenValue);
+        if (!$this->acquireLock($tokenLockKey, 5)) {
+            throw new SaTokenException('Token 正在签发或注销，请稍后重试');
         }
 
-        $this->getDao()->delete(self::LAST_ACTIVE_PREFIX . $tokenValue);
-        $this->getDao()->delete(self::TOKEN_SESSION_PREFIX . $tokenValue);
+        try {
+            $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+            $loginIdKey = self::LOGIN_ID_PREFIX . $loginType . ':' . $loginIdStr;
+            $existingTokens = $this->getTokenListByLoginId($loginId, $loginType);
+            $newTokens = array_values(array_filter($existingTokens, fn ($item) => $item['tokenValue'] !== $tokenValue));
+
+            if (empty($newTokens)) {
+                $this->getDao()->delete($loginIdKey);
+            } else {
+                $timeout = $this->getDao()->getTimeout($loginIdKey);
+                if ($timeout !== -2) {
+                    $effectiveTimeout = ($timeout === -1) ? null : $timeout;
+                    $this->getDao()->set($loginIdKey, $this->encryptValue(SaFoxUtil::toJson($newTokens)), $effectiveTimeout);
+                }
+            }
+
+            $this->clearTokenBoundState($tokenValue, $loginType);
+            // token 主键最后删除：NX 签发方在这之前无法重用同一 bearer 值。
+            $this->getDao()->delete(self::TOKEN_PREFIX . $tokenValue);
+        } finally {
+            $this->releaseLock($tokenLockKey);
+        }
     }
 
     /**
@@ -305,33 +345,60 @@ class TokenManager
         $tokens = $this->getTokenListByLoginId($loginId, $loginType);
         $deletedTokens = [];
 
-        $keysToDelete = [];
+        $tokenLockKeys = [];
         foreach ($tokens as $item) {
             $tokenValue = is_string($item['tokenValue'] ?? null) ? $item['tokenValue'] : '';
-            if ($tokenValue === '') {
-                continue;
+            if ($tokenValue !== '') {
+                $tokenLockKeys[] = $this->tokenValueLockKey($tokenValue);
             }
-            $keysToDelete[] = self::TOKEN_PREFIX . $tokenValue;
-            $keysToDelete[] = self::LAST_ACTIVE_PREFIX . $tokenValue;
-            $keysToDelete[] = self::TOKEN_SESSION_PREFIX . $tokenValue;
-            $keysToDelete[] = self::FINGERPRINT_PREFIX . $tokenValue;
-            $keysToDelete[] = self::BLACKLIST_PREFIX . $tokenValue;
-
-            $refreshToken = $this->getRefreshTokenByAccessToken($loginId, $loginType, $tokenValue);
-            if ($refreshToken !== null) {
-                $keysToDelete[] = self::REFRESH_TOKEN_PREFIX . $refreshToken;
-                $keysToDelete[] = self::REFRESH_TOKEN_MAP_PREFIX . $tokenValue;
+        }
+        $tokenLockKeys = array_values(array_unique($tokenLockKeys));
+        sort($tokenLockKeys, SORT_STRING);
+        $acquiredLocks = [];
+        foreach ($tokenLockKeys as $tokenLockKey) {
+            if (!$this->acquireLock($tokenLockKey, 5)) {
+                foreach ($acquiredLocks as $acquiredLock) {
+                    $this->releaseLock($acquiredLock);
+                }
+                throw new SaTokenException('Token 正在签发或注销，请稍后重试');
             }
-
-            $deletedTokens[] = $tokenValue;
+            $acquiredLocks[] = $tokenLockKey;
         }
 
-        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-        $keysToDelete[] = self::LOGIN_ID_PREFIX . $loginType . ':' . $loginIdStr;
-        $keysToDelete[] = self::SESSION_PREFIX . $loginType . ':' . $loginIdStr;
+        $keysToDelete = [];
+        try {
+            foreach ($tokens as $item) {
+                $tokenValue = is_string($item['tokenValue'] ?? null) ? $item['tokenValue'] : '';
+                if ($tokenValue === '') {
+                    continue;
+                }
+                $keysToDelete[] = self::TOKEN_PREFIX . $tokenValue;
+                $keysToDelete[] = self::LAST_ACTIVE_PREFIX . $tokenValue;
+                $keysToDelete[] = self::TOKEN_SESSION_PREFIX . $tokenValue;
+                $keysToDelete[] = self::FINGERPRINT_PREFIX . $tokenValue;
+                $keysToDelete[] = self::BLACKLIST_PREFIX . $tokenValue;
+                $this->clearTokenBoundState($tokenValue, $loginType);
 
-        if (count($keysToDelete) > 0) {
-            $this->getDao()->deleteMultiple($keysToDelete);
+                $refreshToken = $this->getRefreshTokenByAccessToken($loginId, $loginType, $tokenValue);
+                if ($refreshToken !== null) {
+                    $keysToDelete[] = self::REFRESH_TOKEN_PREFIX . $refreshToken;
+                    $keysToDelete[] = self::REFRESH_TOKEN_MAP_PREFIX . $tokenValue;
+                }
+
+                $deletedTokens[] = $tokenValue;
+            }
+
+            $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+            $keysToDelete[] = self::LOGIN_ID_PREFIX . $loginType . ':' . $loginIdStr;
+            $keysToDelete[] = self::SESSION_PREFIX . $loginType . ':' . $loginIdStr;
+
+            if (count($keysToDelete) > 0) {
+                $this->getDao()->deleteMultiple($keysToDelete);
+            }
+        } finally {
+            foreach ($acquiredLocks as $acquiredLock) {
+                $this->releaseLock($acquiredLock);
+            }
         }
 
         return $deletedTokens;
@@ -438,14 +505,45 @@ class TokenManager
 
     public function openSafe(string $tokenValue, string $service, int $safeTime, string $loginType): void
     {
-        $key = self::SAFE_PREFIX . $loginType . ':' . $tokenValue . ':' . $service;
-        $this->getDao()->set($key, $this->encryptValue((string) (SaFoxUtil::getTime() + $safeTime)), $safeTime);
+        $tokenLockKey = $this->tokenValueLockKey($tokenValue);
+        if (!$this->acquireLock($tokenLockKey, 5)) {
+            throw new SaTokenException('Token 正在签发或注销，请稍后重试');
+        }
+
+        try {
+            $tokenTimeout = $this->getTokenTimeout($tokenValue);
+            if ($tokenTimeout === -2 || $this->isBlacklisted($tokenValue)) {
+                throw new SaTokenException('Token 不存在或已撤销，无法开启安全状态');
+            }
+            $effectiveSafeTime = $safeTime;
+            if ($safeTime > 0 && $tokenTimeout >= 0) {
+                $effectiveSafeTime = min($safeTime, max(1, $tokenTimeout));
+            }
+
+            $services = $this->getSafeServices($tokenValue, $loginType);
+            if (!in_array($service, $services, true)) {
+                $services[] = $service;
+            }
+
+            $registryTimeout = $tokenTimeout >= 0 ? max(1, $tokenTimeout) : null;
+            $this->getDao()->set(
+                $this->safeServicesKey($tokenValue, $loginType),
+                $this->encryptValue(SaFoxUtil::toJson($services)),
+                $registryTimeout
+            );
+            $this->getDao()->set(
+                $this->safeStateKey($tokenValue, $service, $loginType),
+                $this->encryptValue((string) (SaFoxUtil::getTime() + $effectiveSafeTime)),
+                $effectiveSafeTime
+            );
+        } finally {
+            $this->releaseLock($tokenLockKey);
+        }
     }
 
     public function isSafe(string $tokenValue, string $service, string $loginType): bool
     {
-        $key = self::SAFE_PREFIX . $loginType . ':' . $tokenValue . ':' . $service;
-        $value = $this->getDao()->get($key);
+        $value = $this->getDao()->get($this->safeStateKey($tokenValue, $service, $loginType));
         if ($value === null) {
             return false;
         }
@@ -455,8 +553,59 @@ class TokenManager
 
     public function closeSafe(string $tokenValue, string $service, string $loginType): void
     {
-        $key = self::SAFE_PREFIX . $loginType . ':' . $tokenValue . ':' . $service;
-        $this->getDao()->delete($key);
+        $tokenLockKey = $this->tokenValueLockKey($tokenValue);
+        if (!$this->acquireLock($tokenLockKey, 5)) {
+            throw new SaTokenException('Token 正在签发或注销，请稍后重试');
+        }
+
+        try {
+            $this->getDao()->delete($this->safeStateKey($tokenValue, $service, $loginType));
+            $services = array_values(array_filter(
+                $this->getSafeServices($tokenValue, $loginType),
+                static fn (string $registeredService): bool => $registeredService !== $service
+            ));
+            $registryKey = $this->safeServicesKey($tokenValue, $loginType);
+            if ($services === []) {
+                $this->getDao()->delete($registryKey);
+            } else {
+                $timeout = $this->getDao()->getTimeout($registryKey);
+                $effectiveTimeout = $timeout > 0 ? $timeout : null;
+                $this->getDao()->set($registryKey, $this->encryptValue(SaFoxUtil::toJson($services)), $effectiveTimeout);
+            }
+        } finally {
+            $this->releaseLock($tokenLockKey);
+        }
+    }
+
+    protected function safeStateKey(string $tokenValue, string $service, string $loginType): string
+    {
+        return self::SAFE_V2_PREFIX . $loginType . ':' . hash('sha256', $tokenValue) . ':' . hash('sha256', $service);
+    }
+
+    protected function safeServicesKey(string $tokenValue, string $loginType): string
+    {
+        return self::SAFE_SERVICES_PREFIX . $loginType . ':' . hash('sha256', $tokenValue);
+    }
+
+    /** @return list<string> */
+    protected function getSafeServices(string $tokenValue, string $loginType): array
+    {
+        $json = $this->getDao()->get($this->safeServicesKey($tokenValue, $loginType));
+        if ($json === null) {
+            return [];
+        }
+        $services = SaFoxUtil::fromJson($this->decryptValue($json));
+        if (!is_array($services)) {
+            throw new SaTokenException('Token 安全状态索引损坏');
+        }
+
+        $validServices = [];
+        foreach ($services as $service) {
+            if (is_string($service) && !in_array($service, $validServices, true)) {
+                $validServices[] = $service;
+            }
+        }
+        return $validServices;
     }
 
     public function setSwitchTo(string $tokenValue, mixed $switchToId, string $loginType): void
