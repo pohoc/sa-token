@@ -50,7 +50,11 @@ class SaTokenJwt
             $payload['exp'] = $now + $timeout;
         }
 
-        $payload = array_merge($payload, $extraClaims);
+        // 身份与有效期声明只能由签发器生成；调用方扩展数据不得改变主体、
+        // 登录类型、有效期或令牌唯一标识，避免 session/业务数据覆盖安全声明。
+        $reservedClaims = ['sub', 'type', 'exp', 'iat', 'jti', 'nbf', 'iss', 'aud'];
+        $safeExtraClaims = array_diff_key($extraClaims, array_flip($reservedClaims));
+        $payload = array_merge($payload, $safeExtraClaims);
 
         $headerJson = json_encode($header, JSON_UNESCAPED_UNICODE);
         $payloadJson = json_encode($payload, JSON_UNESCAPED_UNICODE);

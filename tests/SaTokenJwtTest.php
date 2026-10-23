@@ -57,6 +57,32 @@ class SaTokenJwtTest extends TestCase
         $this->assertEquals('login', $payload['type']);
     }
 
+    public function testExtraClaimsCannotOverrideReservedSecurityClaims(): void
+    {
+        $token = $this->jwt->createToken(10001, 'login', null, [
+            'sub' => 'attacker',
+            'type' => 'admin',
+            'exp' => time() + 86400,
+            'iat' => 0,
+            'jti' => 'reused-id',
+            'nbf' => 0,
+            'iss' => 'untrusted-issuer',
+            'aud' => 'untrusted-audience',
+            'custom' => 'kept',
+        ]);
+        $payload = $this->jwt->parseToken($token);
+
+        $this->assertSame('10001', $payload['sub']);
+        $this->assertSame('login', $payload['type']);
+        $this->assertArrayNotHasKey('exp', $payload);
+        $this->assertGreaterThan(0, $payload['iat']);
+        $this->assertNotSame('reused-id', $payload['jti']);
+        $this->assertArrayNotHasKey('nbf', $payload);
+        $this->assertArrayNotHasKey('iss', $payload);
+        $this->assertArrayNotHasKey('aud', $payload);
+        $this->assertSame('kept', $payload['custom']);
+    }
+
     public function testCreateTokenWithDifferentLoginIds(): void
     {
         $token1 = $this->jwt->createToken(10001, 'login');
