@@ -400,6 +400,24 @@ class StpLogicFullTest extends TestCase
         $this->logic->login($loginId);
     }
 
+    public function testReplacedEventRunsAfterAccountLockIsReleased(): void
+    {
+        $loginId = 'replacement-listener-lock-check';
+        $this->logic->login($loginId, (new SaLoginParameter())->setDeviceType('desktop'));
+        $lockKey = TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId);
+
+        SaToken::getConfig()->setMaxLoginCount(1);
+        $listener = $this->createMock(SaTokenListenerInterface::class);
+        $listener->expects($this->once())
+            ->method('onReplaced')
+            ->willReturnCallback(function () use ($lockKey): void {
+                self::assertNull($this->dao->get($lockKey));
+            });
+        SaToken::addListener($listener);
+
+        $this->logic->login($loginId, (new SaLoginParameter())->setDeviceType('mobile'));
+    }
+
     // ======== Token 格式化 ========
 
     public function testFormatTokenValueWithPrefix(): void

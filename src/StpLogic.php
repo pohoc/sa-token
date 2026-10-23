@@ -119,10 +119,12 @@ class StpLogic
             throw new SaTokenException('同账号登录正在处理中，请勿重复提交');
         }
 
+        /** @var array<string> $replacedTokens */
+        $replacedTokens = [];
         try {
-            $tokenValue = $this->resolveTokenValue($loginId, $deviceType, $isShare, $config);
+            $tokenValue = $this->resolveTokenValue($loginId, $deviceType, $isShare, $config, $replacedTokens);
 
-            $this->controlMaxLoginCount($loginId, $deviceType, $maxLoginCount, $tokenValue);
+            $this->controlMaxLoginCount($loginId, $deviceType, $maxLoginCount, $tokenValue, $replacedTokens);
 
             // mixed 模式下实际存储的是 JWT，后续指纹/响应/结果必须使用返回的真实值
             $tokenValue = $this->tokenManager->saveToken($tokenValue, $loginId, $this->loginType, $deviceType, $timeout);
@@ -145,14 +147,17 @@ class StpLogic
             $this->tokenManager->releaseLock($lockKey);
         }
 
-        // 监听器由调用方实现且可能执行网络 I/O；不要让不受控回调占用 5 秒租约锁，
-        // 否则锁过期后另一个登录请求会与当前回调所在的临界区并发执行。
+        // 监听器由调用方实现且可能执行网络 I/O；不要让不受控回调占用 5 秒租约锁。
+        foreach ($replacedTokens as $replacedToken) {
+            $this->getEvent()->onReplaced($this->loginType, $loginId, $replacedToken);
+        }
         $this->getEvent()->onLogin($this->loginType, $loginId, $tokenValue, $parameter);
 
         return $result;
     }
 
-    protected function resolveTokenValue(mixed $loginId, string $deviceType, bool $isShare, SaTokenConfig $config): string
+    /** @param array<string> $replacedTokens */
+    protected function resolveTokenValue(mixed $loginId, string $deviceType, bool $isShare, SaTokenConfig $config, array &$replacedTokens): string
     {
         $tokenValue = null;
         if ($isShare && $config->isConcurrent()) {
@@ -163,7 +168,7 @@ class StpLogic
         }
 
         if (!$config->isConcurrent() && $isShare) {
-            $this->logoutAllExceptCurrent($loginId, $deviceType);
+            array_push($replacedTokens, ...$this->logoutAllExceptCurrent($loginId, $deviceType));
         }
 
         $tokenValue = $this->tokenManager->createTokenValue($loginId, $this->loginType);
@@ -806,29 +811,34 @@ class StpLogic
         return null;
     }
 
-    protected function logoutAllExceptCurrent(mixed $loginId, string $deviceType): void
+    /** @return array<string> */
+    protected function logoutAllExceptCurrent(mixed $loginId, string $deviceType): array
     {
+        $replacedTokens = [];
         $tokens = $this->tokenManager->getTokenListByLoginId($loginId, $this->loginType);
         foreach ($tokens as $item) {
             $itemDeviceType = is_string($item['deviceType'] ?? null) ? $item['deviceType'] : '';
             $itemTokenValue = is_string($item['tokenValue'] ?? null) ? $item['tokenValue'] : '';
             if ($itemDeviceType === $deviceType && $this->tokenManager->isTokenValid($itemTokenValue)) {
                 $this->removeTokenAndRefreshToken($itemTokenValue, $loginId);
-                $this->getEvent()->onReplaced($this->loginType, $loginId, $itemTokenValue);
+                $replacedTokens[] = $itemTokenValue;
             }
         }
+
+        return $replacedTokens;
     }
 
     /**
      * 并发登录控制
      *
-     * @param  mixed  $loginId           登录 ID
-     * @param  string $deviceType        设备类型
-     * @param  int    $maxLoginCount     最大登录数
-     * @param  string $currentTokenValue 当前 Token 值
+     * @param  mixed         $loginId           登录 ID
+     * @param  string        $deviceType        设备类型
+     * @param  int           $maxLoginCount     最大登录数
+     * @param  string        $currentTokenValue 当前 Token 值
+     * @param  array<string> $replacedTokens    被替换的 Token 值
      * @return void
      */
-    protected function controlMaxLoginCount(mixed $loginId, string $deviceType, int $maxLoginCount, string $currentTokenValue): void
+    protected function controlMaxLoginCount(mixed $loginId, string $deviceType, int $maxLoginCount, string $currentTokenValue, array &$replacedTokens): void
     {
         if ($maxLoginCount < 0) {
             return;
@@ -854,7 +864,7 @@ class StpLogic
                     $kickTokenValue = is_string($toKick['tokenValue'] ?? null) ? $toKick['tokenValue'] : '';
                     if ($kickTokenValue !== '') {
                         $this->removeTokenAndRefreshToken($kickTokenValue, $loginId);
-                        $this->getEvent()->onReplaced($this->loginType, $loginId, $kickTokenValue);
+                        $replacedTokens[] = $kickTokenValue;
                     }
                 }
             }
