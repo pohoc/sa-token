@@ -133,6 +133,9 @@ class SaAuditLog
         if (!is_array($result)) {
             return null;
         }
+        if (($result['loginType'] ?? null) !== $loginType || ($result['id'] ?? null) !== $id) {
+            return null;
+        }
         /** @var array<string, mixed> $result */
         return $result;
     }
@@ -152,7 +155,7 @@ class SaAuditLog
                 continue;
             }
             $decoded = @json_decode($value, true);
-            if (is_array($decoded)) {
+            if (is_array($decoded) && ($decoded['loginType'] ?? null) === $loginType) {
                 $logs[] = $decoded;
             }
         }
@@ -225,6 +228,9 @@ class SaAuditLog
             if (!is_array($decoded)) {
                 continue;
             }
+            if (($decoded['loginType'] ?? null) !== $loginType) {
+                continue;
+            }
             if (($decoded['ip'] ?? '') === $ip) {
                 $result[] = $decoded;
                 if (count($result) >= $limit) {
@@ -259,6 +265,9 @@ class SaAuditLog
             if (!is_array($decoded)) {
                 continue;
             }
+            if (($decoded['loginType'] ?? null) !== $loginType) {
+                continue;
+            }
             $id = $decoded['id'] ?? '';
             if ($id !== '' && is_string($id)) {
                 $dao->delete(self::$keyPrefix . $loginType . ':' . $id);
@@ -283,6 +292,9 @@ class SaAuditLog
             }
             $decoded = @json_decode($value, true);
             if (!is_array($decoded)) {
+                continue;
+            }
+            if (($decoded['loginType'] ?? null) !== $loginType) {
                 continue;
             }
             $entries[] = $decoded;

@@ -139,6 +139,24 @@ class SaAuditLogTest extends TestCase
         $this->assertCount(3, $logs);
     }
 
+    public function testAuditLogQueriesDoNotCrossLoginTypeBoundaries(): void
+    {
+        SaAuditLog::setEnabled(true);
+        $childId = SaAuditLog::log('login', 'private-user', 'admin:internal', '', null, '203.0.113.9');
+        $adminId = SaAuditLog::log('login', 'admin-user', 'admin', '', null, '203.0.113.9');
+        self::assertNotNull($childId);
+        self::assertNotNull($adminId);
+
+        // The legacy concatenated key for this crafted pair equals the child log key.
+        self::assertNull(SaAuditLog::getLog('internal:' . $childId, 'admin'));
+        self::assertSame('admin:internal', SaAuditLog::getLog($childId, 'admin:internal')['loginType'] ?? null);
+
+        $adminLogs = SaAuditLog::getRecentLogs('admin', 10);
+        self::assertCount(1, $adminLogs);
+        self::assertSame('admin', $adminLogs[0]['loginType'] ?? null);
+        self::assertCount(1, SaAuditLog::getLogsByIp('203.0.113.9', 'admin', 10));
+    }
+
     public function testGetLogsByLoginId(): void
     {
         SaAuditLog::setEnabled(true);
