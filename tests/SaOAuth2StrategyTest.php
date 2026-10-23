@@ -105,7 +105,8 @@ class SaOAuth2StrategyTest extends TestCase
 
         $verifier = str_repeat('public-client-verifier-', 3);
         $challenge = rtrim(strtr(base64_encode(hash('sha256', $verifier, true)), '+/', '-_'), '=');
-        $code = $handle->generateAuthorizationCode(
+        $strategy = new AuthorizationCodeStrategy($handle);
+        $code = $strategy->generateAuthorizationCode(
             'public-pkce-client',
             1002,
             'https://app.example.com/callback',
@@ -113,7 +114,6 @@ class SaOAuth2StrategyTest extends TestCase
             $challenge,
             'S256'
         );
-        $strategy = new AuthorizationCodeStrategy($handle);
         $params = [
             'code'          => $code->getCode(),
             'client_id'     => 'public-pkce-client',

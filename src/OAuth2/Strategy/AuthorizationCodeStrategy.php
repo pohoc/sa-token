@@ -42,9 +42,24 @@ class AuthorizationCodeStrategy implements GrantTypeStrategyInterface
         }
     }
 
-    public function generateAuthorizationCode(string $clientId, mixed $loginId, string $redirectUri, string $scope = ''): SaOAuth2AuthorizationCode
-    {
-        return $this->handle->generateAuthorizationCode($clientId, $loginId, $redirectUri, $scope);
+    public function generateAuthorizationCode(
+        string $clientId,
+        mixed $loginId,
+        string $redirectUri,
+        string $scope = '',
+        string $codeChallenge = '',
+        string $codeChallengeMethod = '',
+        string $nonce = ''
+    ): SaOAuth2AuthorizationCode {
+        return $this->handle->generateAuthorizationCode(
+            $clientId,
+            $loginId,
+            $redirectUri,
+            $scope,
+            $codeChallenge,
+            $codeChallengeMethod,
+            $nonce
+        );
     }
 
     public function execute(array $params): SaOAuth2AccessToken
