@@ -855,6 +855,8 @@ $filter->addAfterFilter(function () {
 $filter->execute();
 ```
 
+`allowCredentials` 可使用布尔值、`"true"` / `"false"` 或 `1` / `0`；其他值会被拒绝，避免字符串 `"false"` 被当成启用。
+
 CORS 预检请求自动处理：
 
 ```php

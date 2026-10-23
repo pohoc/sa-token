@@ -93,6 +93,33 @@ class SaGlobalFilterTest extends TestCase
         $this->assertEquals('3600', $this->responseTracker->headers['Access-Control-Max-Age']);
     }
 
+    public function testCorsCredentialsStringFalseDoesNotEnableCredentials(): void
+    {
+        $filter = new SaGlobalFilter();
+        $filter->setCors([
+            'allowOrigin' => 'https://example.com',
+            'allowCredentials' => 'false',
+        ]);
+
+        $filter->applyCorsHeaders();
+
+        $this->assertSame('false', $this->responseTracker->headers['Access-Control-Allow-Credentials']);
+    }
+
+    public function testCorsCredentialsStringFalseAllowsWildcardOriginWithoutCredentials(): void
+    {
+        $filter = new SaGlobalFilter();
+        $filter->setCors([
+            'allowOrigin' => '*',
+            'allowCredentials' => 'false',
+        ]);
+
+        $filter->applyCorsHeaders();
+
+        $this->assertSame('*', $this->responseTracker->headers['Access-Control-Allow-Origin']);
+        $this->assertSame('false', $this->responseTracker->headers['Access-Control-Allow-Credentials']);
+    }
+
     public function testIsCorsRequestReturnsTrueForOptionsWithOrigin(): void
     {
         $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);

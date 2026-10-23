@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SaToken\Middleware;
 
+use SaToken\Exception\SaTokenException;
 use SaToken\Util\SaTokenContext;
 
 class SaGlobalFilter
@@ -88,15 +89,31 @@ class SaGlobalFilter
             SaTokenContext::setHeader('Access-Control-Max-Age', is_int($maxAge) ? (string) $maxAge : '');
         }
         if (isset($this->corsConfig['allowCredentials'])) {
+            $allowCredentials = $this->parseBooleanConfig($this->corsConfig['allowCredentials'], 'allowCredentials');
             // 通配 Origin 与 credentials 组合违反 CORS 规范且被浏览器拒绝，
             // 静默下发只会让开发者误以为配置生效
             $allowOrigin = $this->corsConfig['allowOrigin'] ?? '';
-            if ($this->corsConfig['allowCredentials'] && $allowOrigin === '*') {
-                throw new \SaToken\Exception\SaTokenException('CORS 配置无效：allowCredentials=true 不允许与 allowOrigin=* 组合，请配置具体 Origin 列表');
+            if ($allowCredentials && $allowOrigin === '*') {
+                throw new SaTokenException('CORS 配置无效：allowCredentials=true 不允许与 allowOrigin=* 组合，请配置具体 Origin 列表');
             }
-            $value = $this->corsConfig['allowCredentials'] ? 'true' : 'false';
+            $value = $allowCredentials ? 'true' : 'false';
             SaTokenContext::setHeader('Access-Control-Allow-Credentials', $value);
         }
+    }
+
+    protected function parseBooleanConfig(mixed $value, string $name): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+        if ($value === 1 || $value === '1' || (is_string($value) && strtolower(trim($value)) === 'true')) {
+            return true;
+        }
+        if ($value === 0 || $value === '0' || (is_string($value) && strtolower(trim($value)) === 'false')) {
+            return false;
+        }
+
+        throw new SaTokenException("CORS 配置无效：{$name} 必须是布尔值或 true/false 字符串");
     }
 
     public function isCorsRequest(): bool
