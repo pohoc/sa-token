@@ -11,6 +11,7 @@ use SaToken\Exception\SaTokenException;
 use SaToken\SaSession;
 use SaToken\SaToken;
 use SaToken\StpLogic;
+use SaToken\TokenManager;
 
 class SaSessionTest extends TestCase
 {
@@ -87,6 +88,30 @@ class SaSessionTest extends TestCase
         // 重新从存储层加载，应该不存在
         $loaded = SaSession::getBySessionId('test-session-6');
         $this->assertNull($loaded);
+    }
+
+    public function testSessionCannotDeleteReservedAuthenticationStorageKey(): void
+    {
+        $tokenKey = TokenManager::TOKEN_PREFIX . 'protected-token';
+        SaToken::getDao()->set($tokenKey, 'protected-login-id', 3600);
+
+        try {
+            (new SaSession($tokenKey))->destroy();
+            $this->fail('SaSession 不应允许删除 Sa-Token 的认证存储键');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('保留存储命名空间', $e->getMessage());
+        }
+
+        $this->assertSame('protected-login-id', SaToken::getDao()->get($tokenKey));
+    }
+
+    public function testSessionLookupCannotReadReservedAuthenticationStorageKey(): void
+    {
+        $tokenKey = TokenManager::TOKEN_PREFIX . 'protected-token';
+        SaToken::getDao()->set($tokenKey, 'protected-login-id', 3600);
+
+        $this->expectException(SaTokenException::class);
+        SaSession::getBySessionId($tokenKey);
     }
 
     public function testDestroyWaitsForConcurrentSessionMutationLock(): void

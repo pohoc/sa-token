@@ -40,6 +40,7 @@ class SaSession
 
     public function __construct(string $id, bool $skipLoad = false, ?int $timeout = null)
     {
+        self::assertSafeSessionId($id);
         $this->id = $id;
         $this->timeout = $timeout;
         if (!$skipLoad) {
@@ -55,6 +56,7 @@ class SaSession
      */
     public static function getBySessionId(string $sessionId): ?static
     {
+        self::assertSafeSessionId($sessionId);
         $dao = SaToken::getDao();
         $json = $dao->get($sessionId);
         if ($json === null) {
@@ -74,6 +76,25 @@ class SaSession
         $session->dataMap = $dataMap;
         $session->loaded = true;
         return $session;
+    }
+
+    /**
+     * Session helpers can delete and overwrite their backing DAO key. Keep
+     * caller-supplied IDs out of Sa-Token's authentication and security state
+     * namespaces; only the two session namespaces are valid under satoken:.
+     */
+    protected static function assertSafeSessionId(string $sessionId): void
+    {
+        if (!str_starts_with($sessionId, 'satoken:')) {
+            return;
+        }
+
+        if (str_starts_with($sessionId, TokenManager::SESSION_PREFIX)
+            || str_starts_with($sessionId, TokenManager::TOKEN_SESSION_PREFIX)) {
+            return;
+        }
+
+        throw new \SaToken\Exception\SaTokenException('Session ID 不能使用 Sa-Token 保留存储命名空间');
     }
 
     /**
