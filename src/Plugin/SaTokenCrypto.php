@@ -100,7 +100,8 @@ class SaTokenCrypto
      * AES 解密
      *
      * 新格式先验证 MAC（失败直接抛异常，不尝试解密）；
-     * 旧格式（无 MAGIC 前缀的历史密文）按原逻辑解密以保持兼容
+     * 仅接受带 MAGIC 和 HMAC 的认证密文；旧版无认证 CBC 密文必须使用
+     * aesDecryptLegacy() 显式迁移，避免静默回退接受可被 IV 比特翻转的密文。
      *
      * @param  string           $data Base64 编码的密文
      * @param  string|null      $key  密钥，null 使用配置密钥
@@ -137,11 +138,44 @@ class SaTokenCrypto
                 throw new SaTokenException('AES 解密失败：密文完整性校验未通过（可能被篡改）');
             }
         } else {
-            $iv = substr($decoded, 0, $ivLength);
-            $encrypted = substr($decoded, $ivLength);
+            throw new SaTokenException('AES 解密失败：拒绝未认证的旧版 AES-CBC 密文');
         }
 
         $decrypted = openssl_decrypt($encrypted, 'AES-256-CBC', $paddedKey, OPENSSL_RAW_DATA, $iv);
+        if ($decrypted === false) {
+            throw new SaTokenException('AES 解密失败');
+        }
+
+        return $decrypted;
+    }
+
+    /**
+     * 解密未认证的历史 AES-CBC 密文，仅用于受控的数据迁移。
+     *
+     * 历史格式不含 MAC，无法检测密文篡改；不要在请求处理或任何不可信输入路径中调用。
+     * 迁移后应立即用 aesEncrypt() 重新加密，并删除旧密文。
+     *
+     * @throws SaTokenException
+     */
+    public function aesDecryptLegacy(string $data, ?string $key = null): string
+    {
+        $key = $key ?? $this->aesKey;
+        if ($key === '') {
+            throw new SaTokenException('AES 密钥未配置');
+        }
+
+        $decoded = base64_decode($data, true);
+        if ($decoded === false) {
+            throw new SaTokenException('AES 解密失败：无效的 Base64 数据');
+        }
+        if (str_starts_with($decoded, self::AEAD_MAGIC)) {
+            throw new SaTokenException('AES 解密失败：认证格式不得使用旧版解密器');
+        }
+
+        $ivLength = openssl_cipher_iv_length('AES-256-CBC') ?: 16;
+        $iv = substr($decoded, 0, $ivLength);
+        $encrypted = substr($decoded, $ivLength);
+        $decrypted = openssl_decrypt($encrypted, 'AES-256-CBC', $this->padAesKey($key), OPENSSL_RAW_DATA, $iv);
         if ($decrypted === false) {
             throw new SaTokenException('AES 解密失败');
         }

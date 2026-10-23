@@ -110,6 +110,36 @@ class SaTokenCryptoTest extends TestCase
         }
     }
 
+    public function testAesDecryptRejectsUnauthenticatedLegacyCiphertext(): void
+    {
+        $key = str_repeat('k', 32);
+        $iv = random_bytes(16);
+        $plaintext = 'isAdmin=0;hello!';
+        $encrypted = openssl_encrypt($plaintext, 'AES-256-CBC', $key, OPENSSL_RAW_DATA, $iv);
+        $this->assertNotFalse($encrypted);
+
+        // 旧版没有 MAC：翻转 IV 中对应字节会在解密后把 0 改为 1，且 CBC padding 不变。
+        $tamperedIv = $iv;
+        $tamperedIv[8] = chr((ord($tamperedIv[8]) ^ (ord('0') ^ ord('1'))) & 0xff);
+        $tamperedLegacyCiphertext = base64_encode($tamperedIv . $encrypted);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('拒绝未认证的旧版 AES-CBC 密文');
+        $this->crypto->aesDecrypt($tamperedLegacyCiphertext, $key);
+    }
+
+    public function testLegacyCiphertextCanOnlyBeReadThroughExplicitMigrationMethod(): void
+    {
+        $key = str_repeat('k', 32);
+        $iv = random_bytes(16);
+        $plaintext = 'legacy plaintext';
+        $encrypted = openssl_encrypt($plaintext, 'AES-256-CBC', $key, OPENSSL_RAW_DATA, $iv);
+        $this->assertNotFalse($encrypted);
+        $legacyCiphertext = base64_encode($iv . $encrypted);
+
+        $this->assertSame($plaintext, $this->crypto->aesDecryptLegacy($legacyCiphertext, $key));
+    }
+
     public function testAesNoKeyConfigured(): void
     {
         $crypto = new SaTokenCrypto([]);
