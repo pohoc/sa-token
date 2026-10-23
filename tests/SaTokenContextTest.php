@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SaToken\Tests;
 
 use PHPUnit\Framework\TestCase;
+use SaToken\Exception\SaTokenException;
 use SaToken\Tests\Fixtures\SymfonyHeaderBagStub;
 use SaToken\Util\SaTokenContext;
 
@@ -266,6 +267,29 @@ class SaTokenContextTest extends TestCase
         SaTokenContext::setResponse($response);
 
         $this->assertSame($newResponse, SaTokenContext::getResponse());
+    }
+
+    public function testSetCookieRejectsInjectedAttributes(): void
+    {
+        $invalidCookies = [
+            ['satoken; Domain=attacker.example', 'value', '/', '', 'Lax'],
+            ['satoken', 'value', '/; Secure', '', 'Lax'],
+            ['satoken', 'value', '/', 'example.com; Domain=attacker.example', 'Lax'],
+            ['satoken', 'value', '/', '', 'Lax; Secure'],
+        ];
+        $rejected = 0;
+
+        foreach ($invalidCookies as [$name, $value, $path, $domain, $sameSite]) {
+            try {
+                SaTokenContext::setCookie($name, $value, 60, $path, $domain, true, true, $sameSite);
+                self::fail('不安全的 Cookie 属性必须被拒绝');
+            } catch (SaTokenException) {
+                // Expected: caller-controlled Cookie attributes cannot inject directives.
+                $rejected++;
+            }
+        }
+
+        self::assertSame(count($invalidCookies), $rejected);
     }
 
     public function testSetHeaderOnSymfonyStyleResponse(): void

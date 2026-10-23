@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace SaToken\Util;
 
+use SaToken\Exception\SaTokenException;
+
 /**
  * 请求上下文抽象
  *
@@ -382,6 +384,19 @@ class SaTokenContext
         $value = str_replace(["\r", "\n", "\0"], '', $value);
         $path = str_replace(["\r", "\n", "\0"], '', $path);
         $domain = str_replace(["\r", "\n", "\0"], '', $domain);
+
+        if ($name === '' || preg_match('/[=;,\x00-\x20\x7f]/', $name) === 1) {
+            throw new SaTokenException('Cookie 名称包含无效字符');
+        }
+        if (preg_match('/[;\x00-\x1f\x7f]/', $path) === 1) {
+            throw new SaTokenException('Cookie Path 包含无效字符');
+        }
+        if ($domain !== '' && preg_match('/[;=,\x00-\x20\x7f]/', $domain) === 1) {
+            throw new SaTokenException('Cookie Domain 包含无效字符');
+        }
+        if ($sameSite !== '' && !in_array(strtolower($sameSite), ['strict', 'lax', 'none'], true)) {
+            throw new SaTokenException('Cookie SameSite 必须是 Strict、Lax、None 或空值');
+        }
 
         $response = self::getResponse();
         if ($response === null) {
