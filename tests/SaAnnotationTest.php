@@ -357,6 +357,24 @@ class SaAnnotationTest extends TestCase
         $this->assertTrue(true);
     }
 
+    public function testOtpVerificationOnOneTokenDoesNotAuthorizeAnotherToken(): void
+    {
+        $this->loginAndGetToken(10001);
+        $code = $this->logic->generateOtpCode('payment');
+        $this->logic->verifyOtpCode('payment', $code);
+
+        $secondLogin = $this->logic->login(
+            10001,
+            (new \SaToken\SaLoginParameter())->setIsShare(false)->setDeviceType('second-device')
+        );
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->with('satoken')->willReturn([$secondLogin->getAccessToken()]);
+        SaTokenContext::setRequest($request);
+
+        $this->expectException(NotSafeException::class);
+        SaAnnotationProcessor::process(SaAnnotationTestSafeController::class, 'pay');
+    }
+
     public function testSaIgnoreSkipsCheck(): void
     {
         SaAnnotationProcessor::process(SaAnnotationTestLoginController::class, 'publicAction');

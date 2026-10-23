@@ -6,7 +6,6 @@ namespace SaToken\Annotation;
 
 use ReflectionClass;
 use SaToken\SaToken;
-use SaToken\Security\SaSensitiveVerify;
 
 class SaAnnotationProcessor
 {
@@ -123,17 +122,10 @@ class SaAnnotationProcessor
                 }
             } elseif ($instance instanceof SaCheckSafe) {
                 $service = $instance->getService();
-                $loginId = $stpLogic->getLoginId();
-
-                if ($service === 'otp' || str_starts_with($service, 'verify:')) {
-                    $stpLogic->checkSafe($service);
-                } elseif ($loginId !== null) {
-                    if (!SaSensitiveVerify::isVerified($service, is_scalar($loginId) ? (string) $loginId : '', $loginType)) {
-                        $stpLogic->checkSafe($service);
-                    }
-                } else {
-                    $stpLogic->checkSafe($service);
-                }
+                // OTP verification state is account-scoped, while safe windows
+                // are bound to the current token. Treating a verified account as
+                // a safe token lets a second device skip its own re-verification.
+                $stpLogic->checkSafe($service);
             } elseif ($instance instanceof SaCheckDisable) {
                 $loginId = $stpLogic->getLoginId();
                 if ($loginId !== null) {
