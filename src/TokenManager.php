@@ -680,7 +680,13 @@ class TokenManager
             'createTime'   => SaFoxUtil::getTime(),
         ]);
         $effectiveTimeout = ($timeout === -1) ? null : $timeout;
-        $this->getDao()->set(self::REFRESH_TOKEN_PREFIX . $refreshToken, $this->encryptValue($data), $effectiveTimeout);
+        if (!$this->getDao()->setIfNotExists(
+            self::REFRESH_TOKEN_PREFIX . $refreshToken,
+            $this->encryptValue($data),
+            $effectiveTimeout
+        )) {
+            throw new SaTokenException('RefreshToken 值冲突，拒绝覆盖其他会话凭据');
+        }
 
         $mapKey = self::REFRESH_TOKEN_MAP_PREFIX . $loginType . ':' . $loginIdStr . ':' . $accessToken;
         $this->getDao()->set($mapKey, $this->encryptValue($refreshToken), $effectiveTimeout);

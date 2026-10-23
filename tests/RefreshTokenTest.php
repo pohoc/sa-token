@@ -106,6 +106,44 @@ class RefreshTokenTest extends TestCase
         $this->assertFalse(StpUtil::isRefreshTokenValid($oldRefreshToken));
     }
 
+    public function testCreatingRefreshTokenAgainInvalidatesPreviousOne(): void
+    {
+        $accessToken = StpUtil::login(10024)->getAccessToken();
+        $firstRefreshToken = StpUtil::createRefreshToken($accessToken);
+        $secondRefreshToken = StpUtil::createRefreshToken($accessToken);
+
+        $this->assertNotSame($firstRefreshToken, $secondRefreshToken);
+        $this->assertFalse(StpUtil::isRefreshTokenValid($firstRefreshToken));
+        $this->assertTrue(StpUtil::isRefreshTokenValid($secondRefreshToken));
+    }
+
+    public function testRefreshTokenCannotBeCreatedForAnotherLoginType(): void
+    {
+        $memberLogic = SaToken::getStpLogic('member');
+        $accessToken = $memberLogic->login(10025)->getAccessToken();
+
+        $this->expectException(SaTokenException::class);
+        SaToken::getStpLogic('admin')->createRefreshToken($accessToken);
+    }
+
+    public function testRefreshTokenCollisionDoesNotOverwriteExistingOwner(): void
+    {
+        $manager = StpUtil::getStpLogic()->getTokenManager();
+        $manager->saveRefreshToken('same-refresh-token', 'access-a', 10026, 'login', 3600);
+
+        try {
+            $manager->saveRefreshToken('same-refresh-token', 'access-b', 10027, 'login', 3600);
+            $this->fail('RefreshToken 碰撞不能覆盖已有凭据');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('冲突', $e->getMessage());
+        }
+
+        $data = $manager->getRefreshTokenData('same-refresh-token');
+        $this->assertSame('10026', $data['loginId'] ?? null);
+        $this->assertSame('same-refresh-token', $manager->getRefreshTokenByAccessToken(10026, 'login', 'access-a'));
+        $this->assertNull($manager->getRefreshTokenByAccessToken(10027, 'login', 'access-b'));
+    }
+
     public function testRefreshTokenRotation(): void
     {
         $loginResult = StpUtil::login(10003);
