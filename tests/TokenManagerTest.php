@@ -550,6 +550,18 @@ class TokenManagerTest extends TestCase
         $otherManager->releaseLock($key);
     }
 
+    public function testExpiredLockCannotBeReenteredAfterAnotherOwnerTakesOver(): void
+    {
+        $key = 'login:expired-nested-user';
+        $lockKey = TokenManager::LOCK_PREFIX . $key;
+
+        self::assertTrue($this->manager->acquireLock($key, 5));
+        $this->dao->set($lockKey, 'replacement-owner', 5);
+
+        self::assertFalse($this->manager->acquireLock($key, 5));
+        self::assertSame('replacement-owner', $this->dao->get($lockKey));
+    }
+
     public function testLockOwnershipIsIsolatedByRequestContext(): void
     {
         $key = 'login:shared-manager';

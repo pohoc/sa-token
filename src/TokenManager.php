@@ -1117,6 +1117,13 @@ class TokenManager
         // 避免嵌套获取导致 5 秒自阻塞。实例会跨请求复用，因此本地所有权必须按
         // 请求/协程上下文隔离；否则另一个协程会被误判为同一持有者并绕过分布式锁。
         if (isset($this->lockValues[$stateKey])) {
+            // 本地持有记录不能证明 Redis/DAO 中的租约仍有效：TTL 过期后锁可能已被
+            // 其他请求接管。失去所有权时清掉本地重入状态并拒绝本次获取。
+            if ($this->getDao()->get($lockKey) !== $this->lockValues[$stateKey]) {
+                unset($this->lockValues[$stateKey], $this->lockDepths[$stateKey]);
+                return false;
+            }
+
             $this->lockDepths[$stateKey] = ($this->lockDepths[$stateKey] ?? 1) + 1;
             return true;
         }
