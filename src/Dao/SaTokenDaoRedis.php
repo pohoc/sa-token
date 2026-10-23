@@ -6,7 +6,7 @@ namespace SaToken\Dao;
 
 use SaToken\Exception\SaTokenException;
 
-class SaTokenDaoRedis implements SaTokenDaoInterface
+class SaTokenDaoRedis implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface
 {
     protected \Redis $client;
 
@@ -236,6 +236,18 @@ LUA;
             return (string) $result;
         }
         return null;
+    }
+
+    public function compareAndDelete(string $key, string $expectedValue): bool
+    {
+        $script = <<<'LUA'
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+end
+return 0
+LUA;
+        $result = ($this->saRedis ?? $this->client)->eval($script, [$key, $expectedValue], 1);
+        return $result === 1;
     }
 
     public function exists(string $key): bool

@@ -78,6 +78,17 @@ class RedisDaoRealIntegrationTest extends TestCase
         $this->assertNull($this->dao->get($key));
     }
 
+    public function testCompareAndDeletePreservesAReplacementLock(): void
+    {
+        $key = $this->prefix . 'lock';
+        $this->dao->set($key, 'new-owner', 60);
+
+        $this->assertFalse($this->dao->compareAndDelete($key, 'old-owner'));
+        $this->assertSame('new-owner', $this->dao->get($key));
+        $this->assertTrue($this->dao->compareAndDelete($key, 'new-owner'));
+        $this->assertNull($this->dao->get($key));
+    }
+
     public function testGetAndExpireAgainstRealRedis(): void
     {
         $this->assertInstanceOf(SaTokenDaoRedis::class, $this->dao);

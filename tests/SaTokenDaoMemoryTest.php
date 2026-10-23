@@ -50,6 +50,16 @@ class SaTokenDaoMemoryTest extends TestCase
         $this->assertNull($this->dao->get('nonexistent'));
     }
 
+    public function testCompareAndDeleteOnlyRemovesMatchingValue(): void
+    {
+        $this->dao->set('lock', 'owner-b');
+
+        $this->assertFalse($this->dao->compareAndDelete('lock', 'owner-a'));
+        $this->assertSame('owner-b', $this->dao->get('lock'));
+        $this->assertTrue($this->dao->compareAndDelete('lock', 'owner-b'));
+        $this->assertNull($this->dao->get('lock'));
+    }
+
     public function testUpdate(): void
     {
         $this->dao->set('key1', 'value1');

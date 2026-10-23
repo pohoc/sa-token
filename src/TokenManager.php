@@ -698,14 +698,8 @@ class TokenManager
         }
 
         $dao = $this->getDao();
-        if ($dao instanceof \SaToken\Dao\SaTokenDaoRedis) {
-            $script = <<<'LUA'
-if redis.call('GET', KEYS[1]) == ARGV[1] then
-    return redis.call('DEL', KEYS[1])
-end
-return 0
-LUA;
-            $dao->getClient()->eval($script, [$lockKey, $lockValue], 1);
+        if ($dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
+            $dao->compareAndDelete($lockKey, $lockValue);
         } elseif ($dao->get($lockKey) === $lockValue) {
             $dao->delete($lockKey);
         }

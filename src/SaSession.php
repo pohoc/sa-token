@@ -200,9 +200,10 @@ class SaSession
     {
         $dao = SaToken::getDao();
         $lockKey = 'satoken:session:lock:' . $this->id;
+        $lockValue = bin2hex(random_bytes(16));
 
         for ($i = 0; $i < 10; $i++) {
-            if ($dao->setIfNotExists($lockKey, '1', 5)) {
+            if ($dao->setIfNotExists($lockKey, $lockValue, 5)) {
                 try {
                     $fresh = $this->readFreshDataMap();
                     $fn($fresh);
@@ -211,7 +212,11 @@ class SaSession
                     $this->saveData();
                     return;
                 } finally {
-                    $dao->delete($lockKey);
+                    if ($dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
+                        $dao->compareAndDelete($lockKey, $lockValue);
+                    } elseif ($dao->get($lockKey) === $lockValue) {
+                        $dao->delete($lockKey);
+                    }
                 }
             }
             usleep(50000);

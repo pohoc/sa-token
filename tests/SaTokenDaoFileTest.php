@@ -120,6 +120,16 @@ class SaTokenDaoFileTest extends TestCase
         $this->assertNull($this->dao->getAndDelete('k:gd'));
     }
 
+    public function testCompareAndDeletePreservesAReplacementLock(): void
+    {
+        $this->dao->set('k:lock', 'new-owner', 60);
+
+        $this->assertFalse($this->dao->compareAndDelete('k:lock', 'old-owner'));
+        $this->assertSame('new-owner', $this->dao->get('k:lock'));
+        $this->assertTrue($this->dao->compareAndDelete('k:lock', 'new-owner'));
+        $this->assertNull($this->dao->get('k:lock'));
+    }
+
     public function testSetIfNotExistsUnderFlock(): void
     {
         $this->assertTrue($this->dao->setIfNotExists('k:nx', 'a', 30));
