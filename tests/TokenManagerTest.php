@@ -287,4 +287,20 @@ class TokenManagerTest extends TestCase
 
         $this->assertNull($this->dao->get($lockKey));
     }
+
+    public function testReentrantLockRemainsHeldUntilEveryAcquireIsReleased(): void
+    {
+        $key = 'login:nested-user';
+        $otherManager = new TokenManager();
+
+        $this->assertTrue($this->manager->acquireLock($key, 5));
+        $this->assertTrue($this->manager->acquireLock($key, 5));
+        $this->manager->releaseLock($key);
+
+        $this->assertFalse($otherManager->acquireLock($key, 5), '一次 release 不应释放仍有外层持有者的锁');
+
+        $this->manager->releaseLock($key);
+        $this->assertTrue($otherManager->acquireLock($key, 5));
+        $otherManager->releaseLock($key);
+    }
 }

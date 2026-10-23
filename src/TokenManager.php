@@ -37,6 +37,9 @@ class TokenManager
      */
     protected array $lockValues = [];
 
+    /** @var array<string, int> */
+    protected array $lockDepths = [];
+
     protected function getDao(): \SaToken\Dao\SaTokenDaoInterface
     {
         return SaToken::getDao();
@@ -826,6 +829,7 @@ class TokenManager
         // 可重入：本实例已持有该锁（如 login 持锁调用 deleteToken）时直接放行，
         // 避免嵌套获取导致 5 秒自阻塞
         if (isset($this->lockValues[$lockKey])) {
+            $this->lockDepths[$lockKey] = ($this->lockDepths[$lockKey] ?? 1) + 1;
             return true;
         }
 
@@ -834,6 +838,7 @@ class TokenManager
         $acquired = $this->getDao()->setIfNotExists($lockKey, $lockValue, $ttl > 0 ? $ttl : null);
         if ($acquired) {
             $this->lockValues[$lockKey] = $lockValue;
+            $this->lockDepths[$lockKey] = 1;
         }
         return $acquired;
     }
@@ -846,6 +851,12 @@ class TokenManager
             return;
         }
 
+        $depth = $this->lockDepths[$lockKey] ?? 1;
+        if ($depth > 1) {
+            $this->lockDepths[$lockKey] = $depth - 1;
+            return;
+        }
+
         $dao = $this->getDao();
         if ($dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
             $dao->compareAndDelete($lockKey, $lockValue);
@@ -854,5 +865,6 @@ class TokenManager
         }
 
         unset($this->lockValues[$lockKey]);
+        unset($this->lockDepths[$lockKey]);
     }
 }

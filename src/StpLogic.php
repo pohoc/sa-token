@@ -229,9 +229,8 @@ class StpLogic
             return;
         }
 
-        $this->tokenManager->deleteRefreshTokenByAccessToken($loginId, $this->loginType, $tokenValue);
         $this->tokenManager->deleteFingerprint($tokenValue);
-        $this->tokenManager->deleteToken($tokenValue, $loginId, $this->loginType);
+        $this->removeTokenAndRefreshToken($tokenValue, $loginId);
         $this->clearTokenFromResponse();
 
         $this->getEvent()->onLogout($this->loginType, $loginId, $tokenValue);
@@ -287,8 +286,18 @@ class StpLogic
     /** 删除会话时一并撤销其 RefreshToken，避免旧凭据重新建立会话。 */
     protected function removeTokenAndRefreshToken(string $tokenValue, mixed $loginId): void
     {
-        $this->tokenManager->deleteRefreshTokenByAccessToken($loginId, $this->loginType, $tokenValue);
-        $this->tokenManager->kickout($tokenValue, $loginId, $this->loginType);
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', $loginIdStr);
+        if (!$this->tokenManager->acquireLock($lockKey, 5)) {
+            throw new SaTokenException('同账号会话正在处理中，请稍后重试');
+        }
+        try {
+            $this->tokenManager->deleteRefreshTokenByAccessToken($loginId, $this->loginType, $tokenValue);
+            // kickout 内部重复获取账号锁是安全的（TokenManager 锁支持可重入）。
+            $this->tokenManager->kickout($tokenValue, $loginId, $this->loginType);
+        } finally {
+            $this->tokenManager->releaseLock($lockKey);
+        }
     }
 
     /**
@@ -841,12 +850,22 @@ class StpLogic
             }
         }
 
-        $this->tokenManager->addToBlacklist($tokenValue, $blacklistTimeout);
-
-        // 同步删除会话记录，保证 logoutByLoginId/getTokenListByLoginId 等视图立即一致
         $loginId = $this->tokenManager->getLoginIdByToken($tokenValue);
         if ($loginId !== null) {
-            $this->removeTokenAndRefreshToken($tokenValue, $loginId);
+            $loginIdStr = $loginId;
+            $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', $loginIdStr);
+            if (!$this->tokenManager->acquireLock($lockKey, 5)) {
+                throw new SaTokenException('同账号会话正在处理中，请稍后重试');
+            }
+            try {
+                $this->tokenManager->addToBlacklist($tokenValue, $blacklistTimeout);
+                // 锁内清理 RefreshToken 与会话记录，和并发刷新形成线性顺序。
+                $this->removeTokenAndRefreshToken($tokenValue, $loginId);
+            } finally {
+                $this->tokenManager->releaseLock($lockKey);
+            }
+        } else {
+            $this->tokenManager->addToBlacklist($tokenValue, $blacklistTimeout);
         }
         return true;
     }
