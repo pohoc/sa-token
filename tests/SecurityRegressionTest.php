@@ -1384,11 +1384,14 @@ class SecurityRegressionTest extends TestCase
             }
         };
 
-        // A) 共享 Cookie 有效：isLogin 短路直接返回（同域模式主路径）
+        // A) 即使共享 Cookie 有效，也不能因普通认证已识别 Token 而跳过 CSRF。
         \SaToken\Util\SaTokenContext::setRequest($makeRequest($validToken));
-        $shortCircuitLoginId = $mode->doLogin();
-        $this->assertTrue(is_scalar($shortCircuitLoginId));
-        $this->assertSame('61001', (string) $shortCircuitLoginId);
+        try {
+            $mode->doLogin();
+            $this->fail('有效共享 Cookie 也必须先通过 CSRF 校验');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('需要 CSRF 验证', $e->getMessage());
+        }
         \SaToken\Util\SaTokenContext::clear();
 
         // B) Cookie 中 Token 已失效 + 无 CSRF 头：要求 CSRF

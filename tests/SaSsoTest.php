@@ -189,6 +189,7 @@ class SaSsoTest extends TestCase
             'timeout'         => 86400,
             'activityTimeout' => -1,
             'tokenFingerprint' => true,
+            'signKey'         => 'sso-csrf-test-secret-32-bytes-long',
             'isReadHeader'    => false,
             'isReadCookie'    => false,
             'isReadBody'      => false,
@@ -231,6 +232,90 @@ class SaSsoTest extends TestCase
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('无效或已过期', $e->getMessage());
         }
+    }
+
+    public function testSameDomainSsoDoesNotSkipCsrfForAnAlreadyAuthenticatedCookie(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenName'       => 'satoken',
+            'timeout'         => 86400,
+            'activityTimeout' => -1,
+            'signKey'         => 'sso-csrf-test-secret-32-bytes-long',
+            'isReadHeader'    => false,
+            'isReadCookie'    => true,
+            'isReadBody'      => false,
+            'isWriteCookie'   => false,
+            'isWriteHeader'   => false,
+        ]));
+
+        $token = StpUtil::login('cookie-user')->getAccessToken();
+        SaTokenContext::setRequest(new class ($token) {
+            public function __construct(private string $token)
+            {
+            }
+
+            public function cookie(string $name): ?string
+            {
+                return $name === 'satoken' ? $this->token : null;
+            }
+
+            public function getHeaderLine(string $name): string
+            {
+                return '';
+            }
+        });
+
+        $mode = new SsoModeSameDomain(new SaSsoConfig());
+        try {
+            $mode->doLogin();
+            $this->fail('有效共享 Cookie 也必须先通过 CSRF 校验');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('需要 CSRF 验证', $e->getMessage());
+        }
+
+        $pendingCookies = new \ReflectionProperty(SaTokenContext::class, 'pendingCookiesMap');
+        $cookiesByContext = $pendingCookies->getValue();
+        $this->assertIsArray($cookiesByContext);
+        $cookies = $cookiesByContext[SaTokenContext::getContextId()] ?? [];
+        $this->assertIsArray($cookies);
+        $csrfCookie = null;
+        foreach ($cookies as $cookie) {
+            if (is_array($cookie) && ($cookie['name'] ?? null) === '__Host-sso_csrf_token') {
+                $csrfCookie = $cookie;
+                break;
+            }
+        }
+        $this->assertIsArray($csrfCookie);
+        $this->assertSame('', $csrfCookie['domain']);
+        $this->assertSame('/', $csrfCookie['path']);
+        $this->assertTrue($csrfCookie['secure']);
+        $this->assertFalse($csrfCookie['httpOnly']);
+
+        $csrf = SsoModeSameDomain::buildCsrfValue($token);
+        SaTokenContext::setRequest(new class ($token, $csrf) {
+            public function __construct(private string $token, private string $csrf)
+            {
+            }
+
+            public function cookie(string $name): ?string
+            {
+                return $name === 'satoken' ? $this->token : null;
+            }
+
+            public function getHeaderLine(string $name): string
+            {
+                return strtolower($name) === 'x-csrf-token' ? $this->csrf : '';
+            }
+        });
+        $this->assertSame('cookie-user', $mode->doLogin());
+        SaTokenContext::clear();
+    }
+
+    public function testSameDomainSsoRequiresSecretForCsrfBinding(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('CSRF 校验需要配置');
+        SsoModeSameDomain::buildCsrfValue('known-token');
     }
 
     public function testBuildLoginUrlWithoutRedirect(): void

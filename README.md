@@ -622,6 +622,8 @@ $loginId = $sso->doLoginCallback($ticket, $redirect, $state);
 
 SSO `state` 使用 `__Host-` 前缀的 Secure、HttpOnly、host-only Cookie，固定 `Path=/` 且不设置 `Domain`，避免父域 Cookie 配置下被兄弟子域注入覆盖。SSO 回调应返回发起登录的同一主机；若跨子域回调，请在目标主机发起登录。该状态 Cookie 始终要求 HTTPS（浏览器对 localhost 开发地址有特殊处理）。
 
+`same-domain` 模式必须为共享 Token 配置 Cookie Domain，因此该主域下的所有子域都属于同一信任边界；不要把 Cookie 共享给不受信任或可被用户托管的子域。无法信任全部子域时，请使用 `cross-domain` 或 `front-separate` 模式。此模式每次取身份都要求 `X-CSRF-Token` 请求头，并要求配置 `signKey`（或 `tokenEncryptKey` / `aesKey`）用于 HMAC 绑定；不会在缺少密钥时退化成可预测的纯哈希。前端从 `__Host-sso_csrf_token` Cookie 读取该值并放入请求头；该 Cookie 固定 Secure、host-only、`Path=/`，防止兄弟子域覆盖。
+
 ### 参数防丢
 
 登录前 URL 参数自动保存，登录成功后精准回传：

@@ -8,7 +8,6 @@ use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
 use SaToken\Sso\SaSsoConfig;
 use SaToken\Sso\SaSsoHandle;
-use SaToken\StpUtil;
 use SaToken\Util\SaTokenContext;
 
 /**
@@ -40,18 +39,9 @@ class SsoModeSameDomain
      */
     public function doLogin(): mixed
     {
-        if (StpUtil::isLogin()) {
-            return StpUtil::getLoginId();
-        }
-
         $tokenValue = SaTokenContext::getCookie(SaToken::getConfig()->getTokenName());
         if ($tokenValue !== null) {
-            // CSRF 值与共享 Token 确定性绑定（HMAC），不再使用随机双提交 Cookie：
-            // 1) 共享 Token Cookie 为 HttpOnly，控制子域的攻击者读不到 Token 便无法
-            //    伪造 CSRF 值，也无法通过子域 Cookie 注入固定已知值
-            // 2) 只接受请求头（跨站表单无法携带自定义头）；GET 参数会把 CSRF 值
-            //    泄入 Referer/日志，等于把票据递给攻击者
-            // 3) 值可随时重算，验证失败不再"重置随机值"（消除重置竞态/DoS）
+            // 即使普通认证已识别出有效 Token，同域 SSO 入口也必须单独校验 CSRF。
             $csrfToken = SaTokenContext::getHeader('X-CSRF-Token');
             $expectedCsrf = self::buildCsrfValue($tokenValue);
             if ($csrfToken !== null && $csrfToken !== '' && hash_equals($expectedCsrf, $csrfToken)) {
@@ -66,9 +56,8 @@ class SsoModeSameDomain
                 throw new SaTokenException('同域 SSO 登录信息无效或已过期，请重新登录');
             }
 
-            // 前端契约：sso_csrf_token = sha256(共享Token)。未携带或不匹配时
-            // 下发/刷新该 Cookie 供前端读取（登录请求必须用 X-CSRF-Token 头回传）
-            SaTokenContext::setCookie('sso_csrf_token', $expectedCsrf, 300);
+            // 前端读取 host-only CSRF Cookie，并在请求头回传；跨站表单不能设置此头。
+            SaTokenContext::setCookie('__Host-sso_csrf_token', $expectedCsrf, 300, '/', '', true, false, 'Lax');
             throw new SaTokenException('同域 SSO 登录需要 CSRF 验证，请携带 X-CSRF-Token 请求头');
         }
 
@@ -85,8 +74,7 @@ class SsoModeSameDomain
             $salt = SaToken::getConfig()->getTokenEncryptKey() ?: SaToken::getConfig()->getAesKey();
         }
         if ($salt === '') {
-            // 无任何可用密钥时退化为纯哈希（仍优于可预测的双提交，但建议配置密钥）
-            return hash('sha256', 'sso-csrf:' . $tokenValue);
+            throw new SaTokenException('同域 SSO CSRF 校验需要配置 signKey、tokenEncryptKey 或 aesKey');
         }
         return hash_hmac('sha256', 'sso-csrf:' . $tokenValue, $salt);
     }
