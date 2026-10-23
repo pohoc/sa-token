@@ -10,9 +10,11 @@ use SaToken\Dao\SaTokenDaoMemory;
 use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
 use SaToken\Sso\Mode\SsoModeCrossDomain;
+use SaToken\Sso\Mode\SsoModeSameDomain;
 use SaToken\Sso\SaSsoConfig;
 use SaToken\Sso\SaSsoHandle;
 use SaToken\Sso\SaSsoManager;
+use SaToken\StpUtil;
 use SaToken\Util\SaTokenContext;
 
 /**
@@ -140,6 +142,57 @@ class SaSsoTest extends TestCase
             $this->fail('缺少 ticket 校验地址时必须失败');
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('ticket 校验地址未配置', $e->getMessage());
+        }
+    }
+
+    public function testSameDomainSsoEnforcesTokenFingerprint(): void
+    {
+        SaToken::setConfig((new SaTokenConfig([
+            'tokenName'       => 'satoken',
+            'timeout'         => 86400,
+            'activityTimeout' => -1,
+            'tokenFingerprint' => true,
+            'isReadHeader'    => false,
+            'isReadCookie'    => false,
+            'isReadBody'      => false,
+            'isWriteCookie'   => false,
+            'isWriteHeader'   => false,
+        ])));
+        SaTokenContext::setRequest(new class () {
+            public function getHeaderLine(string $name): string
+            {
+                return strtolower($name) === 'user-agent' ? 'original-browser' : '';
+            }
+        });
+
+        $token = StpUtil::login('sso-user')->getAccessToken();
+        $csrf = SsoModeSameDomain::buildCsrfValue($token);
+        SaTokenContext::setRequest(new class ($token, $csrf) {
+            public function __construct(private string $token, private string $csrf)
+            {
+            }
+
+            public function getHeaderLine(string $name): string
+            {
+                return match (strtolower($name)) {
+                    'user-agent' => 'different-browser',
+                    'x-csrf-token' => $this->csrf,
+                    default => '',
+                };
+            }
+
+            public function cookie(string $name): ?string
+            {
+                return $name === 'satoken' ? $this->token : null;
+            }
+        });
+
+        $mode = new SsoModeSameDomain(new SaSsoConfig());
+        try {
+            $mode->doLogin();
+            $this->fail('同域 SSO 不得绕过 Token 指纹校验');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('无效或已过期', $e->getMessage());
         }
     }
 

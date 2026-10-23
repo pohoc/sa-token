@@ -55,8 +55,9 @@ class SsoModeSameDomain
             $csrfToken = SaTokenContext::getHeader('X-CSRF-Token');
             $expectedCsrf = self::buildCsrfValue($tokenValue);
             if ($csrfToken !== null && $csrfToken !== '' && hash_equals($expectedCsrf, $csrfToken)) {
-                $loginId = SaToken::getStpLogic('login')->getTokenManager()
-                    ->getLoginIdByToken($tokenValue);
+                // 走 StpLogic 的完整校验路径，执行黑名单、loginType 归属、
+                // Token 指纹与活动超时检查；直接查 TokenManager 会绕过这些约束。
+                $loginId = SaToken::getStpLogic('login')->getLoginIdByToken($tokenValue);
                 if ($loginId !== null) {
                     return $loginId;
                 }
