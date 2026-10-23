@@ -754,9 +754,12 @@ class TokenManager
     {
         $dao = $this->getDao();
         $value = $dao->get(self::buildSwitchKey($tokenValue, $loginType));
-        if ($value === null && !str_contains($loginType, ':') && !str_contains($tokenValue, ':')) {
-            // Keep unambiguous legacy keys readable during upgrade. Delimiter-bearing
-            // components must never fall back to the collision-prone legacy namespace.
+        if ($value === null
+            && !str_contains($loginType, ':') && !str_contains($loginType, '%')
+            && !str_contains($tokenValue, ':') && !str_contains($tokenValue, '%')) {
+            // Keep unambiguous legacy keys readable during upgrade. Delimiters and
+            // escape markers must never fall back to the collision-prone namespace:
+            // a legacy '%' can alias the encoded spelling of another token's key.
             $value = $dao->get(self::buildLegacySwitchKey($tokenValue, $loginType));
         }
         if ($value === null) {
@@ -769,7 +772,8 @@ class TokenManager
     {
         $dao = $this->getDao();
         $dao->delete(self::buildSwitchKey($tokenValue, $loginType));
-        if (!str_contains($loginType, ':') && !str_contains($tokenValue, ':')) {
+        if (!str_contains($loginType, ':') && !str_contains($loginType, '%')
+            && !str_contains($tokenValue, ':') && !str_contains($tokenValue, '%')) {
             $dao->delete(self::buildLegacySwitchKey($tokenValue, $loginType));
         }
     }

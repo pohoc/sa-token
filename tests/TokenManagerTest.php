@@ -396,6 +396,32 @@ class TokenManagerTest extends TestCase
         self::assertNull($this->manager->getSwitchTo($tokenB, 'a:b'));
     }
 
+    public function testPercentEscapeLegacyFallbackCannotBorrowOrClearAnotherTokenSwitch(): void
+    {
+        $tokenA = 'custom:token:value-123456';
+        $tokenB = 'custom%3Atoken%3Avalue-123456';
+        $this->manager->saveToken($tokenA, 'administrator', 'login');
+        $this->manager->saveToken($tokenB, 'member', 'login');
+        $this->manager->setSwitchTo($tokenA, 'protected-account', 'login');
+
+        $logic = new StpLogic('login');
+        $this->assertSame('member', $logic->getLoginIdByToken($tokenB));
+        SaTokenContext::setRequest(new class ($tokenB) {
+            public function __construct(private string $token)
+            {
+            }
+
+            public function header(string $name): ?string
+            {
+                return $name === 'satoken' ? $this->token : null;
+            }
+        });
+        self::assertSame('member', $logic->getLoginId(), '另一 token 不应继承带冒号 token 的切换身份');
+
+        $this->manager->clearSwitch($tokenB, 'login');
+        self::assertSame('protected-account', $this->manager->getSwitchTo($tokenA, 'login'), '清理 tokenB 状态不能删除 tokenA 的切换状态');
+    }
+
     public function testTokenEncryptDisabledByDefault(): void
     {
         $token = $this->manager->createTokenValue(10001, 'login');
