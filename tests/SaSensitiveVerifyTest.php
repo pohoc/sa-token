@@ -363,6 +363,24 @@ class SaSensitiveVerifyTest extends TestCase
         $this->assertTrue(SaSensitiveVerify::isVerified($scene, $loginId, 'admin'));
     }
 
+    public function testOtpCannotCrossLoginTypesThroughSceneDelimiterCollision(): void
+    {
+        $loginId = 10001;
+        $code = SaSensitiveVerify::generateCode('admin:otp', $loginId, 'user');
+
+        $this->assertFalse(SaSensitiveVerify::verifyCode('otp', $code, $loginId, 'user:admin'));
+        $this->assertTrue(SaSensitiveVerify::verifyCode('admin:otp', $code, $loginId, 'user'));
+    }
+
+    public function testSafeTokenCannotCrossLoginTypesThroughSceneDelimiterCollision(): void
+    {
+        $loginId = 10002;
+        $token = SaSensitiveVerify::createSafeToken('admin:safe-token:otp', $loginId, 'user');
+
+        $this->assertFalse(SaSensitiveVerify::verifySafeToken('otp', $token, $loginId, 'user:safe-token:admin'));
+        $this->assertTrue(SaSensitiveVerify::verifySafeToken('admin:safe-token:otp', $token, $loginId, 'user'));
+    }
+
     public function testSendCodeReturnsCode(): void
     {
         $scene = 'test-scene';

@@ -55,7 +55,10 @@ class SaSensitiveVerify
     public static function getKey(string $scene, mixed $loginId, string $loginType = 'login'): string
     {
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-        return self::$keyPrefix . $loginType . ':' . $scene . ':' . md5($loginIdStr);
+        return self::$keyPrefix
+            . \SaToken\TokenManager::encodeKeyComponent($loginType) . ':'
+            . \SaToken\TokenManager::encodeKeyComponent($scene) . ':'
+            . md5($loginIdStr);
     }
 
     public static function generateCode(string $scene, mixed $loginId, string $loginType = 'login'): string
@@ -269,7 +272,9 @@ class SaSensitiveVerify
         self::validateLifetime($validSeconds);
         $token = bin2hex(random_bytes(32));
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-        $key = self::$keyPrefix . $loginType . ':safe-token:' . $scene . ':' . md5($loginIdStr) . ':' . substr($token, 0, 16);
+        $key = self::$keyPrefix . \SaToken\TokenManager::encodeKeyComponent($loginType)
+            . ':safe-token:' . \SaToken\TokenManager::encodeKeyComponent($scene)
+            . ':' . md5($loginIdStr) . ':' . substr($token, 0, 16);
 
         $dao = SaToken::getDao();
         $data = [
@@ -290,7 +295,9 @@ class SaSensitiveVerify
     public static function verifySafeToken(string $scene, string $token, mixed $loginId, string $loginType = 'login'): bool
     {
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-        $key = self::$keyPrefix . $loginType . ':safe-token:' . $scene . ':' . md5($loginIdStr) . ':' . substr($token, 0, 16);
+        $key = self::$keyPrefix . \SaToken\TokenManager::encodeKeyComponent($loginType)
+            . ':safe-token:' . \SaToken\TokenManager::encodeKeyComponent($scene)
+            . ':' . md5($loginIdStr) . ':' . substr($token, 0, 16);
         $dao = SaToken::getDao();
         $data = $dao->get($key);
 

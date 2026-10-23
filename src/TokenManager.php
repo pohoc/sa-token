@@ -32,9 +32,13 @@ class TokenManager
     /** Build a collision-free login session key while preserving legacy keys without colons. */
     public static function buildSessionId(string $loginType, string $loginId): string
     {
-        $encode = static fn (string $part): string => str_replace(['%', ':'], ['%25', '%3A'], $part);
+        return self::SESSION_PREFIX . self::encodeKeyComponent($loginType) . ':' . self::encodeKeyComponent($loginId);
+    }
 
-        return self::SESSION_PREFIX . $encode($loginType) . ':' . $encode($loginId);
+    /** Escape tuple delimiters while leaving ordinary legacy key components unchanged. */
+    public static function encodeKeyComponent(string $component): string
+    {
+        return str_replace(['%', ':'], ['%25', '%3A'], $component);
     }
 
     protected ?SaTokenEncryptor $encryptor = null;
