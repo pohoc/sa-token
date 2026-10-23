@@ -74,6 +74,22 @@ class SaLoginDeviceManagerTest extends TestCase
         $this->assertTrue($this->logic->getTokenManager()->isTokenValid($token));
     }
 
+    public function testDeviceListDoesNotCrossNestedLoginTypePrefixes(): void
+    {
+        $parentLoginId = 'device-owner';
+        $childLoginType = 'login:' . md5($parentLoginId);
+        $childLogic = new StpLogic($childLoginType);
+        $childLogic->login('child-account', (new SaLoginParameter())->setDevice(new SaLoginDevice([
+            'deviceType' => 'private',
+            'deviceName' => 'Internal admin workstation',
+            'ip'         => '203.0.113.42',
+        ])));
+
+        $devices = SaLoginDeviceManager::getDeviceList($parentLoginId, 'login');
+        self::assertCount(0, $devices);
+        self::assertCount(1, SaLoginDeviceManager::getDeviceList('child-account', $childLoginType));
+    }
+
     public function testDeviceRecordDoesNotExposeTokenWhenTokenEncryptionIsEnabled(): void
     {
         SaToken::setConfig(new SaTokenConfig([

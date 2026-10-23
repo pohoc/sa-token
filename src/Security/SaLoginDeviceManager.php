@@ -128,6 +128,12 @@ class SaLoginDeviceManager
             if (!is_array($data)) {
                 continue;
             }
+            // A key prefix can contain another login type when callers use a
+            // directly constructed StpLogic with a delimiter-bearing type.
+            // Treat the stored type as the owner boundary before exposing metadata.
+            if (($data['loginType'] ?? 'login') !== $loginType) {
+                continue;
+            }
             $data = self::decodeDeviceData($data, $includeToken);
             $device = new SaLoginDevice($data);
             if (!$includeToken) {
@@ -252,6 +258,9 @@ class SaLoginDeviceManager
 
         $decoded = @json_decode($data, true);
         if (!is_array($decoded)) {
+            return null;
+        }
+        if (($decoded['loginType'] ?? 'login') !== $loginType) {
             return null;
         }
 
