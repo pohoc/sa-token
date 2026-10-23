@@ -241,13 +241,14 @@ class TokenManager
 
         $config = $this->getConfig();
         if ($config->getJwtMode() === 'mixed') {
-            // mixed 模式下 JWT 签名作为额外的真实性校验：签名可解码时主题必须一致
+            // mixed 模式下必须同时通过 JWT 签名与 exp 校验；空身份也要拒绝，
+            // 否则过期/伪造 JWT 会因 DAO 记录仍在而被当作普通有状态 Token 接受。
             try {
                 $jwtLoginId = $this->getJwtInstance()->getLoginId($tokenValue);
             } catch (\Throwable) {
                 $jwtLoginId = null;
             }
-            if ($jwtLoginId !== null && $jwtLoginId !== $loginId) {
+            if ($jwtLoginId === null || $jwtLoginId !== $loginId) {
                 return null;
             }
         }

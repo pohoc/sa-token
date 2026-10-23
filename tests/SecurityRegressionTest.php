@@ -172,6 +172,28 @@ class SecurityRegressionTest extends TestCase
         $this->assertFalse(StpUtil::getStpLogic()->isLogin());
     }
 
+    public function testMixedJwtModeExpiredTokenCannotRevealItsRefreshToken(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtMode'       => 'mixed',
+            'timeout'       => 1,
+            'jwtSecretKey'  => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'isReadHeader'  => true,
+        ]));
+
+        $token = StpUtil::login(20003)->getAccessToken();
+        $refreshToken = StpUtil::createRefreshToken($token, 60);
+        $this->actAsToken($token);
+
+        // DAO 续期不能把不可变的 JWT exp 延长。
+        StpUtil::renewTimeout(60);
+        sleep(2);
+
+        $this->assertTrue(StpUtil::isRefreshTokenValid($refreshToken));
+        $this->assertNull(StpUtil::getStpLogic()->getTokenManager()->getLoginIdByToken($token));
+        $this->assertNull(StpUtil::getRefreshTokenByAccessToken($token));
+    }
+
     public function testStatelessJwtRejectsTokenFromAnotherLoginType(): void
     {
         SaToken::setConfig(new SaTokenConfig([
