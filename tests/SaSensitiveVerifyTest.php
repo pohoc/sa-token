@@ -386,4 +386,49 @@ class SaSensitiveVerifyTest extends TestCase
         $secondVerify = SaSensitiveVerify::verifyCode($scene, $code, $loginId);
         $this->assertFalse($secondVerify);
     }
+
+    public function testNonPositiveCodeLifetimeIsRejected(): void
+    {
+        $this->expectException(SaTokenException::class);
+        SaSensitiveVerify::setValidSeconds(0);
+    }
+
+    public function testCodeWithInvalidExpiryFailsClosed(): void
+    {
+        $scene = 'invalid-expiry-code';
+        $loginId = 10031;
+        $code = SaSensitiveVerify::generateCode($scene, $loginId);
+        $key = SaSensitiveVerify::getKey($scene, $loginId);
+        $data = json_decode((string) SaToken::getDao()->get($key), true);
+        if (!is_array($data)) {
+            self::fail('Generated code state must be a JSON object');
+        }
+        $data['expiresAt'] = 0;
+        SaToken::getDao()->set($key, json_encode($data) ?: '{}', 300);
+
+        $this->assertFalse(SaSensitiveVerify::verifyCode($scene, $code, $loginId));
+    }
+
+    public function testSafeTokenRejectsNonPositiveLifetime(): void
+    {
+        $this->expectException(SaTokenException::class);
+        SaSensitiveVerify::createSafeToken('invalid-expiry-safe-token', 10032, 'login', 0);
+    }
+
+    public function testSafeTokenWithInvalidExpiryFailsClosed(): void
+    {
+        $scene = 'invalid-expiry-safe-token';
+        $loginId = 10033;
+        $token = SaSensitiveVerify::createSafeToken($scene, $loginId);
+        $key = 'satoken:sensitive:login:safe-token:' . $scene . ':' . md5((string) $loginId) . ':' . substr($token, 0, 16);
+        SaToken::getDao()->set($key, json_encode([
+            'scene' => $scene,
+            'loginId' => (string) $loginId,
+            'loginType' => 'login',
+            'expiresAt' => 0,
+            'tokenHash' => hash('sha256', $token),
+        ]) ?: '{}', 300);
+
+        $this->assertFalse(SaSensitiveVerify::verifySafeToken($scene, $token, $loginId));
+    }
 }

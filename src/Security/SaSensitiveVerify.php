@@ -26,7 +26,15 @@ class SaSensitiveVerify
 
     public static function setValidSeconds(int $seconds): void
     {
+        self::validateLifetime($seconds);
         self::$validSeconds = $seconds;
+    }
+
+    protected static function validateLifetime(int $seconds): void
+    {
+        if ($seconds <= 0 || $seconds > PHP_INT_MAX - time() - 60) {
+            throw new SaTokenException('敏感验证有效期必须是可表示的正整数秒数');
+        }
     }
 
     public static function setMaxAttempts(int $max): void
@@ -149,8 +157,8 @@ class SaSensitiveVerify
                 return false;
             }
 
-            $expiresAt = $info['expiresAt'] ?? 0;
-            if ($expiresAt > 0 && $expiresAt < time()) {
+            $expiresAt = $info['expiresAt'] ?? null;
+            if (!is_int($expiresAt) || $expiresAt <= time()) {
                 $dao->delete($key);
                 $dao->delete($attemptsKey);
                 return false;
@@ -209,7 +217,10 @@ class SaSensitiveVerify
             return false;
         }
 
-        return ($info['verified'] ?? false) === true;
+        $expiresAt = $info['expiresAt'] ?? null;
+        return ($info['verified'] ?? false) === true
+            && is_int($expiresAt)
+            && $expiresAt > time();
     }
 
     public static function clearVerified(string $scene, mixed $loginId, string $loginType = 'login'): void
@@ -255,6 +266,7 @@ class SaSensitiveVerify
 
     public static function createSafeToken(string $scene, mixed $loginId, string $loginType = 'login', int $validSeconds = 600): string
     {
+        self::validateLifetime($validSeconds);
         $token = bin2hex(random_bytes(32));
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
         $key = self::$keyPrefix . $loginType . ':safe-token:' . $scene . ':' . md5($loginIdStr) . ':' . substr($token, 0, 16);
@@ -291,9 +303,8 @@ class SaSensitiveVerify
             return false;
         }
 
-        $expiresAt = $info['expiresAt'] ?? 0;
-        if ($expiresAt > 0 && $expiresAt < time()) {
-            $dao->delete($key);
+        $expiresAt = $info['expiresAt'] ?? null;
+        if (!is_int($expiresAt) || $expiresAt <= time()) {
             return false;
         }
 
