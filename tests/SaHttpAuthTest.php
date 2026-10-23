@@ -122,6 +122,72 @@ class SaHttpAuthTest extends TestCase
         $auth->checkBasic();
     }
 
+    public function testBasicAuthenticationLocksAfterConfiguredFailures(): void
+    {
+        SaToken::setConfig(SaToken::getConfig()->setAntiBruteMaxFailures(2)->setAntiBruteLockDuration(60));
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->willReturn(['Basic ' . base64_encode('admin:wrong')]);
+        SaTokenContext::setRequest($request);
+
+        $validatorCalls = 0;
+        $auth = new SaHttpAuth();
+        $auth->setBasicValidator(static function () use (&$validatorCalls): ?string {
+            $validatorCalls++;
+            return null;
+        });
+
+        for ($attempt = 0; $attempt < 2; $attempt++) {
+            try {
+                $auth->checkBasic();
+                $this->fail('错误的 Basic 凭据必须被拒绝');
+            } catch (SaTokenException) {
+            }
+        }
+
+        try {
+            $auth->checkBasic();
+            $this->fail('达到失败上限后，Basic 验证器不得继续运行');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('锁定', $e->getMessage());
+        }
+
+        $this->assertSame(2, $validatorCalls);
+    }
+
+    public function testDigestAuthenticationLocksAfterConfiguredFailures(): void
+    {
+        SaToken::setConfig(SaToken::getConfig()->setAntiBruteMaxFailures(2)->setAntiBruteLockDuration(60));
+        $validatorCalls = 0;
+        $auth = new SaHttpAuth();
+        $auth->setDigestValidator(static function () use (&$validatorCalls): string {
+            $validatorCalls++;
+            return md5('admin:Test:password');
+        });
+
+        for ($attempt = 0; $attempt < 3; $attempt++) {
+            $nonce = 'issued-nonce-' . $attempt;
+            $header = 'Digest username="admin", realm="Test", nonce="' . $nonce
+                . '", uri="/test", qop=auth, nc=00000001, cnonce="xyz", response="invalid"';
+            $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+            $request->method('getHeader')->willReturnCallback(static fn (string $name): array => $name === 'Authorization' ? [$header] : []);
+            $request->method('getMethod')->willReturn('GET');
+            $request->method('getRequestTarget')->willReturn('/test');
+            SaTokenContext::setRequest($request);
+            SaToken::getDao()->set('satoken:auth:digest:nonce:' . hash('sha256', $nonce), '1', 300);
+
+            try {
+                $auth->checkDigest('Test');
+                $this->fail('无效的 Digest 凭据必须被拒绝');
+            } catch (SaTokenException $e) {
+                if ($attempt === 2) {
+                    $this->assertStringContainsString('锁定', $e->getMessage());
+                }
+            }
+        }
+
+        $this->assertSame(2, $validatorCalls);
+    }
+
     public function testCheckDigestTreatsFalseValidatorResultAsFailure(): void
     {
         $nonce = 'issued-nonce';

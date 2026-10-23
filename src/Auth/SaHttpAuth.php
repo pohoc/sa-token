@@ -6,6 +6,7 @@ namespace SaToken\Auth;
 
 use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
+use SaToken\Security\SaAntiBruteUtil;
 use SaToken\StpUtil;
 use SaToken\Util\SaTokenContext;
 
@@ -41,6 +42,8 @@ class SaHttpAuth
 
         [$username, $password] = $parts;
 
+        SaAntiBruteUtil::checkAndThrow($username);
+
         if ($this->basicValidator === null) {
             throw new SaTokenException('未设置 Basic 认证校验器');
         }
@@ -48,10 +51,12 @@ class SaHttpAuth
         $loginId = ($this->basicValidator)($username, $password);
 
         if ($loginId === null || is_bool($loginId) || !is_scalar($loginId) || $loginId === '') {
+            SaAntiBruteUtil::recordFailure($username);
             $this->sendChallenge($realm);
             throw new SaTokenException('Basic 认证失败');
         }
 
+        SaAntiBruteUtil::clearCurrentSourceFailures($username);
         StpUtil::login($loginId);
     }
 
@@ -87,6 +92,8 @@ class SaHttpAuth
             throw new SaTokenException('Digest nonce 无效或已使用，可能遭受重放攻击');
         }
 
+        SaAntiBruteUtil::checkAndThrow($username);
+
         if ($this->digestValidator === null) {
             throw new SaTokenException('未设置 Digest 认证校验器');
         }
@@ -94,6 +101,7 @@ class SaHttpAuth
         $ha1 = ($this->digestValidator)($username);
 
         if ($ha1 === null || is_bool($ha1)) {
+            SaAntiBruteUtil::recordFailure($username);
             $this->sendDigestChallenge($realm);
             throw new SaTokenException('Digest 认证失败');
         }
@@ -124,6 +132,7 @@ class SaHttpAuth
         }
 
         if (!hash_equals($expected, $response)) {
+            SaAntiBruteUtil::recordFailure($username);
             $this->sendDigestChallenge($realm);
             throw new SaTokenException('Digest 认证失败');
         }
@@ -135,6 +144,7 @@ class SaHttpAuth
             throw new SaTokenException('Digest nonce 已使用，可能遭受重放攻击');
         }
 
+        SaAntiBruteUtil::clearCurrentSourceFailures($username);
         StpUtil::login($username);
     }
 

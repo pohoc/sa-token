@@ -767,6 +767,8 @@ $auth->checkDigest('My Realm');
 
 Digest 流程：服务端先返回 `401` + `WWW-Authenticate` 响应头（含服务端签发的一次性 nonce，TTL 300 秒），客户端携带该 nonce 完成认证；nonce 在认证成功后立即作废，重放直接拒绝。手搓 Digest 头调试时，必须先触发 challenge 获取服务端签发的 nonce。
 
+Basic 和 Digest 凭据失败会接入 `antiBruteMaxFailures` / `antiBruteLockDuration`，按账号和可信来源 IP 进行限流；认证成功会清除当前来源的失败计数。
+
 ## 参数签名校验（SaSign）
 
 跨系统 API 调用签名，防参数篡改、防请求重放。使用前需先在配置中设置 `signKey`：
