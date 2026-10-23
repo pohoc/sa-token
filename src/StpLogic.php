@@ -254,6 +254,11 @@ class StpLogic
      */
     public function logoutByLoginId(mixed $loginId): void
     {
+        if ($this->getConfig()->isJwtStateless()) {
+            $this->revokeStatelessTokensByLoginId($loginId);
+            return;
+        }
+
         $tokens = $this->tokenManager->deleteAllTokenByLoginId($loginId, $this->loginType);
         foreach ($tokens as $tokenValue) {
             $this->tokenManager->deleteRefreshTokenByAccessToken($loginId, $this->loginType, $tokenValue);
@@ -295,6 +300,11 @@ class StpLogic
      */
     public function kickout(mixed $loginId): void
     {
+        if ($this->getConfig()->isJwtStateless()) {
+            $this->revokeStatelessTokensByLoginId($loginId);
+            return;
+        }
+
         // 账号级原子批量删除同时清理关联 RefreshToken，并与并发登录互斥。
         $tokens = $this->tokenManager->deleteAllTokenByLoginId($loginId, $this->loginType);
         foreach ($tokens as $tokenValue) {
@@ -547,7 +557,27 @@ class StpLogic
             return null;
         }
 
+        if ($this->tokenManager->isStatelessTokenRevokedByLoginId(
+            $subject,
+            $this->loginType,
+            $payload['iat'] ?? null
+        )) {
+            return null;
+        }
+
         return $subject;
+    }
+
+    /**
+     * 无状态 JWT 无法通过会话列表枚举，因此用账号级 iat 水位一次性吊销该账号的旧令牌。
+     */
+    protected function revokeStatelessTokensByLoginId(mixed $loginId): void
+    {
+        if ($loginId === null || is_bool($loginId) || !is_scalar($loginId) || $loginId === '') {
+            return;
+        }
+
+        $this->tokenManager->revokeStatelessTokensByLoginId((string) $loginId, $this->loginType);
     }
 
     /**

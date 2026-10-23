@@ -821,6 +821,42 @@ class TokenManager
         return $this->getDao()->exists(self::BLACKLIST_PREFIX . $tokenValue);
     }
 
+    public function revokeStatelessTokensByLoginId(string $loginId, string $loginType): void
+    {
+        $lockKey = 'login:' . $loginType . ':' . hash('sha256', $loginId);
+        if (!$this->acquireLock($lockKey, 5)) {
+            throw new SaTokenException('同账号会话正在处理中，请稍后重试');
+        }
+        try {
+            $key = 'satoken:jwt:revoked-before:' . $loginType . ':' . hash('sha256', $loginId);
+            $current = $this->getDao()->get($key);
+            $cutoff = time() + 1;
+            if ($current !== null && ctype_digit($current)) {
+                $cutoff = max($cutoff, (int) $current);
+            }
+            // 保留水位而不设置 TTL，避免无过期 JWT 在缓存过期后重新有效。
+            $this->getDao()->set($key, (string) $cutoff);
+        } finally {
+            $this->releaseLock($lockKey);
+        }
+    }
+
+    public function isStatelessTokenRevokedByLoginId(string $loginId, string $loginType, mixed $issuedAt): bool
+    {
+        $key = 'satoken:jwt:revoked-before:' . $loginType . ':' . hash('sha256', $loginId);
+        $cutoff = $this->getDao()->get($key);
+        if ($cutoff === null) {
+            return false;
+        }
+        if (!ctype_digit($cutoff)
+            || (!is_int($issuedAt) && !is_float($issuedAt))
+            || (is_float($issuedAt) && !is_finite($issuedAt))) {
+            return true;
+        }
+
+        return (float) $issuedAt < (float) $cutoff;
+    }
+
     public function removeFromBlacklist(string $tokenValue): void
     {
         $this->getDao()->delete(self::BLACKLIST_PREFIX . $tokenValue);
