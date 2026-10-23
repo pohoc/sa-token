@@ -119,6 +119,18 @@ class SecurityRegressionTest extends TestCase
         });
     }
 
+    public function testTokenInfoDoesNotExposeIdentityFromAnotherLoginType(): void
+    {
+        $adminLogic = new \SaToken\StpLogic('admin');
+        $token = $adminLogic->login('sensitive-admin-id')->getAccessToken();
+        $userLogic = new \SaToken\StpLogic('user');
+        $this->actAsToken($token);
+
+        $this->assertNull($userLogic->getLoginIdByToken($token));
+        $this->assertNull($userLogic->getTokenInfo()->getLoginId());
+        $this->assertSame('sensitive-admin-id', $adminLogic->getTokenInfo()->getLoginId());
+    }
+
     // ======== C1: mixed JWT 模式下会话必须可终止 ========
 
     public function testMixedJwtModeLogoutInvalidatesToken(): void

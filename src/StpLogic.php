@@ -611,7 +611,10 @@ class StpLogic
             ->setActivityTimeout($config->getActivityTimeout());
 
         if ($tokenValue !== null) {
-            $loginId = $this->tokenManager->getLoginIdByToken($tokenValue);
+            // TokenInfo is also an authentication-facing API: resolve identity through
+            // the same blacklist, JWT, loginType, fingerprint, and activity checks as
+            // getLoginIdByToken instead of trusting the shared DAO token key directly.
+            $loginId = $this->getLoginIdByToken($tokenValue);
             $info->setLoginId($loginId);
         }
 
