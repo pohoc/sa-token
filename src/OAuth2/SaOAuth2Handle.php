@@ -465,7 +465,7 @@ class SaOAuth2Handle
 
         // 用户验证由外部回调处理
         $loginId = $this->validateUserCredentials($username, $password);
-        if ($loginId === null) {
+        if ($loginId === null || $loginId === false) {
             SaAntiBruteUtil::recordFailure($username);
             throw new SaTokenException('用户名或密码错误');
         }
@@ -910,7 +910,7 @@ class SaOAuth2Handle
      *
      * @param  string $username 用户名
      * @param  string $password 密码
-     * @return mixed  登录 ID，验证失败返回 null
+     * @return mixed  登录 ID，验证失败返回 null 或 false
      */
     protected function validateUserCredentials(string $username, string $password): mixed
     {

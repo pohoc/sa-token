@@ -96,6 +96,39 @@ class SaHttpAuthTest extends TestCase
         $auth->checkBasic();
     }
 
+    public function testCheckBasicTreatsFalseValidatorResultAsFailure(): void
+    {
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->willReturn(['Basic ' . base64_encode('admin:wrong')]);
+        SaTokenContext::setRequest($request);
+
+        $auth = new SaHttpAuth();
+        $auth->setBasicValidator(static fn (): bool => false);
+
+        $this->expectException(SaTokenException::class);
+        $auth->checkBasic();
+    }
+
+    public function testCheckDigestTreatsFalseValidatorResultAsFailure(): void
+    {
+        $nonce = 'issued-nonce';
+        $header = 'Digest username="admin", realm="Test", nonce="' . $nonce
+            . '", uri="/test", qop=auth, nc=00000001, cnonce="xyz", response="invalid"';
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->willReturnCallback(function (string $name) use ($header): array {
+            return $name === 'Authorization' ? [$header] : [];
+        });
+        $request->method('getMethod')->willReturn('GET');
+        SaTokenContext::setRequest($request);
+        SaToken::getDao()->set('satoken:auth:digest:nonce:' . hash('sha256', $nonce), '1', 300);
+
+        $auth = new SaHttpAuth();
+        $auth->setDigestValidator(static fn (): bool => false);
+
+        $this->expectException(SaTokenException::class);
+        $auth->checkDigest('Test');
+    }
+
     public function testSendChallengeSetsHeader(): void
     {
         $auth = new SaHttpAuth();

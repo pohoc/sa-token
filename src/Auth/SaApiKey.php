@@ -47,7 +47,7 @@ class SaApiKey
             $loginId = $this->validateFromRegistry($apiKey, $apiSecret);
         }
 
-        if ($loginId === null) {
+        if ($loginId === null || $loginId === false) {
             throw new SaTokenException('API Key 验证失败');
         }
 

@@ -129,6 +129,19 @@ class SaApiKeyTest extends TestCase
         $this->assertTrue(SaToken::getDao()->exists('satoken:login:loginId:login:20001'));
     }
 
+    public function testCheckApiKeyTreatsFalseValidatorResultAsFailure(): void
+    {
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'api-key' => 'invalid-key',
+            'api-secret' => 'invalid-secret',
+        ]));
+        $api = new SaApiKey();
+        $api->setValidator(static fn (): bool => false);
+
+        $this->expectException(SaTokenException::class);
+        $api->checkApiKey();
+    }
+
     public function testCustomHeaderNames(): void
     {
         $request = $this->mockRequestWithHeaders([
