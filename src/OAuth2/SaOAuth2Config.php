@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace SaToken\OAuth2;
 
+use SaToken\Exception\SaTokenException;
+use SaToken\Util\SaTokenTimeout;
+
 /**
  * OAuth2 配置类
  *
@@ -82,6 +85,10 @@ class SaOAuth2Config
 
     public function setCodeTimeout(int $codeTimeout): static
     {
+        if ($codeTimeout === -1) {
+            throw new SaTokenException('OAuth2 授权码有效期必须是可表示的正整数秒数');
+        }
+        SaTokenTimeout::validate($codeTimeout, 'OAuth2 授权码');
         $this->codeTimeout = $codeTimeout;
         return $this;
     }
@@ -93,6 +100,10 @@ class SaOAuth2Config
 
     public function setAccessTokenTimeout(int $accessTokenTimeout): static
     {
+        if ($accessTokenTimeout === -1) {
+            throw new SaTokenException('OAuth2 访问令牌有效期必须是可表示的正整数秒数');
+        }
+        SaTokenTimeout::validate($accessTokenTimeout, 'OAuth2 访问令牌');
         $this->accessTokenTimeout = $accessTokenTimeout;
         return $this;
     }
@@ -104,6 +115,7 @@ class SaOAuth2Config
 
     public function setRefreshTokenTimeout(int $refreshTokenTimeout): static
     {
+        SaTokenTimeout::validate($refreshTokenTimeout, 'OAuth2 刷新令牌');
         $this->refreshTokenTimeout = $refreshTokenTimeout;
         return $this;
     }

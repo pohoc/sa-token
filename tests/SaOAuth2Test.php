@@ -825,4 +825,30 @@ class SaOAuth2Test extends TestCase
         $this->assertEquals(86400, $config->getRefreshTokenTimeout());
         $this->assertTrue($config->isNewRefreshToken());
     }
+
+    public function testSaOAuth2ConfigRejectsInvalidTimeouts(): void
+    {
+        foreach ([0, -2, PHP_INT_MAX] as $timeout) {
+            foreach (['codeTimeout', 'accessTokenTimeout', 'refreshTokenTimeout'] as $setter) {
+                try {
+                    (new SaOAuth2Config())->{'set' . ucfirst($setter)}($timeout);
+                    $this->fail("{$setter} 不应接受无效有效期 {$timeout}");
+                } catch (SaTokenException $e) {
+                    $this->assertStringContainsString('有效期', $e->getMessage());
+                }
+            }
+        }
+
+        foreach (['codeTimeout', 'accessTokenTimeout'] as $setter) {
+            try {
+                (new SaOAuth2Config())->{'set' . ucfirst($setter)}(-1);
+                $this->fail("{$setter} 不应接受永不过期哨兵");
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('有效期', $e->getMessage());
+            }
+        }
+
+        $config = new SaOAuth2Config(['refreshTokenTimeout' => -1]);
+        $this->assertSame(-1, $config->getRefreshTokenTimeout());
+    }
 }
