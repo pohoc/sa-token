@@ -127,12 +127,49 @@ class SaSsoTest extends TestCase
         SaTokenContext::clear();
     }
 
+    public function testSsoStateCookieCannotBeInjectedBySiblingSubdomain(): void
+    {
+        SaTokenContext::clear();
+        SaToken::setConfig(new SaTokenConfig([
+            'cookieDomain' => '.example.com',
+            'cookiePath' => '/app',
+            'cookieSecure' => false,
+            'cookieHttpOnly' => false,
+        ]));
+        $handle = new SaSsoHandle(new SaSsoConfig([
+            'loginUrl' => 'https://auth.example.com/login',
+            'allowDomains' => ['app.example.com'],
+        ]));
+        $handle->buildLoginUrl('https://app.example.com/callback');
+
+        $pendingCookies = new \ReflectionProperty(SaTokenContext::class, 'pendingCookiesMap');
+        $cookiesByContext = $pendingCookies->getValue();
+        self::assertIsArray($cookiesByContext);
+        $cookies = $cookiesByContext[SaTokenContext::getContextId()] ?? [];
+        self::assertIsArray($cookies);
+        $stateCookie = null;
+        foreach ($cookies as $cookie) {
+            if (is_array($cookie) && is_string($cookie['name'] ?? null) && str_ends_with($cookie['name'], '_state')) {
+                $stateCookie = $cookie;
+                break;
+            }
+        }
+
+        $this->assertIsArray($stateCookie);
+        $this->assertSame('__Host-sso_params_state', $stateCookie['name'] ?? null);
+        $this->assertSame('', $stateCookie['domain']);
+        $this->assertSame('/', $stateCookie['path']);
+        $this->assertTrue($stateCookie['secure']);
+        $this->assertTrue($stateCookie['httpOnly']);
+        SaTokenContext::clear();
+    }
+
     public function testCrossDomainCallbackWithRedirectPassesState(): void
     {
         SaTokenContext::setRequest(new class () {
             public function cookie(string $name): ?string
             {
-                return $name === 'sso_params_state' ? 'expected-state' : null;
+                return $name === '__Host-sso_params_state' ? 'expected-state' : null;
             }
         });
 

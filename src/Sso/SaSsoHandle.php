@@ -62,7 +62,7 @@ class SaSsoHandle
         }
 
         $state = bin2hex(random_bytes(16));
-        $this->setSecureCookie($this->config->getParamName() . '_state', $state, 300);
+        $this->setStateCookie($state, 300);
 
         $params = [];
         if ($backUrl !== '') {
@@ -145,6 +145,30 @@ class SaSsoHandle
     }
 
     /**
+     * Keep the login CSRF state cookie host-only. The __Host- prefix, Secure flag,
+     * root path, and absent Domain attribute make browsers reject replacement by a
+     * sibling subdomain's parent-domain cookie.
+     */
+    protected function getStateCookieName(): string
+    {
+        return '__Host-' . $this->config->getParamName() . '_state';
+    }
+
+    protected function setStateCookie(string $value, int $timeout): void
+    {
+        SaTokenContext::setCookie(
+            $this->getStateCookieName(),
+            $value,
+            $timeout,
+            '/',
+            '',
+            true,
+            true,
+            'Lax'
+        );
+    }
+
+    /**
      * 处理登录回调
      *
      * 验证 ticket 并完成当前系统登录
@@ -196,11 +220,11 @@ class SaSsoHandle
             throw new SaTokenException('SSO 回调缺少 state 参数（防 CSRF 必需），请通过 buildLoginUrl 发起登录');
         }
 
-        $savedState = SaTokenContext::getCookie($this->config->getParamName() . '_state');
+        $savedState = SaTokenContext::getCookie($this->getStateCookieName());
         if ($savedState === null || $savedState === '' || !hash_equals($savedState, $state)) {
             throw new SaTokenException('SSO state 参数校验失败，可能遭受 CSRF 攻击');
         }
-        $this->setSecureCookie($this->config->getParamName() . '_state', '', -1);
+        $this->setStateCookie('', -1);
     }
 
     /**
