@@ -402,16 +402,8 @@ class SecurityRegressionTest extends TestCase
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('code_verifier', $e->getMessage());
         }
-        // 失败尝试烧掉授权码（防暴力猜解 verifier）
-        try {
-            $handle->exchangeTokenByCode($code->getCode(), 'pkce-public', '', 'https://app.example.com/cb', $verifier);
-            $this->fail('校验失败过的授权码应已被消费');
-        } catch (SaTokenException $e) {
-            $this->assertStringContainsString('无效的授权码', $e->getMessage());
-        }
-
-        $code2 = $handle->generateAuthorizationCode('pkce-public', 3, 'https://app.example.com/cb', '', $challenge, 'S256');
-        $at = $handle->exchangeTokenByCode($code2->getCode(), 'pkce-public', '', 'https://app.example.com/cb', $verifier);
+        // 缺少 verifier 的请求不能烧毁合法授权码
+        $at = $handle->exchangeTokenByCode($code->getCode(), 'pkce-public', '', 'https://app.example.com/cb', $verifier);
         $this->assertNotEmpty($at->getAccessToken());
     }
 
@@ -509,7 +501,7 @@ class SecurityRegressionTest extends TestCase
         $verifier = str_repeat('pkce-verifier-', 4); // 56 chars, 43..128
         $challenge = rtrim(strtr(base64_encode(hash('sha256', $verifier, true)), '+/', '-_'), '=');
 
-        // 防止暴力猜解 verifier：任何校验失败都会烧掉该授权码
+        // 错误绑定请求必须拒绝，但不能烧毁合法授权码
         $codeMissing = $handle->generateAuthorizationCode('pkce-client', 30002, 'https://app.example.com/cb', '', $challenge, 'S256');
         try {
             $handle->exchangeTokenByCode($codeMissing->getCode(), 'pkce-client', 'secret-with-proper-length', 'https://app.example.com/cb');
@@ -517,12 +509,8 @@ class SecurityRegressionTest extends TestCase
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('code_verifier', $e->getMessage());
         }
-        try {
-            $handle->exchangeTokenByCode($codeMissing->getCode(), 'pkce-client', 'secret-with-proper-length', 'https://app.example.com/cb', $verifier);
-            $this->fail('校验失败过的授权码应已被消费');
-        } catch (SaTokenException $e) {
-            $this->assertStringContainsString('无效的授权码', $e->getMessage());
-        }
+        $atMissing = $handle->exchangeTokenByCode($codeMissing->getCode(), 'pkce-client', 'secret-with-proper-length', 'https://app.example.com/cb', $verifier);
+        $this->assertNotEmpty($atMissing->getAccessToken(), '缺少 verifier 的尝试不得烧毁合法授权码');
 
         $codeWrong = $handle->generateAuthorizationCode('pkce-client', 30003, 'https://app.example.com/cb', '', $challenge, 'S256');
         try {
@@ -531,6 +519,8 @@ class SecurityRegressionTest extends TestCase
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('code_verifier', $e->getMessage());
         }
+        $atWrong = $handle->exchangeTokenByCode($codeWrong->getCode(), 'pkce-client', 'secret-with-proper-length', 'https://app.example.com/cb', $verifier);
+        $this->assertNotEmpty($atWrong->getAccessToken(), '错误 verifier 的尝试不得烧毁合法授权码');
 
         // 正确 verifier 成功
         $code = $handle->generateAuthorizationCode('pkce-client', 30004, 'https://app.example.com/cb', '', $challenge, 'S256');

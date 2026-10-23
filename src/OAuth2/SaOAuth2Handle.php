@@ -180,7 +180,9 @@ class SaOAuth2Handle
             throw new SaTokenException('换token请求必须携带 redirect_uri，且与授权请求时完全一致');
         }
 
-        $codeData = $this->consumeAuthorizationCode($code);
+        // 绑定校验完成前只读取，不消费授权码；否则错误客户端、redirect_uri 或
+        // PKCE verifier 可烧毁合法授权码，造成拒绝服务。
+        $codeData = $this->getAuthorizationCode($code);
         if ($codeData === null) {
             throw new SaTokenException('无效的授权码');
         }
@@ -201,6 +203,14 @@ class SaOAuth2Handle
             $this->validateCodeVerifier($codeData, $codeVerifier);
         } elseif ($isPublicClient) {
             throw new SaTokenException('公开客户端必须使用 PKCE（授权请求需携带 code_challenge）');
+        }
+
+        // 绑定校验成功后再原子消费；并发兑换时只有一个请求能继续签发令牌。
+        $consumedCode = $this->consumeAuthorizationCode($code);
+        if ($consumedCode === null || $consumedCode->getCode() !== $code
+            || $consumedCode->getClientId() !== $clientId
+            || $consumedCode->getRedirectUri() !== $redirectUri) {
+            throw new SaTokenException('无效的授权码');
         }
 
         $accessToken = $this->generateAccessToken($clientId, $codeData->getLoginId(), $codeData->getScope());
@@ -333,6 +343,10 @@ class SaOAuth2Handle
             $preData = SaFoxUtil::fromJson($this->decryptValue($preJson));
             if (is_array($preData)) {
                 /** @var array<string, mixed> $preData */
+                $preClientId = is_string($preData['clientId'] ?? null) ? $preData['clientId'] : '';
+                if ($preClientId !== '' && $preClientId !== $clientId) {
+                    throw new SaTokenException('客户端 ID 不匹配');
+                }
                 $preScope = is_string($preData['scope'] ?? null) ? $preData['scope'] : '';
                 try {
                     $this->validateScopeForClient($client, $preScope);

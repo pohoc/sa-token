@@ -270,9 +270,15 @@ class SaOAuth2Test extends TestCase
         ]);
         $this->handle->registerClient($otherClient);
 
-        $this->expectException(SaTokenException::class);
-        $this->expectExceptionMessage('客户端 ID 不匹配');
-        $this->handle->exchangeTokenByCode($code->getCode(), 'other-client', 'mock-other-secret-long-enough', 'https://example.com/callback');
+        try {
+            $this->handle->exchangeTokenByCode($code->getCode(), 'other-client', 'mock-other-secret-long-enough', 'https://example.com/callback');
+            $this->fail('授权码不得由其他客户端兑换');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('客户端 ID 不匹配', $e->getMessage());
+        }
+
+        $redeemed = $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
+        $this->assertNotEmpty($redeemed->getAccessToken(), '错误客户端的尝试不得烧毁合法授权码');
     }
 
     public function testExchangeTokenByCodeTwice(): void
@@ -352,9 +358,15 @@ class SaOAuth2Test extends TestCase
 
         $refreshToken = $accessToken->getRefreshToken();
         $this->assertNotNull($refreshToken);
-        $this->expectException(SaTokenException::class);
-        $this->expectExceptionMessage('客户端 ID 不匹配');
-        $this->handle->refreshToken($refreshToken, 'other-client', 'mock-other-secret-long-enough');
+        try {
+            $this->handle->refreshToken($refreshToken, 'other-client', 'mock-other-secret-long-enough');
+            $this->fail('刷新令牌不得由其他客户端使用');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('客户端 ID 不匹配', $e->getMessage());
+        }
+
+        $refreshed = $this->handle->refreshToken($refreshToken, 'test-client', $this->clientSecret);
+        $this->assertNotEmpty($refreshed->getAccessToken(), '错误客户端的尝试不得烧毁合法刷新令牌');
     }
 
     // ======== 密码模式 ========
