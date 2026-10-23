@@ -195,6 +195,40 @@ class SaLoginDeviceManagerTest extends TestCase
         $this->assertEquals(1, $this->logic->getDeviceCount(10001));
     }
 
+    public function testKickoutDeviceRevokesEverySessionRegisteredForThatDevice(): void
+    {
+        SaToken::getConfig()
+            ->setTokenEncrypt(true)
+            ->setTokenEncryptKey('device-session-list-encryption-key-32-bytes');
+
+        $device = new SaLoginDevice([
+            'deviceType' => 'pc',
+            'deviceName' => 'Shared workstation',
+            'ip' => '192.0.2.88',
+        ]);
+        $parameter = (new SaLoginParameter())
+            ->setDeviceType('pc')
+            ->setIsShare(false)
+            ->setDevice($device);
+
+        $firstToken = $this->logic->login(10001, $parameter)->getAccessToken();
+        $secondToken = $this->logic->login(10001, $parameter)->getAccessToken();
+        $devices = $this->logic->getDeviceList(10001);
+        $this->assertCount(1, $devices);
+        $this->assertSame('10001', $this->logic->getTokenManager()->getLoginIdByToken($firstToken));
+        $this->assertSame('10001', $this->logic->getTokenManager()->getLoginIdByToken($secondToken));
+        $deviceKey = SaLoginDeviceManager::getKey(10001, 'login') . ':' . $devices[0]->getDeviceId();
+        $storedDevice = $this->dao->get($deviceKey);
+        $this->assertNotNull($storedDevice);
+        $this->assertStringNotContainsString($firstToken, $storedDevice);
+        $this->assertStringNotContainsString($secondToken, $storedDevice);
+
+        $this->logic->kickoutDevice(10001, $devices[0]->getDeviceId());
+
+        $this->assertNull($this->logic->getTokenManager()->getLoginIdByToken($firstToken));
+        $this->assertNull($this->logic->getTokenManager()->getLoginIdByToken($secondToken));
+    }
+
     public function testKickoutAllDevices(): void
     {
         $device1 = new SaLoginDevice([

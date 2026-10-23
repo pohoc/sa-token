@@ -7,6 +7,7 @@ namespace SaToken\Security;
 use SaToken\Data\SaLoginDevice;
 use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
+use SaToken\StpLogic;
 use SaToken\Util\SaFoxUtil;
 use SaToken\Util\SaTokenContext;
 use SaToken\Util\SaTokenEncryptor;
@@ -31,8 +32,12 @@ class SaLoginDeviceManager
         return self::$keyPrefix . $loginType . ':' . md5($loginIdStr);
     }
 
-    public static function registerDevice(mixed $loginId, string $loginType = 'login', ?SaLoginDevice $device = null, ?string $tokenValue = null): SaLoginDevice
+    public static function registerDevice(mixed $loginId, string $loginType = 'login', ?SaLoginDevice $device = null, ?string $tokenValue = null, ?StpLogic $logicInstance = null): SaLoginDevice
     {
+        if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
+            throw new SaTokenException('loginId 不能为空且必须是非布尔标量');
+        }
+
         $dao = SaToken::getDao();
 
         if ($device === null) {
@@ -59,7 +64,30 @@ class SaLoginDeviceManager
         $key = self::getKey($loginId, $loginType);
         $key .= ':' . $device->getDeviceId();
 
-        $dao->set($key, self::encodeDevice($device), $timeout > 0 ? $timeout + 60 : null);
+        $loginIdStr = (string) $loginId;
+        $logic = $logicInstance ?? SaToken::getStpLogic($loginType);
+        $tokenManager = $logic->getTokenManager();
+        $lockKey = 'login:' . $loginType . ':' . hash('sha256', $loginIdStr);
+        if (!$tokenManager->acquireLock($lockKey, 5)) {
+            throw new SaTokenException('同账号会话正在处理中，请稍后重试');
+        }
+
+        try {
+            $tokenValues = [];
+            foreach (self::loadDeviceTokenValues($key) as $existingToken) {
+                if ($logic->getLoginIdByToken($existingToken) === $loginIdStr) {
+                    $tokenValues[] = $existingToken;
+                }
+            }
+            if ($tokenValue !== null && $tokenValue !== '') {
+                $tokenValues[] = $tokenValue;
+            }
+            $tokenValues = array_values(array_unique($tokenValues));
+
+            $dao->set($key, self::encodeDevice($device, $tokenValues), $timeout > 0 ? $timeout + 60 : null);
+        } finally {
+            $tokenManager->releaseLock($lockKey);
+        }
 
         return $device;
     }
@@ -117,19 +145,30 @@ class SaLoginDeviceManager
         return count(self::getDeviceList($loginId, $loginType));
     }
 
-    public static function kickoutDevice(mixed $loginId, string $deviceId, string $loginType = 'login'): void
+    public static function kickoutDevice(mixed $loginId, string $deviceId, string $loginType = 'login', ?StpLogic $logicInstance = null): void
     {
         $dao = SaToken::getDao();
         $key = self::getKey($loginId, $loginType) . ':' . $deviceId;
 
-        // 踢出设备必须同时终止其会话：只删设备记录而保留 Token，
-        // 调用方会误以为会话已终止，实际 Token 完全可用
-        $device = self::loadDevice($loginId, $deviceId, $loginType, true);
-        if ($device !== null && $device->getTokenValue() !== '') {
-            \SaToken\SaToken::getStpLogic($loginType)->kickoutByTokenValue($device->getTokenValue());
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $logic = $logicInstance ?? SaToken::getStpLogic($loginType);
+        $tokenManager = $logic->getTokenManager();
+        $lockKey = 'login:' . $loginType . ':' . hash('sha256', $loginIdStr);
+        if (!$tokenManager->acquireLock($lockKey, 5)) {
+            throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
 
-        $dao->delete($key);
+        try {
+            // 同一设备标识可能在 isShare=false 时关联多个有效登录 Token。
+            // 全部撤销后再删除记录，避免只踢掉最近一次登录而留下旧会话。
+            foreach (self::loadDeviceTokenValues($key) as $tokenValue) {
+                $logic->kickoutByTokenValue($tokenValue);
+            }
+
+            $dao->delete($key);
+        } finally {
+            $tokenManager->releaseLock($lockKey);
+        }
     }
 
     public static function kickoutAllDevices(mixed $loginId, string $loginType = 'login', ?string $exceptToken = null): int
@@ -155,7 +194,7 @@ class SaLoginDeviceManager
                     if ($device->getTokenValue() === $exceptToken) {
                         continue;
                     }
-                    self::kickoutDevice($loginId, $device->getDeviceId(), $loginType);
+                    self::kickoutDevice($loginId, $device->getDeviceId(), $loginType, $logic);
                     $count++;
                 }
                 return $count;
@@ -263,10 +302,13 @@ class SaLoginDeviceManager
         $device->setLastActiveTime(time());
         $dao = SaToken::getDao();
         $key = self::getKey($loginId, $loginType) . ':' . $deviceId;
-        $dao->update($key, self::encodeDevice($device));
+        $dao->update($key, self::encodeDevice($device, self::loadDeviceTokenValues($key)));
     }
 
-    protected static function encodeDevice(SaLoginDevice $device): string
+    /**
+     * @param array<string> $tokenValues
+     */
+    protected static function encodeDevice(SaLoginDevice $device, array $tokenValues = []): string
     {
         $data = $device->toArray();
         $config = SaToken::getConfig();
@@ -276,7 +318,55 @@ class SaLoginDeviceManager
             $data['tokenValueEncrypted'] = true;
         }
 
+        $tokenValues = array_values(array_unique(array_filter($tokenValues, static fn (string $value): bool => $value !== '')));
+        if ($config->isTokenEncrypt()) {
+            $tokenValues = array_map(static fn (string $value): string => self::getEncryptor()->encrypt($value), $tokenValues);
+        }
+        $data['managedTokenValues'] = $tokenValues;
+        $data['managedTokenValuesEncrypted'] = $config->isTokenEncrypt();
+
         return SaFoxUtil::toJson($data);
+    }
+
+    /**
+     * @return array<string>
+     */
+    protected static function loadDeviceTokenValues(string $key): array
+    {
+        $json = SaToken::getDao()->get($key);
+        if ($json === null) {
+            return [];
+        }
+
+        $data = @json_decode($json, true);
+        if (!is_array($data)) {
+            return [];
+        }
+
+        $data = self::decodeDeviceData($data, true);
+        $tokens = [];
+        $managedValues = $data['managedTokenValues'] ?? null;
+        if (is_array($managedValues)) {
+            foreach ($managedValues as $value) {
+                if (!is_string($value) || $value === '') {
+                    continue;
+                }
+                if (($data['managedTokenValuesEncrypted'] ?? false) === true) {
+                    $value = self::getEncryptor()->decryptChecked($value);
+                    if ($value === null) {
+                        throw new SaTokenException('设备记录中的 Token 列表密文校验失败');
+                    }
+                }
+                $tokens[] = $value;
+            }
+        }
+
+        $legacyToken = $data['tokenValue'] ?? null;
+        if (is_string($legacyToken) && $legacyToken !== '') {
+            $tokens[] = $legacyToken;
+        }
+
+        return array_values(array_unique($tokens));
     }
 
     protected static function getEncryptor(): SaTokenEncryptor

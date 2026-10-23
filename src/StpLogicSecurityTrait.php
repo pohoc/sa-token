@@ -319,7 +319,7 @@ trait StpLogicSecurityTrait
 
     public function kickoutDevice(mixed $loginId, string $deviceId): void
     {
-        SaLoginDeviceManager::kickoutDevice($loginId, $deviceId, $this->loginType);
+        SaLoginDeviceManager::kickoutDevice($loginId, $deviceId, $this->loginType, $this);
     }
 
     public function kickoutAllDevices(mixed $loginId, ?string $exceptToken = null): int

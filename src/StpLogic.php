@@ -172,7 +172,7 @@ class StpLogic
         if ($device !== null) {
             $device->setDeviceType($deviceType !== '' ? $deviceType : $device->getDeviceType());
         }
-        SaLoginDeviceManager::registerDevice($loginId, $this->loginType, $device, $tokenValue);
+        SaLoginDeviceManager::registerDevice($loginId, $this->loginType, $device, $tokenValue, $this);
     }
 
     protected function buildLoginResult(string $tokenValue, int $timeout, mixed $loginId, SaTokenConfig $config): SaLoginResult
