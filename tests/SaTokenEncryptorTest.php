@@ -158,7 +158,7 @@ class SaTokenEncryptorTest extends TestCase
         $legacyPayload = base64_encode(hex2bin($legacyHmac) . hex2bin($iv) . hex2bin($ciphertext));
 
         // 默认解密不能把公开可重算的摘要当作认证；迁移必须显式选择旧格式。
-        $tamperedIv = chr((ord($iv[0]) ^ 1) & 0xFF) . substr($iv, 1);
+        $tamperedIv = ($iv[0] === '0' ? '1' : '0') . substr($iv, 1);
         $tamperedCiphertext = base64_encode(
             hex2bin(\CryptoSm\SM3\Sm3::sm3($tamperedIv . $ciphertext))
                 . hex2bin($tamperedIv)
