@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SaToken\Config;
 
+use SaToken\Exception\SaTokenException;
 use SaToken\Util\SaTokenTimeout;
 
 /**
@@ -366,6 +367,7 @@ class SaTokenConfig
 
     public function setActivityTimeout(int $activityTimeout): static
     {
+        SaTokenTimeout::validate($activityTimeout, '活动超时');
         $this->activityTimeout = $activityTimeout;
         return $this;
     }
@@ -399,6 +401,9 @@ class SaTokenConfig
 
     public function setMaxLoginCount(int $maxLoginCount): static
     {
+        if ($maxLoginCount === 0 || $maxLoginCount < -1) {
+            throw new SaTokenException('最大登录数必须是正整数，或使用 -1 表示不限制');
+        }
         $this->maxLoginCount = $maxLoginCount;
         return $this;
     }

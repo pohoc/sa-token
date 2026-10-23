@@ -97,6 +97,12 @@ class StpLogicIntegrationTest extends TestCase
         $this->logic->renewTimeout(0);
     }
 
+    public function testLoginParameterRejectsUnboundedMaxLoginCountSentinel(): void
+    {
+        $this->expectException(SaTokenException::class);
+        new SaLoginParameter(['maxLoginCount' => -2]);
+    }
+
     // ======== getSession 集成测试 ========
 
     public function testGetSessionRequiresLogin(): void

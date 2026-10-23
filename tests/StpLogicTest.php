@@ -137,13 +137,11 @@ class StpLogicTest extends TestCase
         $this->assertCount(2, $terminals);
     }
 
-    public function testZeroMaxLoginCountRejectsLogin(): void
+    public function testZeroMaxLoginCountRejectedAtConfigurationTime(): void
     {
-        SaToken::getConfig()->setMaxLoginCount(0);
-
         $this->expectException(SaTokenException::class);
-        $this->expectExceptionMessage('最大登录数必须大于 0，或设为 -1 表示不限制');
-        $this->logic->login(10001);
+        $this->expectExceptionMessage('最大登录数必须是正整数，或使用 -1 表示不限制');
+        SaToken::getConfig()->setMaxLoginCount(0);
     }
 
     public function testCreateTempToken(): void

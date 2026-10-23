@@ -67,6 +67,30 @@ class SaTokenConfigTest extends TestCase
         }
     }
 
+    public function testActivityTimeoutMustBePositiveOrExplicitlyUnlimited(): void
+    {
+        foreach ([0, -2] as $timeout) {
+            try {
+                (new SaTokenConfig())->setActivityTimeout($timeout);
+                $this->fail('仅 -1 可表示不限制活动超时');
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('活动超时', $e->getMessage());
+            }
+        }
+    }
+
+    public function testMaxLoginCountMustBePositiveOrExplicitlyUnlimited(): void
+    {
+        foreach ([0, -2] as $count) {
+            try {
+                (new SaTokenConfig())->setMaxLoginCount($count);
+                $this->fail('仅 -1 可表示不限制登录数');
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('最大登录数', $e->getMessage());
+            }
+        }
+    }
+
     public function testToArray(): void
     {
         $config = new SaTokenConfig(['tokenName' => 'test']);
