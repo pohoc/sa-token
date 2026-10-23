@@ -78,6 +78,21 @@ class SaSensitiveVerifyTest extends TestCase
         $this->assertMatchesRegularExpression('/^\d{6}$/', $code);
     }
 
+    public function testCodeLengthRejectsInsecureAndUnboundedValues(): void
+    {
+        foreach ([0, 1, 5, 13, PHP_INT_MAX] as $length) {
+            try {
+                SaSensitiveVerify::setCodeLength($length);
+                $this->fail('验证码长度超出安全范围应被拒绝');
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('6-12', $e->getMessage());
+            }
+        }
+
+        SaSensitiveVerify::setCodeLength(8);
+        $this->assertMatchesRegularExpression('/^\d{8}$/', SaSensitiveVerify::generateCode('long-code', 10001));
+    }
+
     public function testVerifyValidCodeReturnsTrue(): void
     {
         $scene = 'test-scene';

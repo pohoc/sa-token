@@ -18,6 +18,9 @@ class SaSensitiveVerify
 
     public static function setCodeLength(int $length): void
     {
+        if ($length < 6 || $length > 12) {
+            throw new SaTokenException('验证码长度必须在 6-12 位之间');
+        }
         self::$codeLength = $length;
     }
 
