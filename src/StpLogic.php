@@ -311,7 +311,13 @@ class StpLogic
         if ($config->isJwtStateless()) {
             $jwt = $this->getJwt();
             $payload = $jwt->validateStatelessToken($tokenValue);
-            if ($payload !== null) {
+            $subject = $payload['sub'] ?? null;
+            $type = $payload['type'] ?? null;
+            if ($payload !== null
+                && is_string($subject)
+                && $subject !== ''
+                && is_string($type)
+                && $type === $this->loginType) {
                 return;
             }
             throw new NotLoginException('Token 已失效，请重新登录', NotLoginException::TOKEN_TIMEOUT);

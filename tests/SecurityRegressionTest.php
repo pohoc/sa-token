@@ -170,6 +170,22 @@ class SecurityRegressionTest extends TestCase
         $this->assertFalse(StpUtil::getStpLogic()->isLogin());
     }
 
+    public function testStatelessJwtRejectsTokenFromAnotherLoginType(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'isReadHeader' => true,
+        ]));
+
+        $jwt = (new \SaToken\Plugin\SaTokenJwt([
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]))->createStatelessToken(29999, 'admin', 3600);
+        $this->actAsToken($jwt);
+
+        $this->assertFalse(StpUtil::getStpLogic()->isLogin());
+    }
+
     // ======== C2: 吊销黑名单必须覆盖权限校验层 ========
 
     public function testRevokedTokenFailsPermissionChecks(): void
