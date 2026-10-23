@@ -164,7 +164,19 @@ class SaTokenDaoRedis implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
 
     public function update(string $key, string $value): void
     {
-        ($this->saRedis ?? $this->client)->set($key, $value, ['XX' => true]);
+        $script = <<<'LUA'
+local ttl = redis.call('PTTL', KEYS[1])
+if ttl == -2 or ttl == 0 then
+    return 0
+end
+if ttl == -1 then
+    redis.call('SET', KEYS[1], ARGV[1])
+else
+    redis.call('SET', KEYS[1], ARGV[1], 'PX', ttl)
+end
+return 1
+LUA;
+        ($this->saRedis ?? $this->client)->eval($script, [$key, $value], 1);
     }
 
     public function delete(string $key): void

@@ -278,11 +278,14 @@ class SaLoginDeviceManagerTest extends TestCase
 
         $devices = $this->logic->getDeviceList(10001);
         $deviceId = $devices[0]->getDeviceId();
+        $deviceKey = SaLoginDeviceManager::getKey(10001, 'login') . ':' . $deviceId;
 
         $this->assertNull($devices[0]->getLastActiveTime());
+        $this->assertGreaterThan(0, $this->dao->getTimeout($deviceKey));
 
         SaLoginDeviceManager::updateLastActive(10001, $deviceId, 'login');
 
+        $this->assertGreaterThan(0, $this->dao->getTimeout($deviceKey), '更新设备活跃时间不能清除设备记录 TTL');
         $updatedDevice = $this->logic->findDevice(10001, $deviceId);
         $this->assertNotNull($updatedDevice);
         $this->assertNotNull($updatedDevice->getLastActiveTime());

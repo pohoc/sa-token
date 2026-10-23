@@ -181,7 +181,7 @@ class SaLoginDeviceManager
         $dao = SaToken::getDao();
         $key = self::getKey($loginId, $loginType) . ':' . $deviceId;
         $jsonStr = json_encode($device->toArray());
-        $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', null);
+        $dao->update($key, $jsonStr !== false ? $jsonStr : '{}');
     }
 
     protected static function detectDeviceType(): string

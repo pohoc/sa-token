@@ -66,6 +66,20 @@ class RedisDaoRealIntegrationTest extends TestCase
         $this->assertFalse($this->dao->exists($key));
     }
 
+    public function testUpdatePreservesTtlAgainstRealRedis(): void
+    {
+        $key = $this->prefix . 'update-ttl';
+        $this->dao->set($key, 'before', 60);
+        $ttlBefore = $this->dao->getTimeout($key);
+
+        $this->dao->update($key, 'after');
+
+        $this->assertSame('after', $this->dao->get($key));
+        $ttlAfter = $this->dao->getTimeout($key);
+        $this->assertGreaterThan(0, $ttlAfter);
+        $this->assertLessThanOrEqual($ttlBefore, $ttlAfter);
+    }
+
     public function testGetAndDeleteAgainstRealRedis(): void
     {
         $this->assertInstanceOf(SaTokenDaoRedis::class, $this->dao);
