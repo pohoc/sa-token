@@ -647,6 +647,11 @@ class StpLogic
         if ($tokenValue === null) {
             return;
         }
+
+        if ($this->getLoginIdByToken($tokenValue) === null) {
+            return;
+        }
+
         $this->tokenManager->renewTimeout($tokenValue, $timeout);
     }
 

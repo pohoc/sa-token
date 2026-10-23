@@ -186,6 +186,19 @@ class SecurityRegressionTest extends TestCase
         $this->assertSame('admin-switch-user', $adminLogic->getLoginIdByToken($token));
     }
 
+    public function testWrongLoginTypeCannotRenewAnotherTypesToken(): void
+    {
+        $adminLogic = new \SaToken\StpLogic('admin');
+        $userLogic = new \SaToken\StpLogic('user');
+        $token = $adminLogic->login('admin-renew-user')->getAccessToken();
+        $this->actAsToken($token);
+        $originalTimeout = $adminLogic->getTokenTimeout();
+
+        $userLogic->renewTimeout(172800);
+
+        $this->assertLessThanOrEqual($originalTimeout, $adminLogic->getTokenTimeout());
+    }
+
     // ======== C1: mixed JWT 模式下会话必须可终止 ========
 
     public function testMixedJwtModeLogoutInvalidatesToken(): void
