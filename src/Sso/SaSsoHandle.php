@@ -126,8 +126,8 @@ class SaSsoHandle
     }
 
     /**
-     * 以全局安全配置（Secure/HttpOnly/SameSite）写入 Cookie，
-     * 避免 SSO 辅助 Cookie 绕过框架的 Cookie 安全标准
+     * 以全局 Secure/HttpOnly 配置写入 SSO 短期辅助 Cookie。
+     * SameSite 固定为 Lax，确保跨站顶级导航返回时浏览器会携带 state 和预登录 URL。
      */
     protected function setSecureCookie(string $name, string $value, int $timeout): void
     {
@@ -140,7 +140,7 @@ class SaSsoHandle
             $globalConfig->getCookieDomain(),
             $globalConfig->isCookieSecure(),
             $globalConfig->isCookieHttpOnly(),
-            $globalConfig->getCookieSameSite()
+            'Lax'
         );
     }
 

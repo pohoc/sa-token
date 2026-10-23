@@ -99,6 +99,32 @@ class SaSsoTest extends TestCase
         $this->assertStringContainsString('client_id=app-1', $url);
     }
 
+    public function testSsoTransientCookiesUseLaxForCrossSiteCallback(): void
+    {
+        SaTokenContext::clear();
+        $handle = new SaSsoHandle(new SaSsoConfig([
+            'loginUrl' => 'https://auth.example.com/login',
+            'allowDomains' => ['app.example.com'],
+            'clientSecret' => 'sso-client-secret',
+        ]));
+        $handle->buildLoginUrl('https://app.example.com/callback', 'https://app.example.com/page');
+
+        $pendingCookies = new \ReflectionProperty(SaTokenContext::class, 'pendingCookiesMap');
+        $cookiesByContext = $pendingCookies->getValue();
+        self::assertIsArray($cookiesByContext);
+        $cookies = $cookiesByContext[SaTokenContext::getContextId()] ?? [];
+        self::assertIsArray($cookies);
+
+        $this->assertCount(3, $cookies);
+        foreach ($cookies as $cookie) {
+            self::assertIsArray($cookie);
+            $this->assertSame('Lax', $cookie['sameSite'] ?? null);
+            $this->assertTrue(($cookie['secure'] ?? null) === true);
+            $this->assertTrue(($cookie['httpOnly'] ?? null) === true);
+        }
+        SaTokenContext::clear();
+    }
+
     public function testCrossDomainCallbackWithRedirectPassesState(): void
     {
         SaTokenContext::setRequest(new class () {
