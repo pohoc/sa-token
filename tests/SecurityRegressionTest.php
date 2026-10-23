@@ -150,6 +150,25 @@ class SecurityRegressionTest extends TestCase
         $this->assertSame('admin-revoke-user', $adminLogic->getLoginIdByToken($revokeToken));
     }
 
+    public function testTokenSessionRequiresTokenOwnedByCurrentLoginType(): void
+    {
+        $adminLogic = new \SaToken\StpLogic('admin');
+        $userLogic = new \SaToken\StpLogic('user');
+        $token = $adminLogic->login('admin-session-user')->getAccessToken();
+        $this->actAsToken($token);
+
+        $adminSession = $adminLogic->getTokenSession();
+        $this->assertNotNull($adminSession);
+        $adminSession->set('private-data', 'admin-only');
+
+        $this->assertNull($userLogic->getTokenSession(false));
+
+        $unrecognizedToken = 'unrecognized-token-from-request';
+        $this->actAsToken($unrecognizedToken);
+        $this->assertNull($userLogic->getTokenSession());
+        $this->assertNull(SaToken::getDao()->get(TokenManager::TOKEN_SESSION_PREFIX . $unrecognizedToken));
+    }
+
     // ======== C1: mixed JWT 模式下会话必须可终止 ========
 
     public function testMixedJwtModeLogoutInvalidatesToken(): void

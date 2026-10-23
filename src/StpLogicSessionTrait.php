@@ -44,6 +44,12 @@ trait StpLogicSessionTrait
             return null;
         }
 
+        // Token sessions are keyed only by bearer value, so validate the current
+        // loginType and all session constraints before reading or creating one.
+        if ($this->getLoginIdByToken($tokenValue) === null) {
+            return null;
+        }
+
         $sessionId = TokenManager::TOKEN_SESSION_PREFIX . $tokenValue;
         $session = SaSession::getBySessionId($sessionId);
 
