@@ -476,7 +476,7 @@ class SaOAuth2Handle
         $tokens = is_array($marker['tokens'] ?? null) ? $marker['tokens'] : [];
         foreach ($tokens as $familyToken) {
             if (is_string($familyToken) && $familyToken !== '') {
-                $this->revokeAccessToken($familyToken);
+                $this->revokeAccessTokenUnlocked($familyToken);
             }
         }
         $childRts = is_array($marker['childRts'] ?? null) ? $marker['childRts'] : [];
@@ -503,7 +503,7 @@ class SaOAuth2Handle
             $tokens = is_array($marker['tokens'] ?? null) ? $marker['tokens'] : [];
             foreach ($tokens as $familyToken) {
                 if (is_string($familyToken) && $familyToken !== '') {
-                    $this->revokeAccessToken($familyToken);
+                    $this->revokeAccessTokenUnlocked($familyToken);
                 }
             }
         }
@@ -625,6 +625,45 @@ class SaOAuth2Handle
      * @return void
      */
     public function revokeAccessToken(string $accessToken): void
+    {
+        $accessTokenKey = $this->buildAccessTokenKey($accessToken);
+        $json = $this->getDao()->get($accessTokenKey);
+        $data = $json !== null ? SaFoxUtil::fromJson($this->decryptValue($json)) : null;
+        $refreshToken = is_array($data) && is_string($data['refreshToken'] ?? null) ? $data['refreshToken'] : '';
+
+        if ($refreshToken === '') {
+            $this->getDao()->delete($accessTokenKey);
+            return;
+        }
+
+        // Serialize revocation with rotation. If rotation already consumed this
+        // RT, its marker identifies the family whose new descendants must also
+        // be revoked; if revocation wins first, refresh can no longer consume it.
+        $lockValue = bin2hex(random_bytes(16));
+        $tokenLockKey = 'oauth2:refresh:token:' . hash('sha256', $refreshToken);
+        $this->acquireRefreshLock($tokenLockKey, $lockValue);
+
+        try {
+            $familyLockKey = 'oauth2:refresh:' . $this->getRefreshTokenFamilyLockIdentity($refreshToken);
+            $this->acquireRefreshLock($familyLockKey, $lockValue);
+            try {
+                $consumedFamily = $this->getDao()->get('oauth2:rt:consumed:' . hash('sha256', $refreshToken));
+                if (is_string($consumedFamily) && $consumedFamily !== '') {
+                    $familyMarkerKey = 'oauth2:family:' . hash('sha256', $consumedFamily);
+                    $this->revokeTokenFamily($familyMarkerKey);
+                }
+
+                $this->revokeAccessTokenUnlocked($accessToken);
+            } finally {
+                $this->releaseRefreshLock($familyLockKey, $lockValue);
+            }
+        } finally {
+            $this->releaseRefreshLock($tokenLockKey, $lockValue);
+        }
+    }
+
+    /** Remove an access token and its paired refresh token without acquiring locks. */
+    protected function revokeAccessTokenUnlocked(string $accessToken): void
     {
         $json = $this->getDao()->get($this->buildAccessTokenKey($accessToken));
         if ($json !== null) {

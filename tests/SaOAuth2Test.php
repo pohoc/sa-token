@@ -596,6 +596,42 @@ class SaOAuth2Test extends TestCase
         }
     }
 
+    public function testRevokingAccessTokenRacingRefreshRevokesRotatedToken(): void
+    {
+        $dao = new class () extends SaTokenDaoMemory {
+            public ?string $triggerKey = null;
+            public ?\Closure $afterRead = null;
+
+            public function get(string $key): ?string
+            {
+                $value = parent::get($key);
+                if ($key === $this->triggerKey && $this->afterRead !== null) {
+                    $callback = $this->afterRead;
+                    $this->afterRead = null;
+                    $callback();
+                }
+                return $value;
+            }
+        };
+        SaToken::setDao($dao);
+        $this->handle->registerClient($this->testClient);
+
+        $code = $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback');
+        $initial = $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
+        $oldAccessToken = $initial->getAccessToken();
+        $rotated = null;
+        $dao->triggerKey = 'oauth2:at:' . $oldAccessToken;
+        $dao->afterRead = function () use ($initial, &$rotated): void {
+            $rotated = $this->handle->refreshToken((string) $initial->getRefreshToken(), 'test-client', $this->clientSecret);
+        };
+
+        $this->handle->revokeAccessToken($oldAccessToken);
+
+        self::assertNotNull($rotated);
+        self::assertNull($this->handle->validateAccessToken($rotated->getAccessToken()));
+        self::assertNull($dao->get('oauth2:rt:' . $rotated->getRefreshToken()));
+    }
+
     public function testRefreshTokenRotationCanBeDisabled(): void
     {
         $this->config->setIsNewRefreshToken(false);
