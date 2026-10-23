@@ -105,6 +105,10 @@ class StpLogic
         $isShare = $parameter->getIsShare() ?? $config->isShare();
         $maxLoginCount = $parameter->getMaxLoginCount() ?? $config->getMaxLoginCount();
 
+        if ($maxLoginCount === 0) {
+            throw new SaTokenException('最大登录数必须大于 0，或设为 -1 表示不限制');
+        }
+
         // 并发登录互斥锁：获取失败说明同账号正在处理登录，直接拒绝以保证 maxLoginCount 等控制的一致性
         $loginIdStr = (string) $loginId;
         $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', $loginIdStr);

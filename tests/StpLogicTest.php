@@ -7,6 +7,7 @@ namespace SaToken\Tests;
 use PHPUnit\Framework\TestCase;
 use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoMemory;
+use SaToken\Exception\SaTokenException;
 use SaToken\SaLoginParameter;
 use SaToken\SaToken;
 use SaToken\StpLogic;
@@ -134,6 +135,15 @@ class StpLogicTest extends TestCase
 
         $terminals = $this->logic->getTerminalListByLoginId(10001);
         $this->assertCount(2, $terminals);
+    }
+
+    public function testZeroMaxLoginCountRejectsLogin(): void
+    {
+        SaToken::getConfig()->setMaxLoginCount(0);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('最大登录数必须大于 0，或设为 -1 表示不限制');
+        $this->logic->login(10001);
     }
 
     public function testCreateTempToken(): void
