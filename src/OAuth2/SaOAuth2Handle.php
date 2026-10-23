@@ -14,6 +14,7 @@ use SaToken\OAuth2\Data\SaOAuth2RefreshToken;
 use SaToken\SaToken;
 use SaToken\Security\SaAntiBruteUtil;
 use SaToken\Util\SaFoxUtil;
+use SaToken\Util\SaTokenContext;
 use SaToken\Util\SaTokenEncryptor;
 
 /**
@@ -901,7 +902,12 @@ class SaOAuth2Handle
 
     protected function clientFailureKey(string $clientId): string
     {
-        return 'oauth2:client:fail:' . hash('sha256', $clientId);
+        // client_id 是公开信息；仅按客户端全局锁定会让任意未认证请求者
+        // 通过提交错误密钥阻断该客户端的合法流量。将失败计数限定到来源 IP，
+        // IP 解析遵循 SaTokenContext 的可信代理配置。
+        $clientIp = SaTokenContext::getClientIp();
+        $source = $clientIp !== null && $clientIp !== '' ? $clientIp : 'unknown';
+        return 'oauth2:client:fail:' . hash('sha256', $clientId . "\0" . $source);
     }
 
     protected function checkClientNotLocked(string $clientId): void

@@ -17,6 +17,7 @@ use SaToken\OAuth2\SaOAuth2Handle;
 use SaToken\OAuth2\SaOAuth2Manager;
 use SaToken\OAuth2\Strategy\ImplicitStrategy;
 use SaToken\SaToken;
+use SaToken\Util\SaTokenContext;
 
 /**
  * OAuth2 模块完整测试
@@ -261,6 +262,45 @@ class SaOAuth2Test extends TestCase
         $this->expectException(SaTokenException::class);
         $this->expectExceptionMessage('客户端密钥错误');
         $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', 'mock-wrong-secret', 'https://example.com/callback');
+    }
+
+    public function testWrongClientSecretFromOneIpDoesNotLockOutOtherClientRequests(): void
+    {
+        $this->config->setClientSecretMaxFailures(2);
+        $code = $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback');
+        SaTokenContext::setRequest($this->requestFromIp('192.0.2.10'));
+
+        for ($attempt = 0; $attempt < 2; $attempt++) {
+            try {
+                $this->handle->exchangeTokenByCode(
+                    $code->getCode(),
+                    'test-client',
+                    'wrong-secret',
+                    'https://example.com/callback'
+                );
+                $this->fail('错误客户端密钥必须被拒绝');
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('客户端密钥错误', $e->getMessage());
+            }
+        }
+
+        SaTokenContext::setRequest($this->requestFromIp('192.0.2.20'));
+        $accessToken = $this->handle->exchangeTokenByCode(
+            $code->getCode(),
+            'test-client',
+            $this->clientSecret,
+            'https://example.com/callback'
+        );
+
+        $this->assertNotEmpty($accessToken->getAccessToken());
+    }
+
+    protected function requestFromIp(string $ip): \Psr\Http\Message\ServerRequestInterface
+    {
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => $ip]);
+        $request->method('getHeader')->willReturn([]);
+        return $request;
     }
 
     public function testExchangeTokenByCodeWithWrongClientId(): void
