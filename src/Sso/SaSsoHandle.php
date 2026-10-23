@@ -252,8 +252,8 @@ class SaSsoHandle
                 || !$this->template->verifySign($scalarResult, $clientSecret, 300)) {
                 throw new SaTokenException('SSO check-ticket 响应签名验证失败（或已过期），拒绝信任该响应');
             }
-            if (isset($result['ticket']) && is_string($result['ticket'])
-                && !hash_equals($ticket, $result['ticket'])) {
+            if (!isset($result['ticket']) || !is_string($result['ticket'])
+                || !hash_equals($ticket, $result['ticket'])) {
                 throw new SaTokenException('SSO check-ticket 响应与请求的 ticket 不匹配，拒绝信任该响应');
             }
         }
@@ -387,7 +387,7 @@ class SaSsoHandle
                 throw new SaTokenException('SSO 单点注销回调签名验证失败（或已过期）');
             }
             $signedLoginId = isset($params['loginId']) && is_scalar($params['loginId']) ? (string) $params['loginId'] : null;
-            if ($signedLoginId !== null && $signedLoginId !== SaFoxUtil::toString($loginId)) {
+            if ($signedLoginId === null || $signedLoginId !== SaFoxUtil::toString($loginId)) {
                 throw new SaTokenException('SSO 单点注销回调 loginId 与签名数据不一致');
             }
         }

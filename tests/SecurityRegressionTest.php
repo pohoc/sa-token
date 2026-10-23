@@ -695,6 +695,76 @@ class SecurityRegressionTest extends TestCase
         $this->assertFalse(StpUtil::isLogin());
     }
 
+    public function testSloCallbackRequiresSignedLoginId(): void
+    {
+        $handle = new SaSsoHandle(new SaSsoConfig([
+            'clientSecret' => 'slo-shared-secret',
+        ]));
+        $loginResult = StpUtil::login(40002);
+        $token = $loginResult->getAccessToken();
+        $params = (new \SaToken\Sso\SaSsoTemplate())->signParams([
+            'timestamp' => (string) time(),
+        ], 'slo-shared-secret');
+
+        try {
+            $handle->doSloCallback(40002, $params);
+            $this->fail('SLO 回调必须在签名中绑定 loginId');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('loginId', $e->getMessage());
+        }
+
+        $this->assertTrue(
+            StpUtil::getStpLogic()->getTokenManager()->isTokenValid($token),
+            '缺少签名 loginId 时不得注销会话'
+        );
+    }
+
+    public function testSsoCheckTicketResponseRequiresTicketBinding(): void
+    {
+        $secret = 'sso-shared-secret';
+        $template = new \SaToken\Sso\SaSsoTemplate();
+        $response = $template->signParams([
+            'loginId' => '40003',
+            'timestamp' => (string) time(),
+        ], $secret);
+
+        $httpTemplate = new class ($response) extends \SaToken\Sso\SaSsoTemplate {
+            /** @param array<string, string> $response */
+            public function __construct(private array $response)
+            {
+                parent::__construct();
+            }
+
+            public function post(string $url, array $data = []): string
+            {
+                return (string) json_encode($this->response);
+            }
+        };
+
+        $handle = new class (new SaSsoConfig([
+            'checkTicketUrl' => 'https://auth.example.com/check-ticket',
+            'clientSecret' => $secret,
+        ]), $httpTemplate) extends SaSsoHandle {
+            public function __construct(SaSsoConfig $config, \SaToken\Sso\SaSsoTemplate $template)
+            {
+                parent::__construct($config);
+                $this->template = $template;
+            }
+
+            public function check(string $ticket): ?string
+            {
+                return $this->checkTicket($ticket);
+            }
+        };
+
+        try {
+            $handle->check('ticket-40003');
+            $this->fail('已签名的 check-ticket 响应也必须绑定请求 ticket');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('ticket', $e->getMessage());
+        }
+    }
+
     // ======== 第二轮加固回归 ========
 
     public function testTokenIsBoundToItsLoginType(): void
