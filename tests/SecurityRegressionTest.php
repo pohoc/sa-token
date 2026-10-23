@@ -311,6 +311,23 @@ class SecurityRegressionTest extends TestCase
         $this->assertSame('29999', StpUtil::getStpLogic()->getLoginIdByToken($jwt));
     }
 
+    public function testStatelessJwtDoesNotInheritAnotherLoginTypesSessionClaims(): void
+    {
+        $userLogic = SaToken::getStpLogic('user');
+        $session = $userLogic->getSessionByLoginId('admin:42');
+        self::assertNotNull($session);
+        $session->set('role', 'administrator');
+
+        $jwt = (new \SaToken\Plugin\SaTokenJwt([
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]))->createStatelessToken('42', 'user:admin', 3600);
+
+        $payload = (new \SaToken\Plugin\SaTokenJwt([
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]))->parseToken($jwt);
+        $this->assertArrayNotHasKey('role', $payload);
+    }
+
     public function testLogoutRevokesStatelessJwt(): void
     {
         SaToken::setConfig(new SaTokenConfig([

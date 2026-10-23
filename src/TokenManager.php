@@ -29,6 +29,14 @@ class TokenManager
     public const FINGERPRINT_PREFIX = 'satoken:fingerprint:';
     public const BLACKLIST_PREFIX = 'satoken:blacklist:';
 
+    /** Build a collision-free login session key while preserving legacy keys without colons. */
+    public static function buildSessionId(string $loginType, string $loginId): string
+    {
+        $encode = static fn (string $part): string => str_replace(['%', ':'], ['%25', '%3A'], $part);
+
+        return self::SESSION_PREFIX . $encode($loginType) . ':' . $encode($loginId);
+    }
+
     protected ?SaTokenEncryptor $encryptor = null;
 
     protected ?SaTokenJwt $jwtInstance = null;
@@ -442,7 +450,7 @@ class TokenManager
 
             $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
             $keysToDelete[] = self::LOGIN_ID_PREFIX . $loginType . ':' . $loginIdStr;
-            $keysToDelete[] = self::SESSION_PREFIX . $loginType . ':' . $loginIdStr;
+            $keysToDelete[] = self::buildSessionId($loginType, $loginIdStr);
 
             if (count($keysToDelete) > 0) {
                 $this->getDao()->deleteMultiple($keysToDelete);

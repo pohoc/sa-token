@@ -25,7 +25,7 @@ trait StpLogicSessionTrait
         if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
             throw new \SaToken\Exception\SaTokenException('loginId 不能为空且必须是非布尔标量');
         }
-        $sessionId = TokenManager::SESSION_PREFIX . $this->loginType . ':' . (string) $loginId;
+        $sessionId = TokenManager::buildSessionId($this->loginType, (string) $loginId);
         $session = SaSession::getBySessionId($sessionId);
 
         if ($session === null && $isCreate) {

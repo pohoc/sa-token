@@ -10,6 +10,7 @@ use SaToken\Dao\SaTokenDaoMemory;
 use SaToken\Exception\SaTokenException;
 use SaToken\SaSession;
 use SaToken\SaToken;
+use SaToken\StpLogic;
 
 class SaSessionTest extends TestCase
 {
@@ -125,5 +126,23 @@ class SaSessionTest extends TestCase
         $loaded = SaSession::getBySessionId('satoken:tokenSession:test-token-123');
         $this->assertNotNull($loaded);
         $this->assertEquals(5, $loaded->get('request_count'));
+    }
+
+    public function testLoginSessionsCannotCollideAcrossLoginTypes(): void
+    {
+        $userLogic = new StpLogic('user');
+        $adminLogic = new StpLogic('user:admin');
+        $userSession = $userLogic->getSessionByLoginId('admin:42');
+        $adminSession = $adminLogic->getSessionByLoginId('42');
+
+        self::assertNotNull($userSession);
+        self::assertNotNull($adminSession);
+        self::assertNotSame($userSession->getId(), $adminSession->getId());
+        $userSession->set('role', 'user-admin-data');
+        self::assertNull($adminSession->get('role'));
+
+        $adminSession->set('role', 'admin-data');
+        $userLogic->getTokenManager()->deleteAllTokenByLoginId('admin:42', 'user');
+        self::assertSame('admin-data', $adminLogic->getSessionByLoginId('42', false)?->get('role'));
     }
 }

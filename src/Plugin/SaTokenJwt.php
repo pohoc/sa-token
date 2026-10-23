@@ -225,7 +225,7 @@ class SaTokenJwt
     {
         $sessionData = [];
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-        $sessionId = \SaToken\TokenManager::SESSION_PREFIX . $loginType . ':' . $loginIdStr;
+        $sessionId = \SaToken\TokenManager::buildSessionId($loginType, $loginIdStr);
         $session = \SaToken\SaSession::getBySessionId($sessionId);
         if ($session !== null) {
             $sessionData = $session->getDataMap();
