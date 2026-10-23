@@ -241,10 +241,10 @@ trait StpLogicSecurityTrait
         return SaSensitiveVerify::generateCode($scene, $loginId, $this->loginType);
     }
 
-    public function sendOtpCode(string $scene): string
+    public function sendOtpCode(string $scene): void
     {
         $loginId = $this->getLoginIdAsNotNull();
-        return SaSensitiveVerify::sendCode($scene, $loginId, $this->loginType);
+        SaSensitiveVerify::sendCode($scene, $loginId, $this->loginType);
     }
 
     public function verifyOtpCode(string $scene, string $code): void

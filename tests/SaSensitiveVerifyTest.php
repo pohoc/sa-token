@@ -154,6 +154,7 @@ class SaSensitiveVerifyTest extends TestCase
 
     public function testSendIntervalZeroDisablesRateLimitWithoutCreatingPermanentKey(): void
     {
+        SaToken::getConfig()->setSensitiveVerifyCallback(static fn () => null);
         SaSensitiveVerify::setSendInterval(0);
 
         SaSensitiveVerify::sendCode('unlimited-scene', 10001);
@@ -165,6 +166,7 @@ class SaSensitiveVerifyTest extends TestCase
 
     public function testFailedSendDoesNotDeleteAnotherRequestsRateLimitReservation(): void
     {
+        SaToken::getConfig()->setSensitiveVerifyCallback(static fn () => null);
         $dao = new SensitiveVerifyInterleavingDao();
         SaToken::setDao($dao);
         $scene = 'rate-owner-scene';
@@ -381,14 +383,38 @@ class SaSensitiveVerifyTest extends TestCase
         $this->assertTrue(SaSensitiveVerify::verifySafeToken('admin:safe-token:otp', $token, $loginId, 'user'));
     }
 
-    public function testSendCodeReturnsCode(): void
+    public function testSendCodeDeliversCodeWithoutReturningIt(): void
     {
         $scene = 'test-scene';
         $loginId = 10001;
+        $deliveredCode = null;
+        SaToken::getConfig()->setSensitiveVerifyCallback(
+            static function (string $sentScene, string $code, mixed $sentLoginId) use (&$deliveredCode, $scene, $loginId): void {
+                self::assertSame($scene, $sentScene);
+                self::assertSame($loginId, $sentLoginId);
+                $deliveredCode = $code;
+            }
+        );
 
-        $code = SaSensitiveVerify::sendCode($scene, $loginId);
+        SaSensitiveVerify::sendCode($scene, $loginId);
 
-        $this->assertEquals(6, strlen($code));
+        $this->assertSame('void', (string) (new \ReflectionMethod(SaSensitiveVerify::class, 'sendCode'))->getReturnType());
+        $this->assertIsString($deliveredCode);
+        $this->assertMatchesRegularExpression('/^\d{6}$/', $deliveredCode);
+    }
+
+    public function testSendCodeRequiresDeliveryCallback(): void
+    {
+        try {
+            SaSensitiveVerify::sendCode('missing-sender', 10003);
+            $this->fail('未配置发送回调时不得生成不可投递的验证码');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('回调未配置', $e->getMessage());
+        }
+
+        $key = SaSensitiveVerify::getKey('missing-sender', 10003);
+        $this->assertNull(SaToken::getDao()->get($key));
+        $this->assertNull(SaToken::getDao()->get($key . ':sent'));
     }
 
     public function testCodeCannotBeReusedAfterVerification(): void

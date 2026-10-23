@@ -1734,7 +1734,7 @@ class SecurityRegressionTest extends TestCase
         ])));
 
         \SaToken\Security\SaSensitiveVerify::setSendInterval(60);
-        $code1 = \SaToken\Security\SaSensitiveVerify::sendCode('sms-bomb', 62001);
+        \SaToken\Security\SaSensitiveVerify::sendCode('sms-bomb', 62001);
         $this->assertCount(1, $sent);
 
         try {
@@ -1753,6 +1753,24 @@ class SecurityRegressionTest extends TestCase
         SaToken::getDao()->delete(\SaToken\Security\SaSensitiveVerify::getKey('sms-bomb', 62001) . ':sent');
         \SaToken\Security\SaSensitiveVerify::sendCode('sms-bomb', 62001);
         $this->assertCount(3, $sent);
+    }
+
+    public function testStpLogicOtpSendDoesNotExposeCodeToCaller(): void
+    {
+        $sent = null;
+        SaToken::getConfig()->setSensitiveVerifyCallback(
+            static function (string $scene, string $code, mixed $loginId) use (&$sent): void {
+                $sent = $code;
+            }
+        );
+        $token = StpUtil::login(62003)->getAccessToken();
+        $this->actAsToken($token);
+
+        StpUtil::getStpLogic()->sendOtpCode('profile-update');
+
+        self::assertSame('void', (string) (new \ReflectionMethod(\SaToken\StpLogic::class, 'sendOtpCode'))->getReturnType());
+        self::assertIsString($sent);
+        self::assertMatchesRegularExpression('/^\d{6}$/', $sent);
     }
 
     public function testOauth2IdTokenEchoesNonceAndHasJti(): void

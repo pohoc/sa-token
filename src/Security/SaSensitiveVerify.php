@@ -99,8 +99,14 @@ class SaSensitiveVerify
         return $code;
     }
 
-    public static function sendCode(string $scene, mixed $loginId, string $loginType = 'login'): string
+    /** Send an OTP through the configured callback without exposing it to the caller. */
+    public static function sendCode(string $scene, mixed $loginId, string $loginType = 'login'): void
     {
+        $sendCallback = SaToken::getConfig()->getSensitiveVerifyCallback();
+        if (!is_callable($sendCallback)) {
+            throw new SaTokenException('验证码发送回调未配置，拒绝生成未投递的验证码');
+        }
+
         // 发送频控：同一 scene+loginId 默认 60 秒内只允许发送一次。
         // 没有频控的验证码下发等于向任意手机号/邮箱发起短信/邮件轰炸
         $dao = SaToken::getDao();
@@ -124,8 +130,6 @@ class SaSensitiveVerify
         }
 
         self::sendNotification($scene, $code, $loginId);
-
-        return $code;
     }
 
     protected static function sendNotification(string $scene, string $code, mixed $loginId): void
