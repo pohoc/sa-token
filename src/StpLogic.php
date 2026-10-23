@@ -88,10 +88,10 @@ class StpLogic
     {
         // loginId 必须是非空标量：null/数组等会被静默归一为空串，
         // 使所有此类"用户"共享同一会话与 loginId 映射键
-        if ($loginId === null || $loginId === '' || $loginId === []) {
-            throw new SaTokenException('loginId 不能为空');
+        if ($loginId === null || $loginId === '' || $loginId === [] || is_bool($loginId)) {
+            throw new SaTokenException('loginId 不能为空且不能是布尔值');
         }
-        if (is_array($loginId) || (is_object($loginId) && !method_exists($loginId, '__toString'))) {
+        if (!is_scalar($loginId)) {
             throw new SaTokenException('loginId 必须是标量类型');
         }
 
@@ -106,7 +106,7 @@ class StpLogic
         $maxLoginCount = $parameter->getMaxLoginCount() ?? $config->getMaxLoginCount();
 
         // 并发登录互斥锁：获取失败说明同账号正在处理登录，直接拒绝以保证 maxLoginCount 等控制的一致性
-        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $loginIdStr = (string) $loginId;
         $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', $loginIdStr);
         if (!$this->tokenManager->acquireLock($lockKey, 5)) {
             throw new SaTokenException('同账号登录正在处理中，请勿重复提交');

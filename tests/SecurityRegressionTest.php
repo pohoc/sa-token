@@ -713,6 +713,18 @@ class SecurityRegressionTest extends TestCase
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('loginId', $e->getMessage());
         }
+
+        foreach ([false, true] as $booleanLoginId) {
+            try {
+                StpUtil::login($booleanLoginId);
+                $this->fail('布尔 loginId 应被拒绝');
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('loginId', $e->getMessage());
+            }
+        }
+
+        // 数字 0 是合法标量 ID，不得与 false 混为同一身份。
+        $this->assertNotEmpty(StpUtil::login(0)->getAccessToken());
     }
 
     public function testAnnotationInheritsClassLevelAttributes(): void
@@ -1177,7 +1189,7 @@ class SecurityRegressionTest extends TestCase
     {
         $logic = SaToken::getStpLogic('login');
 
-        foreach ([null, '', [], new \stdClass()] as $bad) {
+        foreach ([null, '', [], false, true, new \stdClass()] as $bad) {
             try {
                 $logic->getSessionByLoginId($bad);
                 $this->fail('非法 loginId 应被拒绝: ' . gettype($bad));
@@ -1189,6 +1201,8 @@ class SecurityRegressionTest extends TestCase
         // 合法 loginId 正常创建
         $session = $logic->getSessionByLoginId(62004);
         $this->assertNotNull($session);
+        $zeroSession = $logic->getSessionByLoginId(0);
+        $this->assertSame('satoken:session:login:0', $zeroSession?->getId());
     }
 
     public function testApiKeySurfacesLockContentionAfterRetries(): void

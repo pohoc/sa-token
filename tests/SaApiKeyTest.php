@@ -142,6 +142,19 @@ class SaApiKeyTest extends TestCase
         $api->checkApiKey();
     }
 
+    public function testCheckApiKeyDoesNotTreatTrueAsLoginId(): void
+    {
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'api-key' => 'key',
+            'api-secret' => 'secret',
+        ]));
+        $api = new SaApiKey();
+        $api->setValidator(static fn (): bool => true);
+
+        $this->expectException(SaTokenException::class);
+        $api->checkApiKey();
+    }
+
     public function testCustomHeaderNames(): void
     {
         $request = $this->mockRequestWithHeaders([

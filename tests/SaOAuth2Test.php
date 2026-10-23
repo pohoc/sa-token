@@ -331,6 +331,15 @@ class SaOAuth2Test extends TestCase
         $this->handle->tokenByPassword('test-client', $this->clientSecret, 'mock-user', 'wrong-password');
     }
 
+    public function testTokenByPasswordDoesNotTreatTrueAsLoginId(): void
+    {
+        $this->handle->setUserCredentialsValidator(static fn (): bool => true);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('用户名或密码错误');
+        $this->handle->tokenByPassword('test-client', $this->clientSecret, 'mock-user', 'password');
+    }
+
     public function testTokenByPasswordUnsupportedGrantType(): void
     {
         $config = new SaOAuth2Config(['grantTypes' => ['authorization_code']]);

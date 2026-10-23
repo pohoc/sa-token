@@ -465,7 +465,7 @@ class SaOAuth2Handle
 
         // 用户验证由外部回调处理
         $loginId = $this->validateUserCredentials($username, $password);
-        if ($loginId === null || $loginId === false) {
+        if ($loginId === null || is_bool($loginId) || !is_scalar($loginId) || $loginId === '') {
             SaAntiBruteUtil::recordFailure($username);
             throw new SaTokenException('用户名或密码错误');
         }

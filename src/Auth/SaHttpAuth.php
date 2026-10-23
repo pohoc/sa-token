@@ -47,7 +47,7 @@ class SaHttpAuth
 
         $loginId = ($this->basicValidator)($username, $password);
 
-        if ($loginId === null || $loginId === false) {
+        if ($loginId === null || is_bool($loginId) || !is_scalar($loginId) || $loginId === '') {
             $this->sendChallenge($realm);
             throw new SaTokenException('Basic 认证失败');
         }
@@ -93,7 +93,7 @@ class SaHttpAuth
 
         $ha1 = ($this->digestValidator)($username);
 
-        if ($ha1 === null || $ha1 === false) {
+        if ($ha1 === null || is_bool($ha1)) {
             $this->sendDigestChallenge($realm);
             throw new SaTokenException('Digest 认证失败');
         }

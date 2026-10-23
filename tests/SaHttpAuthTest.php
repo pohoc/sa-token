@@ -109,6 +109,19 @@ class SaHttpAuthTest extends TestCase
         $auth->checkBasic();
     }
 
+    public function testCheckBasicDoesNotTreatTrueAsLoginId(): void
+    {
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->willReturn(['Basic ' . base64_encode('admin:valid')]);
+        SaTokenContext::setRequest($request);
+
+        $auth = new SaHttpAuth();
+        $auth->setBasicValidator(static fn (): bool => true);
+
+        $this->expectException(SaTokenException::class);
+        $auth->checkBasic();
+    }
+
     public function testCheckDigestTreatsFalseValidatorResultAsFailure(): void
     {
         $nonce = 'issued-nonce';
