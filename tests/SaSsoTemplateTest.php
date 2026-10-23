@@ -7,6 +7,7 @@ namespace SaToken\Tests;
 use PHPUnit\Framework\TestCase;
 use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoMemory;
+use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
 use SaToken\Sso\SaSsoTemplate;
 
@@ -92,5 +93,12 @@ class SaSsoTemplateTest extends TestCase
         $result = $template->verifySign($signed, $clientSecret);
 
         $this->assertFalse($result);
+    }
+
+    public function testHttpHelperRejectsNonHttpSchemes(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('Only HTTP and HTTPS URLs are allowed');
+        (new SaSsoTemplate('intl'))->post('file://localhost/etc/passwd', ['ticket' => 'secret']);
     }
 }

@@ -111,6 +111,14 @@ class SaSsoTemplate
     protected function doRequest(string $method, string $url, array $data = []): string|false
     {
         $this->lastError = null;
+        $urlParts = parse_url($url);
+        $scheme = is_array($urlParts) ? strtolower((string) ($urlParts['scheme'] ?? '')) : '';
+        if (!is_array($urlParts) || !isset($urlParts['host']) || $urlParts['host'] === ''
+            || !in_array($scheme, ['http', 'https'], true)) {
+            $this->lastError = 'Only HTTP and HTTPS URLs are allowed';
+            return false;
+        }
+
         if (function_exists('curl_init')) {
             return $this->curlRequest($method, $url, $data);
         }
@@ -166,9 +174,17 @@ class SaSsoTemplate
     {
         $context = [
             'http' => [
-                'method'  => $method,
-                'timeout' => 10,
-                'header'  => 'Content-Type: application/x-www-form-urlencoded',
+                'method'          => $method,
+                'timeout'         => 10,
+                'header'          => 'Content-Type: application/x-www-form-urlencoded',
+                // 不跟随 Location：否则 HTTPS ticket 端点可把敏感 POST
+                // 重定向到未验证的 HTTP/第三方主机。
+                'follow_location' => 0,
+                'max_redirects'   => 0,
+            ],
+            'ssl' => [
+                'verify_peer'      => true,
+                'verify_peer_name' => true,
             ],
         ];
 
