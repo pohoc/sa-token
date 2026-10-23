@@ -165,6 +165,22 @@ class SaOAuth2Test extends TestCase
         $this->handle->generateAuthorizationCode('test-client', 10001, 'https://evil.com/callback');
     }
 
+    public function testRedirectUriRejectsUserInfoAndFragments(): void
+    {
+        foreach ([
+            'https://user@example.com/callback',
+            'https://example.com/callback#access_token',
+            'https://example.com/callback#',
+        ] as $redirectUri) {
+            try {
+                $this->handle->generateAuthorizationCode('test-client', 10001, $redirectUri);
+                $this->fail('回调地址中的 userinfo/fragment 必须拒绝');
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('不能包含用户信息或片段', $e->getMessage());
+            }
+        }
+    }
+
     public function testExchangeTokenByCode(): void
     {
         $code = $this->handle->generateAuthorizationCode(

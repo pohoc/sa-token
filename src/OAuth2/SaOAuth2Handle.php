@@ -853,6 +853,9 @@ class SaOAuth2Handle
         if ($parsed === false || !isset($parsed['scheme']) || !isset($parsed['host']) || $parsed['host'] === '') {
             throw new SaTokenException('回调地址必须是绝对 URL');
         }
+        if (array_key_exists('user', $parsed) || array_key_exists('pass', $parsed) || array_key_exists('fragment', $parsed)) {
+            throw new SaTokenException('回调地址不能包含用户信息或片段');
+        }
         $scheme = strtolower((string) $parsed['scheme']);
         $host = strtolower((string) $parsed['host']);
         $isLocal = $host === 'localhost' || $host === '127.0.0.1' || $host === '::1';
@@ -875,6 +878,9 @@ class SaOAuth2Handle
             }
             $p = parse_url($uri);
             if ($p === false || !isset($p['scheme']) || !isset($p['host'])) {
+                continue;
+            }
+            if (array_key_exists('user', $p) || array_key_exists('pass', $p) || array_key_exists('fragment', $p)) {
                 continue;
             }
             $normalized = strtolower((string) $p['scheme']) . '://' . strtolower((string) $p['host'])
