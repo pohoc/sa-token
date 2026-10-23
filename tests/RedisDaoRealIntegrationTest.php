@@ -114,6 +114,58 @@ class RedisDaoRealIntegrationTest extends TestCase
         $this->assertSame('third', $this->dao->get($key));
     }
 
+    public function testRedisUrlSelectsConfiguredHostAndDatabase(): void
+    {
+        $host = $_ENV['REDIS_HOST'] ?? getenv('REDIS_HOST') ?: '';
+        $port = $_ENV['REDIS_PORT'] ?? getenv('REDIS_PORT') ?: '';
+        self::assertIsString($host);
+        self::assertIsNumeric($port);
+
+        $observer = new \Redis();
+        self::assertTrue($observer->connect($host, (int) $port, 1.5));
+        self::assertTrue($observer->select(1));
+
+        $key = $this->prefix . 'url-database-check';
+        $url = sprintf('redis://%s:%d/1', $host, (int) $port);
+        $urlDao = new SaTokenDaoRedis($url);
+
+        try {
+            $urlDao->set($key, 'selected-db', 60);
+            $this->assertSame('selected-db', $observer->get($key));
+            $this->assertSame(0, $this->redis->exists($key));
+        } finally {
+            $observer->del([$key]);
+            $observer->close();
+        }
+    }
+
+    public function testSeparateRedisUsesConfiguredDatabase(): void
+    {
+        $host = $_ENV['REDIS_HOST'] ?? getenv('REDIS_HOST') ?: '';
+        $port = $_ENV['REDIS_PORT'] ?? getenv('REDIS_PORT') ?: '';
+        self::assertIsString($host);
+        self::assertIsNumeric($port);
+
+        $observer = new \Redis();
+        self::assertTrue($observer->connect($host, (int) $port, 1.5));
+        self::assertTrue($observer->select(1));
+
+        $key = $this->prefix . 'separate-db-check';
+        $dao = SaTokenDaoRedis::createWithSeparateRedis(
+            ['host' => $host, 'port' => (int) $port, 'database' => 0],
+            ['host' => $host, 'port' => (int) $port, 'db' => 1]
+        );
+
+        try {
+            $dao->set($key, 'separate-db', 60);
+            $this->assertSame('separate-db', $observer->get($key));
+            $this->assertSame(0, $this->redis->exists($key));
+        } finally {
+            $observer->del([$key]);
+            $observer->close();
+        }
+    }
+
     public function testIncrementAgainstRealRedis(): void
     {
         $this->assertInstanceOf(SaTokenDaoRedis::class, $this->dao);

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace SaToken\Dao;
 
+use SaToken\Exception\SaTokenException;
+
 class SaTokenDaoRedis implements SaTokenDaoInterface
 {
     protected \Redis $client;
@@ -22,30 +24,117 @@ class SaTokenDaoRedis implements SaTokenDaoInterface
             return;
         }
 
-        $config = is_string($config) ? ['url' => $config] : $config;
+        $config = $this->normalizeConfig($config);
         $database = $config['database'] ?? 0;
         $this->database = is_int($database) ? $database : (is_numeric($database) ? (int) $database : 0);
+        $this->client = $this->connectClient($config);
+    }
 
-        $this->client = new \Redis();
+    /** @param array<string, mixed> $config */
+    protected function connectClient(array $config): \Redis
+    {
+        $client = new \Redis();
         $host = $config['host'] ?? '127.0.0.1';
         $port = $config['port'] ?? 6379;
         $timeout = $config['timeout'] ?? 0;
 
-        $this->client->connect(is_string($host) ? $host : '127.0.0.1', is_int($port) ? $port : (is_numeric($port) ? (int) $port : 6379), is_numeric($timeout) ? (float) $timeout : 0.0);
+        $connected = $client->connect(
+            is_string($host) ? $host : '127.0.0.1',
+            is_int($port) ? $port : (is_numeric($port) ? (int) $port : 6379),
+            is_numeric($timeout) ? (float) $timeout : 0.0
+        );
+        if ($connected !== true) {
+            throw new SaTokenException('Redis 连接失败');
+        }
 
-        if (!empty($config['password'])) {
-            $password = $config['password'];
-            if (is_string($password)) {
-                $this->client->auth($password);
+        $password = $config['password'] ?? null;
+        if ($password !== null && $password !== '') {
+            if (isset($config['username']) && is_string($config['username']) && is_string($password)) {
+                $authenticated = $client->auth([$config['username'], $password]);
+            } elseif (is_string($password)) {
+                $authenticated = $client->auth($password);
             } elseif (is_array($password)) {
                 /** @var array<string> $password */
-                $this->client->auth($password);
+                $authenticated = $client->auth($password);
+            } else {
+                $authenticated = false;
+            }
+            if ($authenticated !== true) {
+                throw new SaTokenException('Redis 身份验证失败');
             }
         }
         if (isset($config['database'])) {
             $db = $config['database'];
-            $this->client->select(is_int($db) ? $db : (is_numeric($db) ? (int) $db : 0));
+            $selected = $client->select(is_int($db) ? $db : (is_numeric($db) ? (int) $db : 0));
+            if ($selected !== true) {
+                throw new SaTokenException('Redis 数据库选择失败');
+            }
         }
+
+        return $client;
+    }
+
+    /**
+     * @param  array<string, mixed>|string $config
+     * @return array<string, mixed>
+     */
+    protected function normalizeConfig(array|string $config): array
+    {
+        $config = is_string($config) ? ['url' => $config] : $config;
+        if (isset($config['url'])) {
+            if (!is_string($config['url'])) {
+                throw new SaTokenException('Redis URL 必须是字符串');
+            }
+            $config = array_merge($this->parseUrl($config['url']), $config);
+            unset($config['url']);
+        }
+        if (!isset($config['database']) && isset($config['db'])) {
+            $config['database'] = $config['db'];
+        }
+
+        return $config;
+    }
+
+    /** @return array<string, mixed> */
+    protected function parseUrl(string $url): array
+    {
+        $parts = parse_url($url);
+        if (!is_array($parts) || !isset($parts['scheme'], $parts['host'])) {
+            throw new SaTokenException('Redis URL 格式无效');
+        }
+
+        $scheme = strtolower($parts['scheme']);
+        if (!in_array($scheme, ['redis', 'rediss'], true)) {
+            throw new SaTokenException('Redis URL 仅支持 redis:// 或 rediss://');
+        }
+
+        $host = $scheme === 'rediss' ? 'tls://' . $parts['host'] : $parts['host'];
+        $config = [
+            'host' => $host,
+            'port' => $parts['port'] ?? 6379,
+        ];
+
+        if (isset($parts['user'])) {
+            $config['username'] = rawurldecode($parts['user']);
+        }
+        if (isset($parts['pass'])) {
+            $config['password'] = rawurldecode($parts['pass']);
+        }
+        if (isset($parts['path']) && $parts['path'] !== '' && $parts['path'] !== '/') {
+            $database = substr($parts['path'], 1);
+            if (!ctype_digit($database)) {
+                throw new SaTokenException('Redis URL 中的数据库编号必须是非负整数');
+            }
+            $config['database'] = (int) $database;
+        }
+        if (isset($parts['query'])) {
+            parse_str($parts['query'], $query);
+            if (isset($query['timeout']) && is_numeric($query['timeout'])) {
+                $config['timeout'] = (float) $query['timeout'];
+            }
+        }
+
+        return $config;
     }
 
     public function get(string $key): ?string
@@ -301,29 +390,7 @@ LUA;
     public static function createWithSeparateRedis(array $mainConfig, array $separateConfig): self
     {
         $instance = new self($mainConfig);
-
-        $saRedis = new \Redis();
-        $host = $separateConfig['host'] ?? '127.0.0.1';
-        $port = $separateConfig['port'] ?? 6379;
-        $timeout = $separateConfig['timeout'] ?? 0;
-
-        $saRedis->connect(is_string($host) ? $host : '127.0.0.1', is_int($port) ? $port : (is_numeric($port) ? (int) $port : 6379), is_numeric($timeout) ? (float) $timeout : 0.0);
-
-        if (!empty($separateConfig['password'])) {
-            $password = $separateConfig['password'];
-            if (is_string($password)) {
-                $saRedis->auth($password);
-            } elseif (is_array($password)) {
-                /** @var array<string> $password */
-                $saRedis->auth($password);
-            }
-        }
-        if (isset($separateConfig['db'])) {
-            $db = $separateConfig['db'];
-            $saRedis->select(is_int($db) ? $db : (is_numeric($db) ? (int) $db : 0));
-        }
-
-        $instance->setSaRedis($saRedis);
+        $instance->setSaRedis($instance->connectClient($instance->normalizeConfig($separateConfig)));
 
         return $instance;
     }

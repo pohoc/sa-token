@@ -61,7 +61,7 @@ class SaTokenDaoFile implements SaTokenDaoInterface
         if (is_dir($dir)) {
             return;
         }
-        if (!@mkdir($dir, 0770, true) && !is_dir($dir)) {
+        if (!@mkdir($dir, 0700, true) && !is_dir($dir)) {
             throw new SaTokenException("文件存储目录创建失败：{$dir}");
         }
     }
@@ -89,6 +89,10 @@ class SaTokenDaoFile implements SaTokenDaoInterface
         $fp = fopen($lockPath, 'c');
         if ($fp === false) {
             throw new SaTokenException("文件存储锁打开失败：{$lockPath}");
+        }
+        if (!@chmod($lockPath, 0600)) {
+            fclose($fp);
+            throw new SaTokenException("文件存储锁权限设置失败：{$lockPath}");
         }
 
         $locked = flock($fp, LOCK_EX);
@@ -160,6 +164,10 @@ class SaTokenDaoFile implements SaTokenDaoInterface
         if (file_put_contents($tmpPath, $payload) === false) {
             throw new SaTokenException("文件存储写入失败：{$path}");
         }
+        if (!@chmod($tmpPath, 0600)) {
+            @unlink($tmpPath);
+            throw new SaTokenException("文件存储权限设置失败：{$path}");
+        }
         if (!@rename($tmpPath, $path)) {
             @unlink($tmpPath);
             throw new SaTokenException("文件存储写入失败（rename）：{$path}");
@@ -226,6 +234,10 @@ class SaTokenDaoFile implements SaTokenDaoInterface
         $this->withLock($key, function () use ($key, $timeout): void {
             $record = $this->readRecord($key);
             if ($record === null) {
+                return;
+            }
+            if ($this->isExpired($record['e'])) {
+                @unlink($this->dataFile($key));
                 return;
             }
             // 直接透传 base64 值：decode 失败再重写会把原值破坏为空串

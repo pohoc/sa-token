@@ -63,6 +63,21 @@ class SaTokenDaoFileTest extends TestCase
         $this->assertSame($binary, $this->dao->get('k:binary'));
     }
 
+    public function testStorageFilesArePrivateOnPosix(): void
+    {
+        if (DIRECTORY_SEPARATOR !== '/') {
+            $this->markTestSkipped('POSIX file mode assertions only apply on Unix-like systems.');
+        }
+
+        $this->dao->set('k:private', 'secret', 60);
+        $this->dao->setIfNotExists('k:private-lock', 'lock', 60);
+
+        $dataFile = $this->basePath . '/data/' . hash('sha256', 'k:private') . '.dat';
+        $lockFile = $this->basePath . '/locks/' . hash('sha256', 'k:private-lock') . '.lock';
+        $this->assertSame(0600, fileperms($dataFile) & 0777);
+        $this->assertSame(0600, fileperms($lockFile) & 0777);
+    }
+
     public function testPermanentAndExpiry(): void
     {
         $this->dao->set('k:perm', 'forever', null);
@@ -84,6 +99,17 @@ class SaTokenDaoFileTest extends TestCase
 
         $this->dao->expire('k:e', 0);
         $this->assertSame(-1, $this->dao->getTimeout('k:e'));
+    }
+
+    public function testExpireDoesNotReviveAnExpiredRecord(): void
+    {
+        $this->dao->set('k:expired-before-expire', 'stale', 1);
+        sleep(2);
+
+        $this->dao->expire('k:expired-before-expire', 120);
+
+        $this->assertNull($this->dao->get('k:expired-before-expire'));
+        $this->assertSame(-2, $this->dao->getTimeout('k:expired-before-expire'));
     }
 
     public function testGetAndDeleteIsAtomicUnderFlock(): void
