@@ -66,14 +66,11 @@ class ImplicitStrategy
      */
     public function authorize(string $clientId, mixed $loginId, string $scope = '', string $redirectUri = ''): SaOAuth2AccessToken
     {
-        $client = $this->handle->getClientOrFail($clientId);
-        $allowed = $client->getGrantTypes();
-        if ($allowed !== [] && !in_array('implicit', $allowed, true)) {
-            throw new SaTokenException('该客户端未被授权使用隐式模式');
+        $this->handle->validateGrantTypePublic($clientId, 'implicit');
+        if ($redirectUri === '') {
+            throw new SaTokenException('隐式授权必须提供已注册的 redirect_uri');
         }
-        if ($redirectUri !== '') {
-            $this->handle->validateRedirectUriPublic($clientId, $redirectUri);
-        }
+        $this->handle->validateRedirectUriPublic($clientId, $redirectUri);
         return $this->handle->generateAccessToken($clientId, $loginId, $scope);
     }
 }

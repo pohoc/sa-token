@@ -15,6 +15,7 @@ use SaToken\OAuth2\Data\SaOAuth2RefreshToken;
 use SaToken\OAuth2\SaOAuth2Config;
 use SaToken\OAuth2\SaOAuth2Handle;
 use SaToken\OAuth2\SaOAuth2Manager;
+use SaToken\OAuth2\Strategy\ImplicitStrategy;
 use SaToken\SaToken;
 
 /**
@@ -86,6 +87,48 @@ class SaOAuth2Test extends TestCase
     public function testGetUnregisteredClient(): void
     {
         $this->assertNull($this->handle->getClient('unknown'));
+    }
+
+    public function testImplicitStrategyHonorsGlobalGrantTypeAllowList(): void
+    {
+        $client = new SaOAuth2Client([
+            'clientId' => 'implicit-default-client',
+            'clientSecret' => 'client-secret',
+            'redirectUris' => ['https://example.com/callback'],
+        ]);
+        $this->handle->registerClient($client);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('未被授权使用此授权模式');
+        (new ImplicitStrategy($this->handle))->authorize(
+            'implicit-default-client',
+            10001,
+            '',
+            'https://example.com/callback'
+        );
+    }
+
+    public function testImplicitStrategyRequiresRegisteredRedirectUri(): void
+    {
+        $config = new SaOAuth2Config(['grantTypes' => ['authorization_code', 'implicit']]);
+        $handle = new SaOAuth2Handle($config);
+        $handle->registerClient(new SaOAuth2Client([
+            'clientId' => 'implicit-client',
+            'clientSecret' => 'client-secret',
+            'redirectUris' => ['https://example.com/callback'],
+        ]));
+        $strategy = new ImplicitStrategy($handle);
+
+        try {
+            $strategy->authorize('implicit-client', 10001);
+            $this->fail('隐式授权必须提供 redirect_uri');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('必须提供', $e->getMessage());
+        }
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('未注册的回调地址');
+        $strategy->authorize('implicit-client', 10001, '', 'https://attacker.example/callback');
     }
 
     // ======== 授权码模式 ========

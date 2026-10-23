@@ -566,6 +566,16 @@ class SaOAuth2Handle
         $this->validateRedirectUri($clientId, $redirectUri);
     }
 
+    /**
+     * 校验公开策略使用的授权模式，遵循客户端白名单或全局默认白名单。
+     *
+     * @throws SaTokenException
+     */
+    public function validateGrantTypePublic(string $clientId, string $grantType): void
+    {
+        $this->validateGrantTypeForClient($this->validateClient($clientId), $grantType);
+    }
+
     public function checkScope(string $accessToken, string $requiredScope): bool
     {
         $tokenData = $this->validateAccessToken($accessToken);
