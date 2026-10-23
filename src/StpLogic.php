@@ -471,18 +471,32 @@ class StpLogic
 
     public function getLoginIdByToken(string $tokenValue): ?string
     {
-        if ($this->getConfig()->isJwtStateless()) {
-            if ($this->tokenManager->isBlacklisted($tokenValue)) {
-                return null;
-            }
+        if ($this->tokenManager->isBlacklisted($tokenValue)) {
+            return null;
+        }
 
+        if ($this->getConfig()->isJwtStateless()) {
             return $this->getStatelessLoginIdByToken($tokenValue);
+        }
+
+        if ($this->getConfig()->getJwtMode() === 'mixed'
+            && $this->getJwt()->validateStatelessToken($tokenValue) === null) {
+            return null;
         }
 
         $loginId = $this->tokenManager->getLoginIdByToken($tokenValue);
         if ($loginId === null || !$this->isTokenOwnedByLoginType($tokenValue, $loginId)) {
             return null;
         }
+
+        try {
+            $this->checkFingerprint($tokenValue);
+            $this->checkActivityTimeout($tokenValue);
+            $this->tokenManager->updateLastActiveToNow($tokenValue);
+        } catch (NotLoginException) {
+            return null;
+        }
+
         return $loginId;
     }
 

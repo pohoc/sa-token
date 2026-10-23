@@ -13,6 +13,7 @@ use SaToken\Rpc\SaRpcContext;
 use SaToken\Rpc\SaRpcInterceptor;
 use SaToken\SaToken;
 use SaToken\StpUtil;
+use SaToken\TokenManager;
 use SaToken\Util\SaTokenContext;
 
 class SaRpcContextTest extends TestCase
@@ -101,6 +102,38 @@ class SaRpcContextTest extends TestCase
 
         SaRpcContext::extractAndValidate();
         $this->assertTrue(true);
+    }
+
+    public function testExtractAndValidateRejectsIdleExpiredToken(): void
+    {
+        SaToken::setConfig(SaToken::getConfig()->setActivityTimeout(60));
+        $token = StpUtil::login(10002)->getAccessToken();
+        SaToken::getDao()->set(TokenManager::LAST_ACTIVE_PREFIX . $token, (string) (time() - 120), 300);
+
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token'      => $token,
+            'X-Sa-Login-Id'   => '10002',
+            'X-Sa-Login-Type' => 'login',
+        ]));
+
+        $this->expectException(SaTokenException::class);
+        SaRpcContext::extractAndValidate();
+    }
+
+    public function testExtractAndValidateRejectsFingerprintMismatch(): void
+    {
+        SaToken::setConfig(SaToken::getConfig()->setTokenFingerprint(true));
+        $token = StpUtil::login(10003)->getAccessToken();
+        StpUtil::getStpLogic()->getTokenManager()->saveFingerprint($token, hash('sha256', 'different-device'), 300);
+
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token'      => $token,
+            'X-Sa-Login-Id'   => '10003',
+            'X-Sa-Login-Type' => 'login',
+        ]));
+
+        $this->expectException(SaTokenException::class);
+        SaRpcContext::extractAndValidate();
     }
 
     public function testExtractAndValidateThrowsOnMissingToken(): void
