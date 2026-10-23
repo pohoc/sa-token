@@ -58,11 +58,17 @@ class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteI
 
     protected function ensureDirectory(string $dir): void
     {
-        if (is_dir($dir)) {
-            return;
+        if (is_link($dir)) {
+            throw new SaTokenException("文件存储目录不能是符号链接：{$dir}");
         }
-        if (!@mkdir($dir, 0700, true) && !is_dir($dir)) {
+        if (!is_dir($dir) && !@mkdir($dir, 0700, true) && !is_dir($dir)) {
             throw new SaTokenException("文件存储目录创建失败：{$dir}");
+        }
+        // 配置目录可能早已存在且权限宽松；持有 token/密钥数据的目录必须
+        // 在每次装配时重新收紧，不能只依赖 mkdir 的初始 mode。
+        $stat = @lstat($dir);
+        if ($stat === false || ($stat['mode'] & 0170000) !== 0040000 || !@chmod($dir, 0700)) {
+            throw new SaTokenException("文件存储目录权限设置失败：{$dir}");
         }
     }
 

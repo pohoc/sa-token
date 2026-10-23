@@ -6,6 +6,7 @@ namespace SaToken\Tests;
 
 use PHPUnit\Framework\TestCase;
 use SaToken\Dao\SaTokenDaoFile;
+use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
 use SaToken\StpUtil;
 
@@ -53,6 +54,38 @@ class SaTokenDaoFileTest extends TestCase
         $this->assertNull($this->dao->get('k:basic'));
         $this->assertFalse($this->dao->exists('k:basic'));
         $this->assertSame(-2, $this->dao->getTimeout('k:basic'));
+    }
+
+    public function testExistingStorageDirectoriesAreRestricted(): void
+    {
+        $path = $this->basePath;
+        chmod($path . '/data', 0777);
+        chmod($path . '/locks', 0777);
+
+        new SaTokenDaoFile(['path' => $path]);
+
+        $this->assertSame(0700, fileperms($path . '/data') & 0777);
+        $this->assertSame(0700, fileperms($path . '/locks') & 0777);
+    }
+
+    public function testStorageDirectorySymlinkIsRejected(): void
+    {
+        $path = $this->basePath . '/linked-store';
+        $target = $this->basePath . '/external-data';
+        mkdir($path);
+        mkdir($target);
+        symlink($target, $path . '/data');
+
+        try {
+            new SaTokenDaoFile(['path' => $path]);
+            $this->fail('符号链接存储目录必须拒绝');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('不能是符号链接', $e->getMessage());
+        } finally {
+            unlink($path . '/data');
+            rmdir($target);
+            rmdir($path);
+        }
     }
 
     public function testBinarySafeValues(): void
