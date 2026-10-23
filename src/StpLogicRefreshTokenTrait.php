@@ -84,6 +84,18 @@ trait StpLogicRefreshTokenTrait
                 throw new SaTokenException('RefreshToken 无效或已过期');
             }
 
+            // The record read before acquiring the account lock may already be
+            // stale when another non-rotating refresh completed while we waited.
+            // Use the atomically consumed record as the authoritative binding so
+            // each serialized refresh revokes the access token issued just before it.
+            if (($consumed['loginId'] ?? null) !== $loginId
+                || ($consumed['loginType'] ?? null) !== $loginType) {
+                throw new SaTokenException('RefreshToken 数据异常');
+            }
+            $oldAccessToken = is_string($consumed['accessToken'] ?? null)
+                ? $consumed['accessToken']
+                : '';
+
             if ($oldAccessToken !== '') {
                 $this->tokenManager->deleteToken($oldAccessToken, $loginId, $this->loginType);
             }

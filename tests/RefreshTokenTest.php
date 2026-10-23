@@ -235,6 +235,49 @@ class RefreshTokenTest extends TestCase
         $this->assertNotEquals($result->getAccessToken(), $result2->getAccessToken());
     }
 
+    public function testConcurrentRefreshWithoutRotationRevokesPreviousRotatedAccessToken(): void
+    {
+        SaToken::reset();
+        SaToken::init([
+            'timeout'              => 7200,
+            'refreshToken'         => true,
+            'refreshTokenTimeout'  => 2592000,
+            'refreshTokenRotation' => false,
+        ]);
+
+        $dao = new class () extends \SaToken\Dao\SaTokenDaoMemory {
+            public ?string $triggerKey = null;
+            public ?\Closure $afterRead = null;
+
+            public function get(string $key): ?string
+            {
+                $value = parent::get($key);
+                if ($key === $this->triggerKey && $this->afterRead !== null) {
+                    $callback = $this->afterRead;
+                    $this->afterRead = null;
+                    $callback();
+                }
+                return $value;
+            }
+        };
+        SaToken::setDao($dao);
+
+        $accessToken = StpUtil::login(10005)->getAccessToken();
+        $refreshToken = StpUtil::createRefreshToken($accessToken);
+        $firstRefresh = null;
+        $dao->triggerKey = TokenManager::REFRESH_TOKEN_PREFIX . $refreshToken;
+        $dao->afterRead = function () use ($refreshToken, &$firstRefresh): void {
+            $firstRefresh = StpUtil::refreshToken($refreshToken);
+        };
+
+        $secondRefresh = StpUtil::refreshToken($refreshToken);
+
+        self::assertNotNull($firstRefresh);
+        self::assertFalse(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($firstRefresh->getAccessToken()));
+        self::assertTrue(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($secondRefresh->getAccessToken()));
+        self::assertSame($refreshToken, $secondRefresh->getRefreshToken());
+    }
+
     public function testRefreshTokenInvalid(): void
     {
         $this->expectException(SaTokenException::class);
