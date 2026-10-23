@@ -153,8 +153,24 @@ class SaTokenJwt
             throw new SaTokenException('JWT Token Payload 无效');
         }
 
-        if (isset($payload['exp']) && $payload['exp'] < time()) {
-            throw new SaTokenException('JWT Token 已过期');
+        if (array_key_exists('exp', $payload)) {
+            $expiresAt = $payload['exp'];
+            if ((!is_int($expiresAt) && !is_float($expiresAt)) || !is_finite((float) $expiresAt)) {
+                throw new SaTokenException('JWT Token exp 字段无效');
+            }
+            if ($expiresAt <= time()) {
+                throw new SaTokenException('JWT Token 已过期');
+            }
+        }
+
+        if (array_key_exists('nbf', $payload)) {
+            $notBefore = $payload['nbf'];
+            if ((!is_int($notBefore) && !is_float($notBefore)) || !is_finite((float) $notBefore)) {
+                throw new SaTokenException('JWT Token nbf 字段无效');
+            }
+            if ($notBefore > time()) {
+                throw new SaTokenException('JWT Token 尚未生效');
+            }
         }
 
         /** @var array<string, mixed> $payload */

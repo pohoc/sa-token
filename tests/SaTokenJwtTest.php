@@ -136,6 +136,36 @@ class SaTokenJwtTest extends TestCase
         $this->jwt->parseToken($token);
     }
 
+    public function testParseTokenRejectsInvalidExpirationAndFutureNotBefore(): void
+    {
+        $secretKey = getenv('TEST_JWT_SECRET_KEY') ?: 'test-key-placeholder-32-bytes-lo';
+
+        foreach ([['exp' => 'never'], ['exp' => null], ['nbf' => 'yesterday'], ['nbf' => time() + 3600]] as $claims) {
+            $token = $this->createSignedToken($secretKey, array_merge([
+                'sub' => '10001',
+                'type' => 'login',
+            ], $claims));
+
+            try {
+                $this->jwt->parseToken($token);
+                $this->fail('无效时间声明应被拒绝');
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('JWT Token', $e->getMessage());
+            }
+        }
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function createSignedToken(string $secretKey, array $payload): string
+    {
+        $encode = static fn (string $value): string => rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
+        $header = $encode(json_encode(['typ' => 'JWT', 'alg' => 'HS256'], JSON_THROW_ON_ERROR));
+        $body = $encode(json_encode($payload, JSON_THROW_ON_ERROR));
+        $signingInput = $header . '.' . $body;
+
+        return $signingInput . '.' . $encode(hash_hmac('sha256', $signingInput, $secretKey, true));
+    }
+
     public function testParseTokenInvalidSignature(): void
     {
         $token = $this->jwt->createToken(10001, 'login');
