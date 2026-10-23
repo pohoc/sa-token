@@ -149,6 +149,74 @@ class SaTokenDaoPsr16Test extends TestCase
         $this->assertTrue($this->dao->exists('key1'));
     }
 
+    public function testAtomicOperationsAreSerializedAcrossProcesses(): void
+    {
+        if (!function_exists('pcntl_fork')) {
+            $this->markTestSkipped('pcntl is required for the multi-process lock test');
+        }
+        class_exists(ArrayPsr16Cache::class);
+
+        $root = sys_get_temp_dir() . '/sa-token-psr16-test-' . bin2hex(random_bytes(8));
+        $cacheDir = $root . '/cache';
+        $lockDir = $root . '/locks';
+        $resultDir = $root . '/results';
+        mkdir($resultDir, 0700, true);
+
+        try {
+            $dao = new SaTokenDaoPsr16(new SharedFilePsr16Cache($cacheDir, 50000), $lockDir);
+            $dao->set('one-time-token', 'payload');
+
+            $runTwoProcesses = function (string $operation) use ($cacheDir, $lockDir, $resultDir): array {
+                $pids = [];
+                for ($index = 0; $index < 2; $index++) {
+                    $pid = pcntl_fork();
+                    if ($pid === -1) {
+                        $this->fail('Could not fork worker process');
+                    }
+                    if ($pid === 0) {
+                        $childDao = new SaTokenDaoPsr16(new SharedFilePsr16Cache($cacheDir, 50000), $lockDir);
+                        $result = $operation === 'consume'
+                            ? ($childDao->getAndDelete('one-time-token') === 'payload' ? 'consumed' : 'empty')
+                            : ($childDao->setIfNotExists('single-claim', 'winner', 60) ? 'won' : 'lost');
+                        file_put_contents($resultDir . '/' . $operation . '-' . $index, $result);
+                        exit(0);
+                    }
+                    $pids[] = $pid;
+                }
+
+                foreach ($pids as $pid) {
+                    $status = 0;
+                    $waitedPid = pcntl_waitpid($pid, $status);
+                    $this->assertSame($pid, $waitedPid);
+                }
+                return [
+                    file_get_contents($resultDir . '/' . $operation . '-0'),
+                    file_get_contents($resultDir . '/' . $operation . '-1'),
+                ];
+            };
+
+            $consumeResults = $runTwoProcesses('consume');
+            $this->assertSame(1, count(array_filter($consumeResults, static fn ($value): bool => $value === 'consumed')));
+            $this->assertSame(1, count(array_filter($consumeResults, static fn ($value): bool => $value === 'empty')));
+
+            $claimResults = $runTwoProcesses('claim');
+            $this->assertSame(1, count(array_filter($claimResults, static fn ($value): bool => $value === 'won')));
+            $this->assertSame(1, count(array_filter($claimResults, static fn ($value): bool => $value === 'lost')));
+        } finally {
+            $iterator = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS),
+                \RecursiveIteratorIterator::CHILD_FIRST
+            );
+            foreach ($iterator as $item) {
+                if (!$item instanceof \SplFileInfo) {
+                    continue;
+                }
+                $item->isDir() ? @rmdir($item->getPathname()) : @unlink($item->getPathname());
+            }
+            @rmdir($root);
+        }
+    }
+
     // ======== 特殊值 ========
 
     public function testEmptyValue(): void

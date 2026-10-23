@@ -904,7 +904,7 @@ $psr16Cache = new SomePsr16Cache();
 SaToken::setDao(new SaTokenDaoPsr16($psr16Cache));
 ```
 
-PSR-16 不提供原子 `getAndDelete`、`setIfNotExists` 或 `increment`。该适配器的并发一次性消费、防重放、分布式锁和暴力尝试计数只能尽力而为；多进程/多实例部署或需要可靠防重放时，请使用 Redis、文件 DAO（单机）或实现原子操作的自定义 DAO。
+PSR-16 不提供原子 `getAndDelete`、`setIfNotExists` 或 `increment`。该适配器用主机本地文件锁串行化这些 DAO 操作，可覆盖同一主机上的多个 PHP 进程。若缓存由多台主机共享，本地锁不能协调其他主机；此时请使用 Redis DAO 或实现分布式原子操作的自定义 DAO。文件锁目录默认位于系统临时目录，也可通过构造函数第二个参数指定。
 
 ### 配置驱动自动装配
 

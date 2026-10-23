@@ -6,20 +6,31 @@ namespace SaToken\Dao;
 
 use Psr\SimpleCache\CacheInterface;
 use Psr\SimpleCache\InvalidArgumentException;
+use SaToken\Exception\SaTokenException;
 
-class SaTokenDaoPsr16 implements SaTokenDaoInterface
+/**
+ * PSR-16 adapter with host-local file locks for atomic DAO operations.
+ * A cache shared by multiple hosts still requires a distributed atomic DAO.
+ */
+class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface
 {
     protected CacheInterface $cache;
+
+    protected SaTokenDaoFile $atomicLockDao;
 
     /** @var array<string, int> */
     protected array $ttlMap = [];
 
     protected int $createdAt;
 
-    public function __construct(CacheInterface $cache)
+    public function __construct(CacheInterface $cache, ?string $lockDirectory = null)
     {
         $this->cache = $cache;
         $this->createdAt = time();
+        $uid = function_exists('posix_geteuid') ? (string) posix_geteuid() : (string) getmyuid();
+        $defaultLockDirectory = rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR)
+            . DIRECTORY_SEPARATOR . 'sa-token-psr16-' . hash('sha256', $uid);
+        $this->atomicLockDao = new SaTokenDaoFile($lockDirectory ?? $defaultLockDirectory);
     }
 
     public function get(string $key): ?string
@@ -43,17 +54,22 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface
 
     public function set(string $key, string $value, ?int $timeout = null): void
     {
-        $this->writeCache($key, $value, $timeout);
+        $this->withAtomicLock($key, function () use ($key, $value, $timeout): void {
+            if (!$this->writeCache($key, $value, $timeout)) {
+                throw new SaTokenException('PSR-16 缓存写入失败');
+            }
+        });
     }
 
     protected function writeCache(string $key, string $value, ?int $timeout): bool
     {
+        $effectiveTimeout = $timeout !== null && $timeout > 0 ? $timeout : null;
         try {
-            if (!$this->cache->set($this->normalizeKey($key), $value, $timeout)) {
+            if (!$this->cache->set($this->normalizeKey($key), $value, $effectiveTimeout)) {
                 return false;
             }
-            if ($timeout !== null && $timeout > 0) {
-                $this->ttlMap[$key] = time() + $timeout;
+            if ($effectiveTimeout !== null) {
+                $this->ttlMap[$key] = time() + $effectiveTimeout;
             } else {
                 unset($this->ttlMap[$key]);
             }
@@ -65,20 +81,33 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface
 
     public function update(string $key, string $value): void
     {
-        $ttl = $this->getTimeout($key);
-        if ($ttl === -2) {
-            return;
-        }
-        $timeout = ($ttl === -1) ? null : $ttl;
-        $this->set($key, $value, $timeout);
+        $this->withAtomicLock($key, function () use ($key, $value): void {
+            $ttl = $this->getTimeout($key);
+            if ($ttl === -2) {
+                return;
+            }
+            $timeout = ($ttl === -1) ? null : $ttl;
+            if (!$this->writeCache($key, $value, $timeout)) {
+                throw new SaTokenException('PSR-16 缓存更新失败');
+            }
+        });
     }
 
     public function delete(string $key): void
     {
+        $this->withAtomicLock($key, fn () => $this->deleteCache($key));
+    }
+
+    protected function deleteCache(string $key): bool
+    {
         try {
-            $this->cache->delete($this->normalizeKey($key));
-            unset($this->ttlMap[$key]);
+            $deleted = $this->cache->delete($this->normalizeKey($key));
+            if ($deleted) {
+                unset($this->ttlMap[$key]);
+            }
+            return $deleted;
         } catch (InvalidArgumentException) {
+            return false;
         }
     }
 
@@ -101,30 +130,34 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface
 
     public function expire(string $key, int $timeout): void
     {
-        $value = $this->get($key);
-        if ($value !== null) {
-            $this->set($key, $value, $timeout > 0 ? $timeout : null);
-        }
+        $this->withAtomicLock($key, function () use ($key, $timeout): void {
+            $value = $this->get($key);
+            if ($value !== null && !$this->writeCache($key, $value, $timeout > 0 ? $timeout : null)) {
+                throw new SaTokenException('PSR-16 缓存过期时间更新失败');
+            }
+        });
     }
 
     public function getAndExpire(string $key, int $timeout): ?string
     {
-        $value = $this->get($key);
-        if ($value !== null) {
-            $this->expire($key, $timeout);
-        }
-        return $value;
+        return $this->withAtomicLock($key, function () use ($key, $timeout): ?string {
+            $value = $this->get($key);
+            if ($value !== null && !$this->writeCache($key, $value, $timeout > 0 ? $timeout : null)) {
+                throw new SaTokenException('PSR-16 缓存过期时间更新失败');
+            }
+            return $value;
+        });
     }
 
     public function getAndDelete(string $key): ?string
     {
-        // PSR-16 没有原子读取并删除原语：此实现仅为兼容性尽力而为，
-        // 并发重放防护需换用 Redis/文件 DAO 或提供原子操作的自定义 DAO。
-        $value = $this->get($key);
-        if ($value !== null) {
-            $this->delete($key);
-        }
-        return $value;
+        return $this->withAtomicLock($key, function () use ($key): ?string {
+            $value = $this->get($key);
+            if ($value === null) {
+                return null;
+            }
+            return $this->deleteCache($key) ? $value : null;
+        });
     }
 
     public function exists(string $key): bool
@@ -158,17 +191,14 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface
         return [];
     }
 
-    /**
-     * PSR-16 无原生的 SET-NX 语义，这里为尽力而为实现：
-     * 在不支持原子 setIfNotExists 的缓存后端上存在极小的竞态窗口，
-     * 需要强一致分布式锁的场景建议使用 Redis 存储。
-     */
     public function setIfNotExists(string $key, string $value, ?int $timeout = null): bool
     {
-        if ($this->exists($key)) {
-            return false;
-        }
-        return $this->writeCache($key, $value, $timeout);
+        return $this->withAtomicLock($key, function () use ($key, $value, $timeout): bool {
+            if ($this->exists($key)) {
+                return false;
+            }
+            return $this->writeCache($key, $value, $timeout);
+        });
     }
 
     /** PSR-16 reserves punctuation used in Sa-Token's internal namespaces. */
@@ -179,16 +209,59 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface
 
     public function increment(string $key, int $amount = 1, ?int $timeout = null): int
     {
-        $current = $this->get($key);
-        $newValue = ($current === null ? 0 : (int) $current) + $amount;
-        if ($newValue < 0) {
-            $newValue = 0;
+        return $this->withAtomicLock($key, function () use ($key, $amount, $timeout): int {
+            $current = $this->get($key);
+            $newValue = max(0, ($current === null ? 0 : (int) $current) + $amount);
+            $effectiveTimeout = $current === null ? $timeout : $this->getTimeout($key);
+            $writeTimeout = $effectiveTimeout !== null && $effectiveTimeout >= 0
+                ? max(1, $effectiveTimeout)
+                : null;
+            if (!$this->writeCache($key, (string) $newValue, $writeTimeout)) {
+                throw new SaTokenException('PSR-16 计数器更新失败');
+            }
+            return $newValue;
+        });
+    }
+
+    public function compareAndDelete(string $key, string $expectedValue): bool
+    {
+        return $this->withAtomicLock($key, function () use ($key, $expectedValue): bool {
+            if ($this->get($key) !== $expectedValue) {
+                return false;
+            }
+            return $this->deleteCache($key);
+        });
+    }
+
+    /**
+     * PSR-16 has no atomic primitives; a fixed set of host-local file locks
+     * makes DAO operations atomic across PHP processes on this host. Deployments
+     * sharing the cache across hosts must use a shared atomic DAO such as Redis.
+     * @template T
+     * @param  callable(): T $operation
+     * @return T
+     */
+    protected function withAtomicLock(string $key, callable $operation): mixed
+    {
+        $stripe = hexdec(substr(hash('sha256', $key), 0, 2)) % 64;
+        $lockKey = 'psr16-atomic:' . str_pad((string) $stripe, 2, '0', STR_PAD_LEFT);
+        $lockValue = bin2hex(random_bytes(16));
+        $acquired = false;
+        for ($attempt = 0; $attempt < 100; $attempt++) {
+            if ($this->atomicLockDao->setIfNotExists($lockKey, $lockValue, 60)) {
+                $acquired = true;
+                break;
+            }
+            usleep(10000);
         }
-        if ($current === null) {
-            $this->set($key, (string) $newValue, $timeout);
-        } else {
-            $this->update($key, (string) $newValue);
+        if (!$acquired) {
+            throw new SaTokenException('PSR-16 缓存原子操作锁获取失败，请稍后重试');
         }
-        return $newValue;
+
+        try {
+            return $operation();
+        } finally {
+            $this->atomicLockDao->compareAndDelete($lockKey, $lockValue);
+        }
     }
 }

@@ -605,6 +605,8 @@ SaToken::setDao(new SaTokenDaoPsr16($cache));
 SaToken::init();
 ```
 
+适配器通过主机本地文件锁协调同一主机上的多个 PHP 进程。若 PSR-16 缓存由多台主机共享，本地文件锁无法提供跨主机原子性，请改用 Redis DAO 或支持分布式原子操作的自定义 DAO。可用构造函数第二个参数指定本地锁目录。
+
 ---
 
 ## 高并发与刷新注意事项
