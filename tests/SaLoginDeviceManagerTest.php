@@ -90,6 +90,26 @@ class SaLoginDeviceManagerTest extends TestCase
         self::assertCount(1, SaLoginDeviceManager::getDeviceList('child-account', $childLoginType));
     }
 
+    public function testKickoutDeviceCannotDeleteNestedLoginTypeDeviceRecord(): void
+    {
+        $parentLoginId = 'device-owner';
+        $childLoginType = 'login:' . md5($parentLoginId);
+        $childLoginId = 'child-account';
+        $childLogic = new StpLogic($childLoginType);
+        $device = new SaLoginDevice([
+            'deviceType' => 'private',
+            'deviceName' => 'Internal admin workstation',
+            'ip'         => '203.0.113.42',
+        ]);
+        $token = $childLogic->login($childLoginId, (new SaLoginParameter())->setDevice($device))->getAccessToken();
+        $foreignDeviceId = md5($childLoginId) . ':' . $device->getDeviceId();
+
+        $this->logic->kickoutDevice($parentLoginId, $foreignDeviceId);
+
+        self::assertTrue($childLogic->getTokenManager()->isTokenValid($token));
+        self::assertCount(1, SaLoginDeviceManager::getDeviceList($childLoginId, $childLoginType));
+    }
+
     public function testDeviceRecordDoesNotExposeTokenWhenTokenEncryptionIsEnabled(): void
     {
         SaToken::setConfig(new SaTokenConfig([

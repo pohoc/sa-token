@@ -165,6 +165,13 @@ class SaLoginDeviceManager
         }
 
         try {
+            // A caller-supplied device ID can contain delimiters and address a
+            // nested login type's key. Verify the stored owner before revoking
+            // any tokens or deleting the record.
+            if (self::loadDevice($loginId, $deviceId, $loginType, false) === null) {
+                return;
+            }
+
             // 同一设备标识可能在 isShare=false 时关联多个有效登录 Token。
             // 全部撤销后再删除记录，避免只踢掉最近一次登录而留下旧会话。
             foreach (self::loadDeviceTokenValues($key) as $tokenValue) {

@@ -5,8 +5,13 @@ declare(strict_types=1);
 namespace SaToken\Tests;
 
 use PHPUnit\Framework\TestCase;
+use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoRedis;
+use SaToken\Data\SaLoginDevice;
+use SaToken\SaLoginParameter;
 use SaToken\SaToken;
+use SaToken\Security\SaLoginDeviceManager;
+use SaToken\StpLogic;
 use SaToken\TokenManager;
 
 class RedisDaoRealIntegrationTest extends TestCase
@@ -46,6 +51,45 @@ class RedisDaoRealIntegrationTest extends TestCase
             if (is_array($keys) && $keys !== []) {
                 $this->redis->del($keys);
             }
+        }
+    }
+
+    public function testKickoutDeviceCannotDeleteNestedLoginTypeDeviceRecordAgainstRealRedis(): void
+    {
+        SaToken::reset();
+        SaToken::setConfig(new SaTokenConfig([
+            'timeout'          => 60,
+            'activityTimeout'  => -1,
+            'concurrent'       => true,
+            'isShare'          => true,
+            'maxLoginCount'    => 12,
+            'deviceManagement' => true,
+        ]));
+        SaToken::setDao($this->dao);
+
+        $parentLoginId = 'redis-device-owner-' . bin2hex(random_bytes(6));
+        $childLoginType = 'login:' . md5($parentLoginId);
+        $childLoginId = 'redis-child-' . bin2hex(random_bytes(6));
+        $parentLogic = new StpLogic('login');
+        $childLogic = new StpLogic($childLoginType);
+        $device = new SaLoginDevice([
+            'deviceType' => 'private',
+            'deviceName' => 'Redis integration device',
+            'ip'         => '203.0.113.42',
+        ]);
+        $deviceKey = SaLoginDeviceManager::getKey($childLoginId, $childLoginType) . ':' . $device->getDeviceId();
+
+        try {
+            $token = $childLogic->login($childLoginId, (new SaLoginParameter())->setDevice($device))->getAccessToken();
+            $foreignDeviceId = md5($childLoginId) . ':' . $device->getDeviceId();
+            $parentLogic->kickoutDevice($parentLoginId, $foreignDeviceId);
+
+            self::assertTrue($childLogic->getTokenManager()->isTokenValid($token));
+            self::assertCount(1, SaLoginDeviceManager::getDeviceList($childLoginId, $childLoginType));
+        } finally {
+            $this->dao->delete($deviceKey);
+            $childLogic->logoutByLoginId($childLoginId);
+            SaToken::reset();
         }
     }
 
