@@ -93,6 +93,7 @@ trait StpLogicSecurityTrait
 
     public function switchTo(mixed $loginId): void
     {
+        $this->checkLogin();
         $tokenValue = $this->getTokenValue();
         if ($tokenValue === null) {
             throw new NotLoginException('未登录，请先登录', NotLoginException::NOT_LOGIN);
@@ -114,6 +115,12 @@ trait StpLogicSecurityTrait
         if ($tokenValue === null) {
             return;
         }
+
+        // Do not emit a switch-back event with another loginType's identity.
+        if ($this->getLoginIdByToken($tokenValue) === null) {
+            return;
+        }
+
         $this->tokenManager->clearSwitch($tokenValue, $this->loginType);
         $loginId = $this->tokenManager->getLoginIdByToken($tokenValue);
         if ($loginId !== null) {

@@ -169,6 +169,23 @@ class SecurityRegressionTest extends TestCase
         $this->assertNull(SaToken::getDao()->get(TokenManager::TOKEN_SESSION_PREFIX . $unrecognizedToken));
     }
 
+    public function testWrongLoginTypeCannotSwitchAnotherTypesToken(): void
+    {
+        $adminLogic = new \SaToken\StpLogic('admin');
+        $userLogic = new \SaToken\StpLogic('user');
+        $token = $adminLogic->login('admin-switch-user')->getAccessToken();
+        $this->actAsToken($token);
+
+        try {
+            $userLogic->switchTo('attacker-controlled-user');
+            $this->fail('其他 loginType 不应能对该 Token 写入身份切换');
+        } catch (NotLoginException) {
+            $this->assertFalse($userLogic->isSwitch());
+        }
+
+        $this->assertSame('admin-switch-user', $adminLogic->getLoginIdByToken($token));
+    }
+
     // ======== C1: mixed JWT 模式下会话必须可终止 ========
 
     public function testMixedJwtModeLogoutInvalidatesToken(): void
