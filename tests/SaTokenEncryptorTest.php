@@ -39,6 +39,19 @@ class SaTokenEncryptorTest extends TestCase
         }
     }
 
+    public function testDisabledEncryptionDoesNotRequireAKey(): void
+    {
+        $encryptor = new class (false, '') extends SaTokenEncryptor {
+            protected function isUnitTestRuntime(): bool
+            {
+                return false;
+            }
+        };
+
+        $this->assertSame('plain-value', $encryptor->encrypt('plain-value'));
+        $this->assertSame('plain-value', $encryptor->decrypt('plain-value'));
+    }
+
     private function createAesEncryptor(bool $enabled = true, string $key = ''): SaTokenEncryptor
     {
         if ($key === '') {

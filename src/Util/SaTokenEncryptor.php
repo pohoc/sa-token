@@ -25,6 +25,12 @@ class SaTokenEncryptor
         $this->enabled = $enabled;
         $this->useSm = ($cryptoType === 'sm');
 
+        if (!$enabled) {
+            $this->key = '';
+            $this->macKey = '';
+            return;
+        }
+
         if ($this->useSm) {
             $this->key = $this->deriveSm4Key($key);
             $this->macKey = substr(bin2hex(hash_hkdf('sha256', $this->key, 32, 'sa-token-sm4-mac', '')), 0, 32);
