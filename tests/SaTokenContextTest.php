@@ -70,6 +70,31 @@ class SaTokenContextTest extends TestCase
         $this->assertSame($response, SaTokenContext::getResponse());
     }
 
+    public function testNewRequestClearsPreviousResponseAndDeferredHeaders(): void
+    {
+        SaTokenContext::setContextId('reused-request-context');
+
+        SaTokenContext::setHeader('X-Pending-Previous-User', 'pending-token');
+        SaTokenContext::setRequest(new \stdClass());
+        $previousResponse = new TestResponseTracker();
+        SaTokenContext::setResponse($previousResponse);
+        $this->assertArrayNotHasKey('X-Pending-Previous-User', $previousResponse->headers);
+
+        SaTokenContext::setHeader('X-Previous-User', 'previous-token');
+
+        SaTokenContext::setRequest(new \stdClass());
+
+        $this->assertNull(SaTokenContext::getResponse());
+        $this->assertSame('previous-token', $previousResponse->headers['X-Previous-User']);
+
+        SaTokenContext::setHeader('X-Current-User', 'current-token');
+        $currentResponse = new TestResponseTracker();
+        SaTokenContext::setResponse($currentResponse);
+
+        $this->assertArrayNotHasKey('X-Previous-User', $currentResponse->headers);
+        $this->assertSame('current-token', $currentResponse->headers['X-Current-User']);
+    }
+
     public function testGetResponseWhenNull(): void
     {
         $this->assertNull(SaTokenContext::getResponse());

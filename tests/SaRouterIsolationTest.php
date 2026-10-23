@@ -124,6 +124,36 @@ class SaRouterIsolationTest extends TestCase
         $this->assertTrue($user);
     }
 
+    public function testSettingNextRequestResetsCachedPathForReusedContext(): void
+    {
+        SaTokenContext::setContextId('reused-request-context');
+        SaTokenContext::setRequest(new class () {
+            public function getPathInfo(): string
+            {
+                return '/public/health';
+            }
+        });
+        $this->assertSame('/public/health', SaRouter::getCurrentPath());
+
+        // Some long-running integrations can reuse a context identifier and
+        // miss clearContext() on an exceptional request path. A new request
+        // must never inherit the previous request's cached authorization path.
+        SaTokenContext::setRequest(new class () {
+            public function getPathInfo(): string
+            {
+                return '/admin/console';
+            }
+        });
+
+        $this->assertSame('/admin/console', SaRouter::getCurrentPath());
+
+        $authorizationCheckRan = false;
+        SaRouter::notMatch('/public/**')->check(function () use (&$authorizationCheckRan): void {
+            $authorizationCheckRan = true;
+        });
+        $this->assertTrue($authorizationCheckRan, '新管理路径不能继承公开路径的鉴权豁免');
+    }
+
     public function testFrameworkPathWithoutLeadingSlashStillMatchesSlashPatterns(): void
     {
         SaTokenContext::setRequest(new class () {

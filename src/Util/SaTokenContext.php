@@ -97,7 +97,20 @@ class SaTokenContext
      */
     public static function setRequest(mixed $request): void
     {
-        self::$requestMap[self::getContextId()] = $request;
+        $contextId = self::getContextId();
+        self::$requestMap[$contextId] = $request;
+        // A reused context ID must not retain the previous request's response
+        // or deferred headers/cookies, which could otherwise receive or expose
+        // another user's authentication credentials.
+        unset(
+            self::$responseMap[$contextId],
+            self::$pendingHeadersMap[$contextId],
+            self::$pendingCookiesMap[$contextId]
+        );
+        // SaRouter caches the normalized request path by context ID. A long-
+        // running worker may reuse that ID even if cleanup was skipped after
+        // an exception, so every new request starts with fresh route state.
+        \SaToken\SaRouter::clearContext();
     }
 
     /**
