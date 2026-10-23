@@ -90,16 +90,20 @@ class SaSensitiveVerify
         // 没有频控的验证码下发等于向任意手机号/邮箱发起短信/邮件轰炸
         $dao = SaToken::getDao();
         $rateKey = self::getKey($scene, $loginId, $loginType) . ':sent';
-        if (!$dao->setIfNotExists($rateKey, '1', self::$sendInterval)) {
-            throw new SaTokenException('验证码发送过于频繁，请 ' . self::$sendInterval . ' 秒后再试');
+        $rateOwner = null;
+        if (self::$sendInterval > 0) {
+            $rateOwner = bin2hex(random_bytes(16));
+            if (!$dao->setIfNotExists($rateKey, $rateOwner, self::$sendInterval)) {
+                throw new SaTokenException('验证码发送过于频繁，请 ' . self::$sendInterval . ' 秒后再试');
+            }
         }
 
         try {
             $code = self::generateCode($scene, $loginId, $loginType);
         } catch (SaTokenException $e) {
             $dao = SaToken::getDao();
-            if ($dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
-                $dao->compareAndDelete($rateKey, '1');
+            if ($rateOwner !== null && $dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
+                $dao->compareAndDelete($rateKey, $rateOwner);
             }
             throw $e;
         }

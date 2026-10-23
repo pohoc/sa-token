@@ -16,9 +16,28 @@ class SensitiveVerifyInterleavingDao extends SaTokenDaoMemory
     /** @var callable(string, ?string): void|null */
     private $afterNextGet = null;
 
+    private ?string $replaceRateKeyOnStateLock = null;
+
     public function afterNextGet(callable $callback): void
     {
         $this->afterNextGet = $callback;
+    }
+
+    public function replaceRateKeyOnNextStateLock(string $rateKey): void
+    {
+        $this->replaceRateKeyOnStateLock = $rateKey;
+    }
+
+    public function setIfNotExists(string $key, string $value, ?int $timeout = null): bool
+    {
+        if ($this->replaceRateKeyOnStateLock !== null && str_ends_with($key, ':state-lock')) {
+            $rateKey = $this->replaceRateKeyOnStateLock;
+            $this->replaceRateKeyOnStateLock = null;
+            $this->delete($rateKey);
+            $this->set($rateKey, 'another-request-owner', 60);
+        }
+
+        return parent::setIfNotExists($key, $value, $timeout);
     }
 
     public function get(string $key): ?string
@@ -98,6 +117,38 @@ class SaSensitiveVerifyTest extends TestCase
         $this->assertFalse(SaSensitiveVerify::isVerified($scene, $loginId));
         $this->assertFalse(SaSensitiveVerify::verifyCode($scene, $oldCode, $loginId));
         $this->assertTrue(SaSensitiveVerify::verifyCode($scene, $newCode, $loginId));
+    }
+
+    public function testSendIntervalZeroDisablesRateLimitWithoutCreatingPermanentKey(): void
+    {
+        SaSensitiveVerify::setSendInterval(0);
+
+        SaSensitiveVerify::sendCode('unlimited-scene', 10001);
+        SaSensitiveVerify::sendCode('unlimited-scene', 10001);
+
+        $rateKey = SaSensitiveVerify::getKey('unlimited-scene', 10001) . ':sent';
+        $this->assertNull(SaToken::getDao()->get($rateKey));
+    }
+
+    public function testFailedSendDoesNotDeleteAnotherRequestsRateLimitReservation(): void
+    {
+        $dao = new SensitiveVerifyInterleavingDao();
+        SaToken::setDao($dao);
+        $scene = 'rate-owner-scene';
+        $loginId = 10001;
+        $key = SaSensitiveVerify::getKey($scene, $loginId);
+        $rateKey = $key . ':sent';
+        $dao->set($key . ':state-lock', 'existing-owner', 30);
+        $dao->replaceRateKeyOnNextStateLock($rateKey);
+
+        try {
+            SaSensitiveVerify::sendCode($scene, $loginId);
+            $this->fail('已有验证码状态锁时应拒绝发送');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('状态正在更新', $e->getMessage());
+        }
+
+        $this->assertSame('another-request-owner', $dao->get($rateKey));
     }
 
     public function testConcurrentSuccessfulCodeVerificationIsRejectedByAtomicClaim(): void
