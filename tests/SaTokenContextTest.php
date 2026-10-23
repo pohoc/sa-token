@@ -109,6 +109,28 @@ class SaTokenContextTest extends TestCase
         $this->assertEquals(1, is_object($req2) && property_exists($req2, 'id') ? $req2->id : null);
     }
 
+    public function testContextIsolatedAcrossInterleavedFibers(): void
+    {
+        $fiberA = new \Fiber(static function (): mixed {
+            SaTokenContext::setRequest('request-a');
+            \Fiber::suspend();
+            return SaTokenContext::getRequest();
+        });
+        $fiberB = new \Fiber(static function (): mixed {
+            SaTokenContext::setRequest('request-b');
+            \Fiber::suspend();
+            return SaTokenContext::getRequest();
+        });
+
+        $fiberA->start();
+        $fiberB->start();
+        $fiberA->resume();
+        $fiberB->resume();
+
+        $this->assertSame('request-a', $fiberA->getReturn());
+        $this->assertSame('request-b', $fiberB->getReturn());
+    }
+
     // ---- Header with PSR-7 ----
 
     public function testGetHeaderFromPsr7Request(): void

@@ -461,13 +461,9 @@ Hyperf/Swoole 是协程化框架，sa-token 已内置协程支持：
 
 use SaToken\SaToken;
 use SaToken\Util\SaTokenContext;
-use Hyperf\Coroutine\Coroutine;
 
-// 协程内使用
+// Hyperf/Swoole 与原生 PHP Fiber 会自动隔离请求上下文。
 go(function () {
-    $coroutineId = (string) Coroutine::id();
-    SaTokenContext::setContextId($coroutineId);
-
     // 登录等操作...
     StpUtil::login(1001);
 });
@@ -503,9 +499,7 @@ SaToken::init();
 $server = new Server('0.0.0.0', 9501);
 
 $server->on('request', function (Request $request, Response $response) {
-    // 设置上下文 ID（协程安全）
-    $coroutineId = (string) Swoole\Coroutine::getCid();
-    SaTokenContext::setContextId($coroutineId);
+    // SaTokenContext 自动使用当前 Swoole 协程 ID 隔离请求上下文。
     SaTokenContext::setResponse($response);
 
     // 适配 Request

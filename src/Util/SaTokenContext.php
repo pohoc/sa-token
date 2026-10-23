@@ -68,9 +68,22 @@ class SaTokenContext
         if (class_exists(\Hyperf\Coroutine\Coroutine::class)) {
             $coroutineId = \Hyperf\Coroutine\Coroutine::id();
             if (is_int($coroutineId) && $coroutineId > 0) {
-                return (string) $coroutineId;
+                return 'hyperf:' . $coroutineId;
             }
         }
+
+        if (class_exists(\Swoole\Coroutine::class)) {
+            $coroutineId = \Swoole\Coroutine::getCid();
+            if (is_int($coroutineId) && $coroutineId >= 0) {
+                return 'swoole:' . $coroutineId;
+            }
+        }
+
+        $fiber = \Fiber::getCurrent();
+        if ($fiber !== null) {
+            return 'fiber:' . spl_object_id($fiber);
+        }
+
         return self::$contextId;
     }
 
