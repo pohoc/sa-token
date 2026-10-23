@@ -194,6 +194,22 @@ class TokenManagerTest extends TestCase
         $this->assertNull($this->manager->getLoginIdByToken($token2));
     }
 
+    public function testDeleteAllTokenByLoginIdRemovesPermanentRefreshTokenMap(): void
+    {
+        $accessToken = $this->manager->createTokenValue('refresh-map-user', 'login');
+        $this->manager->saveToken($accessToken, 'refresh-map-user', 'login', 'PC', -1);
+        $refreshToken = $this->manager->createTokenValue('refresh-map-user', 'login', 'srt_');
+        $this->manager->saveRefreshToken($refreshToken, $accessToken, 'refresh-map-user', 'login', -1);
+
+        $mapKey = TokenManager::REFRESH_TOKEN_MAP_PREFIX . 'login:refresh-map-user:' . $accessToken;
+        self::assertSame($refreshToken, $this->manager->getRefreshTokenByAccessToken('refresh-map-user', 'login', $accessToken));
+
+        $this->manager->deleteAllTokenByLoginId('refresh-map-user', 'login');
+
+        self::assertNull($this->dao->get($mapKey));
+        self::assertFalse($this->manager->isRefreshTokenValid($refreshToken));
+    }
+
     public function testTokenTimeout(): void
     {
         $token = $this->manager->createTokenValue(10001, 'login');

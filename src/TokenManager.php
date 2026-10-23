@@ -494,7 +494,7 @@ class TokenManager
                 $refreshToken = $this->getRefreshTokenByAccessToken($loginId, $loginType, $tokenValue);
                 if ($refreshToken !== null) {
                     $keysToDelete[] = self::REFRESH_TOKEN_PREFIX . $refreshToken;
-                    $keysToDelete[] = self::REFRESH_TOKEN_MAP_PREFIX . $tokenValue;
+                    $keysToDelete[] = self::buildRefreshTokenMapKey($loginId, $loginType, $tokenValue);
                 }
 
                 $deletedTokens[] = $tokenValue;
@@ -815,7 +815,7 @@ class TokenManager
                 throw new SaTokenException('RefreshToken 值冲突，拒绝覆盖其他会话凭据');
             }
 
-            $mapKey = self::REFRESH_TOKEN_MAP_PREFIX . $loginType . ':' . $loginIdStr . ':' . $accessToken;
+            $mapKey = self::buildRefreshTokenMapKey($loginIdStr, $loginType, $accessToken);
             $this->getDao()->set($mapKey, $this->encryptValue($refreshToken), $effectiveTimeout);
         } finally {
             $this->releaseLock($loginLockKey);
@@ -860,7 +860,7 @@ class TokenManager
         $loginType = is_string($data['loginType'] ?? null) ? $data['loginType'] : '';
         $accessToken = is_string($data['accessToken'] ?? null) ? $data['accessToken'] : '';
         if ($loginId !== '' && $loginType !== '' && $accessToken !== '') {
-            $this->getDao()->delete(self::REFRESH_TOKEN_MAP_PREFIX . $loginType . ':' . $loginId . ':' . $accessToken);
+            $this->getDao()->delete(self::buildRefreshTokenMapKey($loginId, $loginType, $accessToken));
         }
 
         return $data;
@@ -877,7 +877,7 @@ class TokenManager
     public function getRefreshTokenByAccessToken(mixed $loginId, string $loginType, string $accessToken): ?string
     {
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-        $mapKey = self::REFRESH_TOKEN_MAP_PREFIX . $loginType . ':' . $loginIdStr . ':' . $accessToken;
+        $mapKey = self::buildRefreshTokenMapKey($loginIdStr, $loginType, $accessToken);
         $value = $this->getDao()->get($mapKey);
         if ($value === null) {
             return null;
@@ -895,10 +895,15 @@ class TokenManager
             $loginType = is_string($data['loginType'] ?? null) ? $data['loginType'] : '';
             $accessToken = is_string($data['accessToken'] ?? null) ? $data['accessToken'] : '';
             if ($loginId !== '' && $accessToken !== '') {
-                $mapKey = self::REFRESH_TOKEN_MAP_PREFIX . $loginType . ':' . $loginId . ':' . $accessToken;
-                $this->getDao()->delete($mapKey);
+                $this->getDao()->delete(self::buildRefreshTokenMapKey($loginId, $loginType, $accessToken));
             }
         }
+    }
+
+    protected static function buildRefreshTokenMapKey(mixed $loginId, string $loginType, string $accessToken): string
+    {
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        return self::REFRESH_TOKEN_MAP_PREFIX . $loginType . ':' . $loginIdStr . ':' . $accessToken;
     }
 
     public function deleteRefreshTokenByAccessToken(mixed $loginId, string $loginType, string $accessToken): void
