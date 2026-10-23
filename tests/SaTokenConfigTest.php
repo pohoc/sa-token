@@ -106,6 +106,34 @@ class SaTokenConfigTest extends TestCase
         $this->assertSame(-1, $config->getRefreshTokenTimeout());
     }
 
+    public function testAntiBruteFailureThresholdUsesOnlyZeroAsDisabledSentinel(): void
+    {
+        try {
+            (new SaTokenConfig())->setAntiBruteMaxFailures(-1);
+            $this->fail('负数阈值不能关闭防暴力破解');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('非负整数', $e->getMessage());
+        }
+
+        $config = new SaTokenConfig(['antiBruteMaxFailures' => 0]);
+        $this->assertSame(0, $config->getAntiBruteMaxFailures());
+    }
+
+    public function testAntiBruteLockDurationMustBePositive(): void
+    {
+        foreach ([0, -1, -2, PHP_INT_MAX] as $duration) {
+            try {
+                (new SaTokenConfig())->setAntiBruteLockDuration($duration);
+                $this->fail("无效防暴力破解锁定时长 {$duration} 应被拒绝");
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('锁定时长', $e->getMessage());
+            }
+        }
+
+        $config = new SaTokenConfig(['antiBruteLockDuration' => 1]);
+        $this->assertSame(1, $config->getAntiBruteLockDuration());
+    }
+
     public function testToArray(): void
     {
         $config = new SaTokenConfig(['tokenName' => 'test']);

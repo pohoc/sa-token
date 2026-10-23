@@ -855,6 +855,9 @@ class SaTokenConfig
 
     public function setAntiBruteMaxFailures(int $antiBruteMaxFailures): static
     {
+        if ($antiBruteMaxFailures < 0) {
+            throw new SaTokenException('防暴力破解失败阈值必须是非负整数，0 表示不限');
+        }
         $this->antiBruteMaxFailures = $antiBruteMaxFailures;
         return $this;
     }
@@ -866,6 +869,10 @@ class SaTokenConfig
 
     public function setAntiBruteLockDuration(int $antiBruteLockDuration): static
     {
+        if ($antiBruteLockDuration === -1) {
+            throw new SaTokenException('防暴力破解锁定时长必须是正整数');
+        }
+        SaTokenTimeout::validate($antiBruteLockDuration, '防暴力破解锁定时长');
         $this->antiBruteLockDuration = $antiBruteLockDuration;
         return $this;
     }
