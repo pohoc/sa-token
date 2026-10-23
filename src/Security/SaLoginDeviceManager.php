@@ -79,7 +79,17 @@ class SaLoginDeviceManager
     {
         $dao = SaToken::getDao();
         $keyPrefix = self::getKey($loginId, $loginType) . ':';
-        $results = $dao->search($keyPrefix, '', 0, 100);
+        $results = [];
+        $pageSize = 100;
+        $start = 0;
+        do {
+            $page = $dao->search($keyPrefix, '', $start, $pageSize);
+            if ($page === []) {
+                break;
+            }
+            array_push($results, ...$page);
+            $start += count($page);
+        } while (count($page) === $pageSize);
 
         $devices = [];
         foreach ($results as $value) {
@@ -124,18 +134,29 @@ class SaLoginDeviceManager
 
     public static function kickoutAllDevices(mixed $loginId, string $loginType = 'login', ?string $exceptToken = null): int
     {
-        $devices = self::loadDeviceList($loginId, $loginType, true);
-        $count = 0;
-
-        foreach ($devices as $device) {
-            if ($exceptToken !== null && $device->getTokenValue() === $exceptToken) {
-                continue;
-            }
-            self::kickoutDevice($loginId, $device->getDeviceId(), $loginType);
-            $count++;
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $logic = SaToken::getStpLogic($loginType);
+        $lockKey = 'login:' . $loginType . ':' . hash('sha256', $loginIdStr);
+        if (!$logic->getTokenManager()->acquireLock($lockKey, 5)) {
+            throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
 
-        return $count;
+        try {
+            $devices = self::loadDeviceList($loginId, $loginType, true);
+            $count = 0;
+
+            foreach ($devices as $device) {
+                if ($exceptToken !== null && $device->getTokenValue() === $exceptToken) {
+                    continue;
+                }
+                self::kickoutDevice($loginId, $device->getDeviceId(), $loginType);
+                $count++;
+            }
+
+            return $count;
+        } finally {
+            $logic->getTokenManager()->releaseLock($lockKey);
+        }
     }
 
     public static function findDevice(mixed $loginId, string $deviceId, string $loginType = 'login'): ?SaLoginDevice

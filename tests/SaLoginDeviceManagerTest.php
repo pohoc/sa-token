@@ -224,6 +224,34 @@ class SaLoginDeviceManagerTest extends TestCase
         $this->assertEquals(0, $this->logic->getDeviceCount(10001));
     }
 
+    public function testKickoutAllDevicesDoesNotLeaveSessionsPastFirstHundredRecords(): void
+    {
+        $loginId = 'large-device-account';
+        $tokens = [];
+
+        for ($i = 0; $i < 101; $i++) {
+            $device = new SaLoginDevice([
+                'deviceType' => 'pc',
+                'deviceName' => 'Device ' . $i,
+                'ip' => '192.0.2.' . ($i + 1),
+            ]);
+            $parameter = (new SaLoginParameter())
+                ->setDeviceType('device-' . $i)
+                ->setDevice($device)
+                ->setIsShare(false)
+                ->setMaxLoginCount(-1);
+            $tokens[] = $this->logic->login($loginId, $parameter)->getAccessToken();
+        }
+
+        $this->assertSame(101, $this->logic->kickoutAllDevices($loginId));
+
+        $remaining = array_filter(
+            $tokens,
+            fn (string $token): bool => $this->logic->getTokenManager()->getLoginIdByToken($token) !== null
+        );
+        $this->assertCount(0, $remaining);
+    }
+
     public function testKickoutAllDevicesExceptToken(): void
     {
         SaToken::getConfig()->setIsShare(false);
