@@ -123,21 +123,17 @@ class SaTokenCrypto
         $paddedKey = $this->padAesKey($key);
 
         $macLength = strlen(self::AEAD_MAGIC) + 32;
-        if (str_starts_with($decoded, self::AEAD_MAGIC) && strlen($decoded) >= $macLength + $ivLength) {
+        if (str_starts_with($decoded, self::AEAD_MAGIC)) {
+            if (strlen($decoded) < $macLength + $ivLength + 16) {
+                throw new SaTokenException('AES 解密失败：密文完整性校验未通过（可能被篡改）');
+            }
+
             $mac = substr($decoded, 4, 32);
             $iv = substr($decoded, $macLength, $ivLength);
             $encrypted = substr($decoded, $macLength + $ivLength);
 
             $expectedMac = hash_hmac('sha256', $iv . $encrypted, $this->deriveAesMacKey($paddedKey), true);
             if (!hash_equals($expectedMac, $mac)) {
-                // 旧格式随机 IV 的前 4 字节恰好是 'SAT1' 的概率约 2^-32，
-                // 命中后 MAC 必然不符——回退旧格式分支尝试解密而非直接判损
-                $legacyIv = substr($decoded, 0, $ivLength);
-                $legacyEncrypted = substr($decoded, $ivLength);
-                $legacyPlaintext = openssl_decrypt($legacyEncrypted, 'AES-256-CBC', $paddedKey, OPENSSL_RAW_DATA, $legacyIv);
-                if ($legacyPlaintext !== false) {
-                    return $legacyPlaintext;
-                }
                 throw new SaTokenException('AES 解密失败：密文完整性校验未通过（可能被篡改）');
             }
         } else {

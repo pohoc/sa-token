@@ -93,6 +93,23 @@ class SaTokenCryptoTest extends TestCase
         @$this->crypto->aesDecrypt(base64_encode('garbage-data'));
     }
 
+    public function testAesDecryptRejectsLegacyCiphertextWhoseIvMatchesAeadMarker(): void
+    {
+        $key = str_repeat('k', 32);
+        $iv = 'SAT1' . str_repeat("\0", 12);
+        foreach (['short legacy plaintext', str_repeat('legacy plaintext ', 4)] as $plaintext) {
+            $encrypted = openssl_encrypt($plaintext, 'AES-256-CBC', $key, OPENSSL_RAW_DATA, $iv);
+            $this->assertNotFalse($encrypted);
+
+            try {
+                $this->crypto->aesDecrypt(base64_encode($iv . $encrypted), $key);
+                self::fail('密文标记命中后不得回退到旧格式解密');
+            } catch (SaTokenException $exception) {
+                $this->assertStringContainsString('完整性校验未通过', $exception->getMessage());
+            }
+        }
+    }
+
     public function testAesNoKeyConfigured(): void
     {
         $crypto = new SaTokenCrypto([]);
