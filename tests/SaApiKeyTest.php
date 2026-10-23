@@ -141,6 +141,20 @@ class SaApiKeyTest extends TestCase
         $api->setKeyRegistry(['my-key' => ['secret' => '', 'loginId' => 10001]]);
     }
 
+    public function testSetKeyRegistryAcceptsNumericApiKey(): void
+    {
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'api-key' => '123',
+            'api-secret' => 'numeric-key-secret',
+        ]));
+
+        $api = new SaApiKey();
+        $api->setKeyRegistry(['123' => ['secret' => 'numeric-key-secret', 'loginId' => 10001]]);
+        $api->checkApiKey();
+
+        $this->assertTrue(SaToken::getDao()->exists('satoken:login:loginId:login:10001'));
+    }
+
     public function testCheckApiKeyWithCustomValidator(): void
     {
         $request = $this->mockRequestWithHeaders([
