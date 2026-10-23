@@ -6,6 +6,7 @@ namespace SaToken\Tests;
 
 use CryptoSm\SM2\Sm2;
 use CryptoSm\SM4\Sm4;
+use CryptoSm\SM4\Sm4Options;
 use PHPUnit\Framework\TestCase;
 use SaToken\Exception\SaTokenException;
 use SaToken\Plugin\SaTokenSmCrypto;
@@ -222,6 +223,41 @@ class SaTokenSmCryptoTest extends TestCase
         // 用错误的密钥解密应失败
         $this->expectException(SaTokenException::class);
         $crypto->sm4Decrypt($encrypted, $wrongKey);
+    }
+
+    public function testSm4DecryptRejectsUnauthenticatedLegacyCiphertext(): void
+    {
+        $this->skipIfSmUnavailable();
+
+        $key = 'aa112233445566778899aabbccddeeff';
+        $options = new Sm4Options();
+        $iv = $options->getIv();
+        $plaintext = 'isAdmin=0;hello!';
+        $ciphertext = Sm4::encrypt($plaintext, $key, $options);
+
+        // 旧版 IV 没有 MAC：翻转 IV 中对应字节后，首个明文分组可被静默篡改。
+        $ivBytes = hex2bin($iv);
+        $this->assertNotFalse($ivBytes);
+        $ivBytes[8] = chr((ord($ivBytes[8]) ^ (ord('0') ^ ord('1'))) & 0xff);
+        $tamperedLegacyCiphertext = bin2hex($ivBytes) . $ciphertext;
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('拒绝未认证的旧版 SM4-CBC 密文');
+        (new SaTokenSmCrypto(['sm4Key' => $key]))->sm4Decrypt($tamperedLegacyCiphertext);
+    }
+
+    public function testLegacySm4CiphertextCanOnlyBeReadThroughExplicitMigrationMethod(): void
+    {
+        $this->skipIfSmUnavailable();
+
+        $key = 'aa112233445566778899aabbccddeeff';
+        $options = new Sm4Options();
+        $iv = $options->getIv();
+        $plaintext = 'legacy SM4 data';
+        $ciphertext = Sm4::encrypt($plaintext, $key, $options);
+
+        $crypto = new SaTokenSmCrypto(['sm4Key' => $key]);
+        $this->assertSame($plaintext, $crypto->sm4DecryptLegacy($iv . $ciphertext));
     }
 
     public function testSm4EncryptEmptyString(): void

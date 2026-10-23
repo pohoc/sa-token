@@ -156,7 +156,8 @@ class SaTokenSmCrypto
     /**
      * SM4 解密（CBC 模式，PKCS5 填充）
      *
-     * 自动从密文前 32 位 hex 字符提取 IV，剩余部分为实际密文。
+     * 仅接受带 HMAC 的认证密文。旧版无认证 CBC 密文必须通过
+     * sm4DecryptLegacy() 显式迁移，避免静默回退接受 IV 比特翻转。
      *
      * @param  string           $data 十六进制编码的密文（含前缀 IV）
      * @param  string|null      $key  32 位 hex 密钥，null 使用配置密钥
@@ -183,11 +184,37 @@ class SaTokenSmCrypto
                     throw new SaTokenException('SM4 解密失败：密文完整性校验未通过（可能被篡改）');
                 }
             } else {
-                // 旧格式兼容：前 32 hex 字符为 IV，其余为密文
-                $iv = substr($data, 0, 32);
-                $ciphertext = substr($data, 32);
+                throw new SaTokenException('SM4 解密失败：拒绝未认证的旧版 SM4-CBC 密文');
             }
 
+            $options = (new Sm4Options())->setIv($iv);
+            return Sm4::decrypt($ciphertext, $key, $options);
+        } catch (\Throwable $e) {
+            throw new SaTokenException('SM4 解密失败：' . $e->getMessage(), 0, $e);
+        }
+    }
+
+    /**
+     * 解密未认证的历史 SM4-CBC 密文，仅用于受控的数据迁移。
+     *
+     * 历史格式不含 MAC，无法检测密文篡改；不要在请求处理或任何不可信输入路径中调用。
+     * 迁移后应立即用 sm4Encrypt() 重新加密，并删除旧密文。
+     *
+     * @throws SaTokenException
+     */
+    public function sm4DecryptLegacy(string $data, ?string $key = null): string
+    {
+        $key = $key ?? $this->sm4Key;
+        if ($key === '') {
+            throw new SaTokenException('SM4 密钥未配置');
+        }
+        if (str_starts_with($data, self::SM4_AEAD_MAGIC)) {
+            throw new SaTokenException('SM4 解密失败：认证格式不得使用旧版解密器');
+        }
+
+        try {
+            $iv = substr($data, 0, 32);
+            $ciphertext = substr($data, 32);
             $options = (new Sm4Options())->setIv($iv);
             return Sm4::decrypt($ciphertext, $key, $options);
         } catch (\Throwable $e) {

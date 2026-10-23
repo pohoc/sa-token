@@ -978,7 +978,7 @@ $valid = SaTokenCrypto::bcryptVerify('password', $bcrypt);
 
 AES / RSA / SM2 / SM3 / SM4 等加解密功能参见 `SaTokenCrypto` 类。
 
-AES 解密默认只接受带 HMAC 的认证格式。旧版未认证 CBC 密文如需迁移，可在受控离线流程中临时使用 `aesDecryptLegacy()` 读取，再用 `aesEncrypt()` 重加密；该迁移方法不能用于请求输入或在线解密路径。
+AES/SM4 解密默认只接受带 HMAC 的认证格式。旧版未认证 CBC 密文如需迁移，可在受控离线流程中临时使用 `aesDecryptLegacy()` / `sm4DecryptLegacy()` 读取，再用对应的加密方法重加密；迁移方法不能用于请求输入或在线解密路径。
 
 ## 防暴力破解
 
