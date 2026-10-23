@@ -6,6 +6,7 @@ namespace SaToken\Plugin;
 
 use CryptoSm\SM3\HmacSm3;
 use SaToken\Exception\SaTokenException;
+use SaToken\Util\SaTokenTimeout;
 
 class SaTokenJwt
 {
@@ -31,6 +32,10 @@ class SaTokenJwt
     {
         if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
             throw new SaTokenException('loginId 不能为空且必须是非布尔标量');
+        }
+
+        if ($timeout !== null) {
+            SaTokenTimeout::validate($timeout, 'JWT');
         }
 
         if ($this->secretKey === '') {

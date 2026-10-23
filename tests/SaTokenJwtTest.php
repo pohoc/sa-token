@@ -62,6 +62,18 @@ class SaTokenJwtTest extends TestCase
         $this->assertGreaterThan(time(), $payload['exp']);
     }
 
+    public function testCreateTokenRejectsInvalidNonPositiveTimeouts(): void
+    {
+        foreach ([0, -2] as $timeout) {
+            try {
+                $this->jwt->createToken(10001, 'login', $timeout);
+                $this->fail('无效 JWT 有效期必须被拒绝');
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('有效期', $e->getMessage());
+            }
+        }
+    }
+
     public function testCreateTokenWithoutTimeout(): void
     {
         $token = $this->jwt->createToken(10001, 'login');

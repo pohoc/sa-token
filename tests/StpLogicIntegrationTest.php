@@ -9,6 +9,7 @@ use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoMemory;
 use SaToken\Exception\NotLoginException;
 use SaToken\Exception\NotSafeException;
+use SaToken\Exception\SaTokenException;
 use SaToken\Listener\SaTokenListenerInterface;
 use SaToken\SaLoginParameter;
 use SaToken\SaToken;
@@ -80,6 +81,12 @@ class StpLogicIntegrationTest extends TestCase
         $this->assertGreaterThan(3500, $this->dao->getTimeout($listKey));
         $this->assertSame($loginId, $this->logic->getLoginIdByToken($longLogin->getAccessToken()));
         $this->assertSame($loginId, $this->logic->getLoginIdByToken($shortLogin->getAccessToken()));
+    }
+
+    public function testLoginParameterRejectsZeroTimeout(): void
+    {
+        $this->expectException(SaTokenException::class);
+        new SaLoginParameter(['timeout' => 0]);
     }
 
     // ======== getSession 集成测试 ========

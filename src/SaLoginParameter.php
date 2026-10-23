@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SaToken;
 
 use SaToken\Data\SaLoginDevice;
+use SaToken\Util\SaTokenTimeout;
 
 class SaLoginParameter
 {
@@ -62,6 +63,9 @@ class SaLoginParameter
 
     public function setTimeout(?int $timeout): static
     {
+        if ($timeout !== null) {
+            SaTokenTimeout::validate($timeout);
+        }
         $this->timeout = $timeout;
         return $this;
     }

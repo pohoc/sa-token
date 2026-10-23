@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace SaToken\Config;
 
+use SaToken\Util\SaTokenTimeout;
+
 /**
  * Sa-Token 核心配置类
  *
@@ -352,6 +354,7 @@ class SaTokenConfig
 
     public function setTimeout(int $timeout): static
     {
+        SaTokenTimeout::validate($timeout);
         $this->timeout = $timeout;
         return $this;
     }

@@ -63,6 +63,14 @@ class TokenManagerTest extends TestCase
         $this->assertEquals('10001', $loginId);
     }
 
+    public function testSaveTokenRejectsZeroTimeoutInsteadOfCreatingPermanentToken(): void
+    {
+        $token = $this->manager->createTokenValue('zero-timeout-user', 'login');
+
+        $this->expectException(SaTokenException::class);
+        $this->manager->saveToken($token, 'zero-timeout-user', 'login', '', 0);
+    }
+
     public function testSaveTokenRequiresAccountLock(): void
     {
         $loginId = 'save-lock-user';

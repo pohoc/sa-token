@@ -6,6 +6,7 @@ namespace SaToken\Tests;
 
 use PHPUnit\Framework\TestCase;
 use SaToken\Config\SaTokenConfig;
+use SaToken\Exception\SaTokenException;
 
 class SaTokenConfigTest extends TestCase
 {
@@ -52,6 +53,18 @@ class SaTokenConfigTest extends TestCase
         $this->assertEquals('chain-token', $config->getTokenName());
         $this->assertEquals(3600, $config->getTimeout());
         $this->assertFalse($config->isReadHeader());
+    }
+
+    public function testTokenTimeoutMustBePositiveOrExplicitlyPermanent(): void
+    {
+        foreach ([0, -2] as $timeout) {
+            try {
+                (new SaTokenConfig())->setTimeout($timeout);
+                $this->fail('仅 -1 可表示永不过期');
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('有效期', $e->getMessage());
+            }
+        }
     }
 
     public function testToArray(): void

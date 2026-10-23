@@ -10,6 +10,7 @@ use SaToken\Plugin\SaTokenJwt;
 use SaToken\Util\SaFoxUtil;
 use SaToken\Util\SaTokenContext;
 use SaToken\Util\SaTokenEncryptor;
+use SaToken\Util\SaTokenTimeout;
 
 class TokenManager
 {
@@ -124,6 +125,8 @@ class TokenManager
 
     public function saveToken(string $tokenValue, mixed $loginId, string $loginType, string $deviceType = '', ?int $timeout = null): string
     {
+        SaTokenTimeout::validate($timeout ?? $this->getConfig()->getTimeout());
+
         if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
             throw new SaTokenException('loginId 不能为空且必须是非布尔标量');
         }
@@ -722,6 +725,8 @@ class TokenManager
 
     public function saveRefreshToken(string $refreshToken, string $accessToken, mixed $loginId, string $loginType, int $timeout): void
     {
+        SaTokenTimeout::validate($timeout, 'RefreshToken');
+
         if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
             throw new SaTokenException('loginId 不能为空且必须是非布尔标量');
         }

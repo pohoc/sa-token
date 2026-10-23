@@ -13,6 +13,7 @@ use SaToken\Plugin\SaTokenJwt;
 use SaToken\Security\SaLoginDeviceManager;
 use SaToken\Util\SaFoxUtil;
 use SaToken\Util\SaTokenContext;
+use SaToken\Util\SaTokenTimeout;
 
 class StpLogic
 {
@@ -98,10 +99,12 @@ class StpLogic
         $parameter = $parameter ?? new SaLoginParameter();
         $config = $this->getConfig();
 
+        $timeout = $parameter->getTimeout() ?? $config->getTimeout();
+        SaTokenTimeout::validate($timeout);
+
         $this->checkDisableForLogin($loginId);
 
         $deviceType = $parameter->getDeviceType();
-        $timeout = $parameter->getTimeout() ?? $config->getTimeout();
         $isShare = $parameter->getIsShare() ?? $config->isShare();
         $maxLoginCount = $parameter->getMaxLoginCount() ?? $config->getMaxLoginCount();
 
@@ -202,9 +205,10 @@ class StpLogic
         $parameter = $parameter ?? new SaLoginParameter();
         $config = $this->getConfig();
 
-        $this->checkDisableForLogin($loginId);
-
         $timeout = $parameter->getTimeout() ?? $config->getTimeout();
+        SaTokenTimeout::validate($timeout);
+
+        $this->checkDisableForLogin($loginId);
 
         $jwt = $this->getJwt();
         $tokenValue = $jwt->createStatelessToken($loginId, $this->loginType, $timeout);
