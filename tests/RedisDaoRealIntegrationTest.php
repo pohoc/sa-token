@@ -104,6 +104,15 @@ class RedisDaoRealIntegrationTest extends TestCase
         $this->assertLessThanOrEqual(120, $ttl);
     }
 
+    public function testGetAndExpireWithNonPositiveTimeoutPersistsKey(): void
+    {
+        $key = $this->prefix . 'get-and-expire-persist';
+        $this->dao->set($key, 'value-4', 10);
+
+        $this->assertSame('value-4', $this->dao->getAndExpire($key, 0));
+        $this->assertSame(-1, $this->dao->getTimeout($key));
+    }
+
     public function testSetIfNotExistsAgainstRealRedis(): void
     {
         $this->assertInstanceOf(SaTokenDaoRedis::class, $this->dao);

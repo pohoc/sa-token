@@ -199,7 +199,12 @@ class SaTokenDaoRedis implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
         $script = <<<'LUA'
 local value = redis.call('GET', KEYS[1])
 if value then
-    redis.call('EXPIRE', KEYS[1], ARGV[1])
+    local timeout = tonumber(ARGV[1])
+    if timeout and timeout > 0 then
+        redis.call('EXPIRE', KEYS[1], timeout)
+    else
+        redis.call('PERSIST', KEYS[1])
+    end
 end
 return value
 LUA;
