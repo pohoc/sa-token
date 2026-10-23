@@ -199,12 +199,14 @@ class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteI
 
     public function get(string $key): ?string
     {
-        return $this->readValue($key);
+        return $this->withLock($key, fn (): ?string => $this->readValue($key));
     }
 
     public function set(string $key, string $value, ?int $timeout = null): void
     {
-        $this->writeRecord($key, $value, ($timeout !== null && $timeout > 0) ? time() + $timeout : null);
+        $this->withLock($key, function () use ($key, $value, $timeout): void {
+            $this->writeRecord($key, $value, ($timeout !== null && $timeout > 0) ? time() + $timeout : null);
+        });
     }
 
     public function update(string $key, string $value): void
@@ -220,19 +222,25 @@ class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteI
 
     public function delete(string $key): void
     {
-        @unlink($this->dataFile($key));
+        $this->withLock($key, fn () => @unlink($this->dataFile($key)));
     }
 
     public function getTimeout(string $key): int
     {
-        $record = $this->readRecord($key);
-        if ($record === null) {
-            return -2;
-        }
-        if ($record['e'] === null) {
-            return -1;
-        }
-        return max(0, $record['e'] - time());
+        return $this->withLock($key, function () use ($key): int {
+            $record = $this->readRecord($key);
+            if ($record === null) {
+                return -2;
+            }
+            if ($this->isExpired($record['e'])) {
+                @unlink($this->dataFile($key));
+                return -2;
+            }
+            if ($record['e'] === null) {
+                return -1;
+            }
+            return max(0, $record['e'] - time());
+        });
     }
 
     public function expire(string $key, int $timeout): void
@@ -286,7 +294,7 @@ class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteI
 
     public function exists(string $key): bool
     {
-        return $this->readValue($key) !== null;
+        return $this->withLock($key, fn (): bool => $this->readValue($key) !== null);
     }
 
     public function setIfNotExists(string $key, string $value, ?int $timeout = null): bool
@@ -337,7 +345,7 @@ class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteI
     {
         foreach ($keys as $key) {
             if (is_string($key)) {
-                @unlink($this->dataFile($key));
+                $this->delete($key);
             }
         }
     }
@@ -375,12 +383,21 @@ class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteI
             }
             $record = json_decode($raw, true);
             if (!is_array($record) || !is_string($record['key'] ?? null) || !is_string($record['v'] ?? null)) {
-                @unlink($path);
                 continue;
             }
             /** @var array{key: string, v: string, e: int|null} $record */
-            if ($this->isExpired($record['e'])) {
-                @unlink($path);
+            $record = $this->withLock($record['key'], function () use ($record): ?array {
+                $latest = $this->readRecord($record['key']);
+                if ($latest === null) {
+                    return null;
+                }
+                if ($this->isExpired($latest['e'])) {
+                    @unlink($this->dataFile($record['key']));
+                    return null;
+                }
+                return $latest;
+            });
+            if ($record === null) {
                 continue;
             }
             if (!str_starts_with($record['key'], $prefix)) {

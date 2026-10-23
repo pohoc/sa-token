@@ -25,6 +25,7 @@ class SaTokenDaoFileTest extends TestCase
     protected function tearDown(): void
     {
         // 清理测试目录（结构固定：basePath/{data,locks} 两层）
+        @unlink($this->basePath . '/set-result');
         foreach (['data', 'locks'] as $sub) {
             $dir = $this->basePath . '/' . $sub;
             if (!is_dir($dir)) {
@@ -151,6 +152,50 @@ class SaTokenDaoFileTest extends TestCase
         $this->assertSame('v', $this->dao->getAndDelete('k:gd'));
         $this->assertNull($this->dao->get('k:gd'));
         $this->assertNull($this->dao->getAndDelete('k:gd'));
+    }
+
+    public function testSetWaitsForAtomicReadModifyWriteLock(): void
+    {
+        if (!function_exists('pcntl_fork')) {
+            $this->markTestSkipped('pcntl is required for the multi-process lock test');
+        }
+
+        $key = 'k:atomic-set';
+        $resultPath = $this->basePath . '/set-result';
+        $lockPath = $this->basePath . '/locks/' . hash('sha256', $key) . '.lock';
+        $lock = fopen($lockPath, 'c');
+        $this->assertNotFalse($lock);
+        flock($lock, LOCK_EX);
+
+        $dao = $this->dao;
+        $pid = pcntl_fork();
+        if ($pid === -1) {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+            $this->fail('Could not fork worker process');
+        }
+        if ($pid === 0) {
+            fclose($lock);
+            file_put_contents($resultPath, 'started');
+            $dao->set($key, 'fresh-value');
+            file_put_contents($resultPath, 'done');
+            exit(0);
+        }
+
+        $deadline = microtime(true) + 1.0;
+        while (!is_file($resultPath) && microtime(true) < $deadline) {
+            usleep(10000);
+        }
+        $this->assertSame('started', file_get_contents($resultPath));
+        usleep(100000);
+        $this->assertSame('started', file_get_contents($resultPath), 'set must block while the key lock is held');
+
+        flock($lock, LOCK_UN);
+        fclose($lock);
+        $status = 0;
+        $this->assertSame($pid, pcntl_waitpid($pid, $status));
+        $this->assertSame('done', file_get_contents($resultPath));
+        $this->assertSame('fresh-value', $this->dao->get($key));
     }
 
     public function testCompareAndDeletePreservesAReplacementLock(): void
