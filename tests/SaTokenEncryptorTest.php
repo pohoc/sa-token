@@ -115,8 +115,15 @@ class SaTokenEncryptorTest extends TestCase
         $legacyHmac = \CryptoSm\SM3\Sm3::sm3($iv . $ciphertext);
         $legacyPayload = base64_encode(hex2bin($legacyHmac) . hex2bin($iv) . hex2bin($ciphertext));
 
-        // 普通解密保留迁移兼容；安全敏感读取不得把公开可重算的摘要当作认证。
-        $this->assertSame('legacy-data', $encryptor->decrypt($legacyPayload));
+        // 默认解密不能把公开可重算的摘要当作认证；迁移必须显式选择旧格式。
+        $tamperedIv = chr((ord($iv[0]) ^ 1) & 0xFF) . substr($iv, 1);
+        $tamperedCiphertext = base64_encode(
+            hex2bin(\CryptoSm\SM3\Sm3::sm3($tamperedIv . $ciphertext))
+                . hex2bin($tamperedIv)
+                . hex2bin($ciphertext)
+        );
+        $this->assertSame($tamperedCiphertext, $encryptor->decrypt($tamperedCiphertext));
+        $this->assertNotSame('legacy-data', $encryptor->decryptLegacy($tamperedCiphertext));
         $this->assertNull($encryptor->decryptChecked($legacyPayload));
     }
 

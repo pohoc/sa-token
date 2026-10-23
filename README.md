@@ -980,6 +980,8 @@ AES / RSA / SM2 / SM3 / SM4 等加解密功能参见 `SaTokenCrypto` 类。
 
 AES/SM4 解密默认只接受带 HMAC 的认证格式。旧版未认证 CBC 密文如需迁移，可在受控离线流程中临时使用 `aesDecryptLegacy()` / `sm4DecryptLegacy()` 读取，再用对应的加密方法重加密；迁移方法不能用于请求输入或在线解密路径。
 
+Token 存储加密器 `SaTokenEncryptor::decrypt()` 同样默认拒绝旧版无密钥 SM3 摘要的 SM4 密文；仅受控离线迁移可显式调用 `decryptLegacy()`，然后立即用 `encrypt()` 重加密。
+
 ## 防暴力破解
 
 登录失败次数记录与账号自动锁定：

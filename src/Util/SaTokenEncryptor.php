@@ -62,6 +62,19 @@ class SaTokenEncryptor
         return $this->useSm ? $this->sm4Decrypt($data) : $this->aesDecrypt($data);
     }
 
+    /**
+     * 显式迁移旧格式数据。SM4 旧格式使用无密钥 SM3 摘要，不提供真实性保证，
+     * 因此普通 decrypt() 不再接受；迁移方必须在可信、只读的旧数据来源上调用本方法。
+     */
+    public function decryptLegacy(string $data): string
+    {
+        if (!$this->enabled) {
+            return $data;
+        }
+
+        return $this->useSm ? $this->sm4Decrypt($data, true) : $this->aesDecrypt($data);
+    }
+
     protected function aesEncrypt(string $plaintext): string
     {
         $iv = random_bytes(16);
@@ -120,7 +133,7 @@ class SaTokenEncryptor
         }
     }
 
-    protected function sm4Decrypt(string $data): string
+    protected function sm4Decrypt(string $data, bool $allowLegacyUnkeyedIntegrity = false): string
     {
         $decoded = base64_decode($data, true);
         if ($decoded === false || strlen($decoded) < 64) {
@@ -131,9 +144,12 @@ class SaTokenEncryptor
         $iv = bin2hex(substr($decoded, 32, 16));
         $ciphertext = bin2hex(substr($decoded, 48));
 
-        // 兼容历史格式：先验 HMAC-SM3（独立密钥），再回退旧版无密钥 SM3 格式
+        // 先验当前带密钥 HMAC-SM3。旧版无密钥摘要只能由显式迁移入口接受。
         $expectedHmac = HmacSm3::hmac($this->macKey, $iv . $ciphertext);
         if (!hash_equals($expectedHmac, $hmac)) {
+            if (!$allowLegacyUnkeyedIntegrity) {
+                return $data;
+            }
             $legacyHmac = Sm3::sm3($iv . $ciphertext);
             if (!hash_equals($legacyHmac, $hmac)) {
                 return $data;
