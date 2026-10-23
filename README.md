@@ -904,6 +904,8 @@ $psr16Cache = new SomePsr16Cache();
 SaToken::setDao(new SaTokenDaoPsr16($psr16Cache));
 ```
 
+PSR-16 不提供原子 `getAndDelete`、`setIfNotExists` 或 `increment`。该适配器的并发一次性消费、防重放、分布式锁和暴力尝试计数只能尽力而为；多进程/多实例部署或需要可靠防重放时，请使用 Redis、文件 DAO（单机）或实现原子操作的自定义 DAO。
+
 ### 配置驱动自动装配
 
 在 `config/sa_token.php` 中声明 `storage` 段，`SaToken::init()` 会自动构造存储层（无需再调用 `setDao`；显式 `setDao` 的优先级更高）：

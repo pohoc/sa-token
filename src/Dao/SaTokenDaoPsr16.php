@@ -109,6 +109,8 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface
 
     public function getAndDelete(string $key): ?string
     {
+        // PSR-16 没有原子读取并删除原语：此实现仅为兼容性尽力而为，
+        // 并发重放防护需换用 Redis/文件 DAO 或提供原子操作的自定义 DAO。
         $value = $this->get($key);
         if ($value !== null) {
             $this->delete($key);
