@@ -861,12 +861,12 @@ class TokenManager
         try {
             $key = 'satoken:jwt:revoked-before:' . $loginType . ':' . hash('sha256', $loginId);
             $current = $this->getDao()->get($key);
-            $cutoff = time() + 1;
-            if ($current !== null && ctype_digit($current)) {
-                $cutoff = max($cutoff, (int) $current);
+            $cutoff = microtime(true);
+            if ($current !== null && is_numeric($current) && is_finite((float) $current)) {
+                $cutoff = max($cutoff, (float) $current);
             }
             // 保留水位而不设置 TTL，避免无过期 JWT 在缓存过期后重新有效。
-            $this->getDao()->set($key, (string) $cutoff);
+            $this->getDao()->set($key, sprintf('%.6F', $cutoff));
         } finally {
             $this->releaseLock($lockKey);
         }
@@ -879,7 +879,9 @@ class TokenManager
         if ($cutoff === null) {
             return false;
         }
-        if (!ctype_digit($cutoff)
+        if (!is_numeric($cutoff)
+            || !is_finite((float) $cutoff)
+            || (float) $cutoff <= 0
             || (!is_int($issuedAt) && !is_float($issuedAt))
             || (is_float($issuedAt) && !is_finite($issuedAt))) {
             return true;

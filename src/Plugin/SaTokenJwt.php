@@ -38,13 +38,17 @@ class SaTokenJwt
         }
 
         $now = time();
+        // Fractional NumericDate lets account-wide revocation distinguish a
+        // token issued immediately after logout from an older token minted in
+        // the same wall-clock second.
+        $issuedAt = microtime(true);
         $header = [
             'typ' => 'JWT',
             'alg' => $this->cryptoType === 'sm' ? 'SM3' : 'HS256',
         ];
 
         $payload = [
-            'iat'  => $now,
+            'iat'  => $issuedAt,
             'jti'  => bin2hex(random_bytes(16)),
             'sub'  => (string) $loginId,
             'type' => $loginType,

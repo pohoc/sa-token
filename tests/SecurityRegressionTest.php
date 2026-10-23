@@ -381,8 +381,13 @@ class SecurityRegressionTest extends TestCase
             'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
         ]))->createStatelessToken(29995, 'login', 3600);
 
+        // Start at a fresh wall-clock second so the post-logout token is
+        // guaranteed to be issued in the same integer second as the cutoff.
+        $nextSecond = ceil(microtime(true));
+        while (microtime(true) < $nextSecond) {
+            usleep(1000);
+        }
         StpUtil::logoutByLoginId(29995);
-        sleep(2);
         $newJwt = (new \SaToken\Plugin\SaTokenJwt([
             'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
         ]))->createStatelessToken(29995, 'login', 3600);
