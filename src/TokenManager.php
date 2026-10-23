@@ -46,6 +46,11 @@ class TokenManager
         return self::LOGIN_ID_PREFIX . self::encodeKeyComponent($loginType) . ':' . self::encodeKeyComponent($loginId);
     }
 
+    protected static function buildLegacyLoginIdKey(string $loginType, string $loginId): string
+    {
+        return self::LOGIN_ID_PREFIX . $loginType . ':' . $loginId;
+    }
+
     protected static function buildDisableKey(string $loginType, string $loginId, string $service): string
     {
         return self::DISABLE_PREFIX . self::encodeKeyComponent($loginType) . ':'
@@ -336,7 +341,39 @@ class TokenManager
         $loginIdKey = self::buildLoginIdKey($loginType, $loginIdStr);
         $json = $this->getDao()->get($loginIdKey);
         if ($json === null) {
-            return [];
+            // Read legacy delimiter-based indexes during upgrade. A legacy key
+            // may contain several accounts after a tuple collision, so only
+            // return entries whose authoritative token record belongs to this
+            // exact loginId. The new index remains isolated from the next write.
+            if (self::encodeKeyComponent($loginType) === $loginType
+                && self::encodeKeyComponent($loginIdStr) === $loginIdStr) {
+                return [];
+            }
+            $legacyJson = $this->getDao()->get(self::buildLegacyLoginIdKey($loginType, $loginIdStr));
+            if ($legacyJson === null) {
+                return [];
+            }
+            $legacyList = SaFoxUtil::fromJson($this->decryptValue($legacyJson));
+            if (!is_array($legacyList)) {
+                return [];
+            }
+            $filtered = [];
+            foreach ($legacyList as $item) {
+                if (!is_array($item)) {
+                    continue;
+                }
+                $normalized = [];
+                foreach ($item as $key => $value) {
+                    if (is_string($key)) {
+                        $normalized[$key] = $value;
+                    }
+                }
+                $tokenValue = $normalized['tokenValue'] ?? null;
+                if (is_string($tokenValue) && $this->getLoginIdByToken($tokenValue) === $loginIdStr) {
+                    $filtered[] = $normalized;
+                }
+            }
+            return $filtered;
         }
         $decrypted = $this->decryptValue($json);
         $list = SaFoxUtil::fromJson($decrypted);

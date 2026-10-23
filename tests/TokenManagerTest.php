@@ -79,6 +79,34 @@ class TokenManagerTest extends TestCase
         self::assertTrue($this->manager->isTokenValid($adminToken));
     }
 
+    public function testLogoutCanRevokeLegacyTokensFromCollidingAccountIndex(): void
+    {
+        $userToken = $this->manager->createTokenValue('admin:42', 'user');
+        $this->manager->saveToken($userToken, 'admin:42', 'user');
+        $adminToken = $this->manager->createTokenValue('42', 'user:admin');
+        $this->manager->saveToken($adminToken, '42', 'user:admin');
+
+        $userList = $this->manager->getTokenListByLoginId('admin:42', 'user');
+        $adminList = $this->manager->getTokenListByLoginId('42', 'user:admin');
+        $this->dao->delete(TokenManager::buildLoginIdKey('user', 'admin:42'));
+        $this->dao->delete(TokenManager::buildLoginIdKey('user:admin', '42'));
+        $legacyList = array_merge($userList, $adminList);
+        $json = json_encode($legacyList);
+        self::assertIsString($json);
+        $encrypt = new \ReflectionMethod(TokenManager::class, 'encryptValue');
+        $encrypted = $encrypt->invoke($this->manager, $json);
+        self::assertIsString($encrypted);
+        $this->dao->set(TokenManager::LOGIN_ID_PREFIX . 'user:admin:42', $encrypted);
+
+        self::assertSame([$userToken], array_column($this->manager->getTokenListByLoginId('admin:42', 'user'), 'tokenValue'));
+        self::assertSame([$adminToken], array_column($this->manager->getTokenListByLoginId('42', 'user:admin'), 'tokenValue'));
+
+        $this->manager->deleteAllTokenByLoginId('admin:42', 'user');
+
+        self::assertFalse($this->manager->isTokenValid($userToken));
+        self::assertTrue($this->manager->isTokenValid($adminToken));
+    }
+
     public function testSaveTokenRejectsZeroTimeoutInsteadOfCreatingPermanentToken(): void
     {
         $token = $this->manager->createTokenValue('zero-timeout-user', 'login');
