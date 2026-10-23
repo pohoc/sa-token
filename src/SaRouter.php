@@ -102,7 +102,7 @@ class SaRouter
         if ($request === null) {
             if (isset($_SERVER['REQUEST_URI']) && is_string($_SERVER['REQUEST_URI'])) {
                 $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-                $state['currentPath'] = is_string($uri) ? $uri : '/';
+                $state['currentPath'] = is_string($uri) ? self::normalizePath($uri) : '/';
             } else {
                 $state['currentPath'] = '/';
             }
@@ -110,23 +110,23 @@ class SaRouter
         }
         if ($request instanceof \Psr\Http\Message\ServerRequestInterface) {
             $uri = $request->getUri();
-            $state['currentPath'] = $uri->getPath();
+            $state['currentPath'] = self::normalizePath($uri->getPath());
         } elseif (is_object($request)) {
             if (method_exists($request, 'getPathInfo')) {
                 $pathInfo = $request->getPathInfo();
-                $state['currentPath'] = is_string($pathInfo) ? $pathInfo : '/';
+                $state['currentPath'] = is_string($pathInfo) ? self::normalizePath($pathInfo) : '/';
             } elseif (method_exists($request, 'path')) {
                 $path = $request->path();
-                $state['currentPath'] = is_string($path) ? $path : '/';
+                $state['currentPath'] = is_string($path) ? self::normalizePath($path) : '/';
             } elseif (isset($_SERVER['REQUEST_URI']) && is_string($_SERVER['REQUEST_URI'])) {
                 $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-                $state['currentPath'] = is_string($uri) ? $uri : '/';
+                $state['currentPath'] = is_string($uri) ? self::normalizePath($uri) : '/';
             } else {
                 $state['currentPath'] = '/';
             }
         } elseif (isset($_SERVER['REQUEST_URI']) && is_string($_SERVER['REQUEST_URI'])) {
             $uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-            $state['currentPath'] = is_string($uri) ? $uri : '/';
+            $state['currentPath'] = is_string($uri) ? self::normalizePath($uri) : '/';
         } else {
             $state['currentPath'] = '/';
         }
@@ -137,7 +137,16 @@ class SaRouter
     public static function setCurrentPath(string $path): void
     {
         $state = &self::getState();
-        $state['currentPath'] = $path;
+        $state['currentPath'] = self::normalizePath($path);
+    }
+
+    protected static function normalizePath(string $path): string
+    {
+        if ($path === '') {
+            return '/';
+        }
+
+        return str_starts_with($path, '/') ? $path : '/' . $path;
     }
 
     /**

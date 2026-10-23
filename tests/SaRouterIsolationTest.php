@@ -124,6 +124,24 @@ class SaRouterIsolationTest extends TestCase
         $this->assertTrue($user);
     }
 
+    public function testFrameworkPathWithoutLeadingSlashStillMatchesSlashPatterns(): void
+    {
+        SaTokenContext::setRequest(new class () {
+            public function path(): string
+            {
+                return 'admin/panel';
+            }
+        });
+
+        $checked = false;
+        SaRouter::match('/admin/**')->check(function () use (&$checked): void {
+            $checked = true;
+        });
+
+        SaTokenContext::clear();
+        $this->assertTrue($checked, 'path() 省略前导斜杠时仍须匹配受保护路由规则');
+    }
+
     public function testFullResetClearsAllState(): void
     {
         SaTokenContext::setContextId('ctx-x');
