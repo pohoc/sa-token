@@ -212,6 +212,10 @@ class StpLogic
 
         $jwt = $this->getJwt();
         $tokenValue = $jwt->createStatelessToken($loginId, $this->loginType, $timeout);
+        if ($config->isTokenFingerprint()) {
+            $fingerprint = $this->tokenManager->computeFingerprint();
+            $this->tokenManager->saveFingerprint($tokenValue, $fingerprint, $timeout);
+        }
         $this->tokenManager->updateLastActiveToNow($tokenValue);
 
         $this->writeTokenToResponse($tokenValue, $parameter);
@@ -574,6 +578,12 @@ class StpLogic
             return null;
         }
 
+        try {
+            $this->checkFingerprint($tokenValue);
+        } catch (NotLoginException) {
+            return null;
+        }
+
         if ($this->getConfig()->getActivityTimeout() > 0) {
             $lastActive = $this->tokenManager->getLastActiveTime($tokenValue);
             if ($lastActive === null
@@ -765,7 +775,7 @@ class StpLogic
 
         $savedFingerprint = $this->tokenManager->getFingerprint($tokenValue);
         if ($savedFingerprint === null) {
-            return;
+            throw new NotLoginException('Token 指纹状态不存在，请重新登录', NotLoginException::TOKEN_TIMEOUT);
         }
 
         $currentFingerprint = $this->tokenManager->computeFingerprint();

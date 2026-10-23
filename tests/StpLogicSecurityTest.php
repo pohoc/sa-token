@@ -159,7 +159,7 @@ class StpLogicSecurityTest extends TestCase
         }
     }
 
-    public function testCheckFingerprintWhenNoneSaved(): void
+    public function testCheckFingerprintFailsClosedWhenNoneSaved(): void
     {
         $token = 'sat_token-no-fingerprint';
         $this->manager->saveToken($token, 10001, 'login', 'PC');
@@ -167,12 +167,8 @@ class StpLogicSecurityTest extends TestCase
         SaToken::setConfig(SaToken::getConfig()->setTokenFingerprint(true));
         $this->stp = new TestableStpLogic('login');
 
-        try {
-            $this->stp->checkFingerprint($token);
-            $this->assertTrue(true);
-        } catch (\Throwable $e) {
-            $this->fail('Fingerprint check should pass when no fingerprint saved');
-        }
+        $this->expectException(\SaToken\Exception\NotLoginException::class);
+        $this->stp->checkFingerprint($token);
     }
 
     public function testLogoutClearsFingerprint(): void

@@ -532,6 +532,27 @@ class SecurityRegressionTest extends TestCase
         $this->assertFalse(StpUtil::isLogin(), '无状态 JWT 也必须遵守启用的活动超时配置');
     }
 
+    public function testStatelessJwtEnforcesConfiguredFingerprintBinding(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'jwtStateless'     => true,
+            'jwtSecretKey'     => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'tokenFingerprint' => true,
+        ])));
+
+        SaTokenContext::setRequest($this->makeRequestStub(['User-Agent' => 'Trusted-Agent/1.0']));
+        $logic = SaToken::getStpLogic('login');
+        $token = $logic->loginStateless(20014);
+        $this->assertNotNull(SaToken::getDao()->get(TokenManager::FINGERPRINT_PREFIX . $token));
+
+        SaTokenContext::setRequest($this->makeRequestStub([
+            'satoken'    => $token,
+            'User-Agent' => 'Different-Agent/1.0',
+        ]));
+
+        $this->assertFalse(StpUtil::isLogin(), '无状态 JWT 必须遵守启用的指纹绑定配置');
+    }
+
     public function testSwitchedIdentityCannotBypassFingerprintInPermissionChecks(): void
     {
         SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [

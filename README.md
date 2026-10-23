@@ -176,6 +176,8 @@ $result = StpUtil::login(10001);
 StpUtil::checkLogin(); // 指纹不匹配时抛出异常
 ```
 
+该选项同时校验普通 Token 和无状态 JWT。开启后，缺少指纹记录的旧 Token 会按失效处理，需要重新登录；启用指纹绑定时会为无状态 JWT 额外保存每个 Token 的指纹状态。
+
 #### Token 黑名单
 
 手动拉黑 Token，无需等待过期：
