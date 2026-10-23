@@ -28,14 +28,17 @@ class AuthorizationCodeStrategy implements GrantTypeStrategyInterface
 
     public function validateRequest(array $params): void
     {
-        if (empty($params['code'])) {
+        if (!is_string($params['code'] ?? null) || $params['code'] === '') {
             throw new SaTokenException('缺少必需的参数: code');
         }
-        if (empty($params['client_id'])) {
+        if (!is_string($params['client_id'] ?? null) || $params['client_id'] === '') {
             throw new SaTokenException('缺少必需的参数: client_id');
         }
-        if (empty($params['client_secret'])) {
-            throw new SaTokenException('缺少必需的参数: client_secret');
+        // 公开客户端没有 client_secret；核心处理器会强制其授权码绑定 PKCE。
+        foreach (['client_secret', 'redirect_uri', 'code_verifier'] as $parameter) {
+            if (array_key_exists($parameter, $params) && !is_string($params[$parameter])) {
+                throw new SaTokenException("参数 {$parameter} 必须是字符串");
+            }
         }
     }
 
@@ -46,15 +49,12 @@ class AuthorizationCodeStrategy implements GrantTypeStrategyInterface
 
     public function execute(array $params): SaOAuth2AccessToken
     {
-        /** @var string $code */
-        $code = $params['code'];
-        /** @var string $clientId */
-        $clientId = $params['client_id'];
-        /** @var string $clientSecret */
-        $clientSecret = $params['client_secret'];
-        /** @var string $redirectUri */
-        $redirectUri = $params['redirect_uri'] ?? '';
+        $code = is_string($params['code'] ?? null) ? $params['code'] : '';
+        $clientId = is_string($params['client_id'] ?? null) ? $params['client_id'] : '';
+        $clientSecret = is_string($params['client_secret'] ?? null) ? $params['client_secret'] : '';
+        $redirectUri = is_string($params['redirect_uri'] ?? null) ? $params['redirect_uri'] : '';
+        $codeVerifier = is_string($params['code_verifier'] ?? null) ? $params['code_verifier'] : '';
 
-        return $this->handle->exchangeTokenByCode($code, $clientId, $clientSecret, $redirectUri);
+        return $this->handle->exchangeTokenByCode($code, $clientId, $clientSecret, $redirectUri, $codeVerifier);
     }
 }

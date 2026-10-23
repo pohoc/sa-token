@@ -42,9 +42,9 @@ class SaOAuth2Manager
         return $this->handle->generateAuthorizationCode($clientId, $loginId, $redirectUri, $scope);
     }
 
-    public function exchangeTokenByCode(string $code, string $clientId, string $clientSecret, string $redirectUri = ''): SaOAuth2AccessToken
+    public function exchangeTokenByCode(string $code, string $clientId, string $clientSecret, string $redirectUri = '', string $codeVerifier = ''): SaOAuth2AccessToken
     {
-        return $this->handle->exchangeTokenByCode($code, $clientId, $clientSecret, $redirectUri);
+        return $this->handle->exchangeTokenByCode($code, $clientId, $clientSecret, $redirectUri, $codeVerifier);
     }
 
     public function refreshToken(string $refreshToken, string $clientId, string $clientSecret): SaOAuth2AccessToken

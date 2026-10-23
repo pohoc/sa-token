@@ -93,4 +93,37 @@ class SaOAuth2StrategyTest extends TestCase
         $this->assertEquals('test-client', $code->getClientId());
         $this->assertEquals(1001, $code->getLoginId());
     }
+
+    public function testAuthorizationCodeStrategySupportsPublicPkceClient(): void
+    {
+        $handle = new SaOAuth2Handle(new SaOAuth2Config());
+        $handle->registerClient(new SaOAuth2Client([
+            'clientId'     => 'public-pkce-client',
+            'grantTypes'   => ['authorization_code'],
+            'redirectUris' => ['https://app.example.com/callback'],
+        ]));
+
+        $verifier = str_repeat('public-client-verifier-', 3);
+        $challenge = rtrim(strtr(base64_encode(hash('sha256', $verifier, true)), '+/', '-_'), '=');
+        $code = $handle->generateAuthorizationCode(
+            'public-pkce-client',
+            1002,
+            'https://app.example.com/callback',
+            '',
+            $challenge,
+            'S256'
+        );
+        $strategy = new AuthorizationCodeStrategy($handle);
+        $params = [
+            'code'          => $code->getCode(),
+            'client_id'     => 'public-pkce-client',
+            'redirect_uri'  => 'https://app.example.com/callback',
+            'code_verifier' => $verifier,
+        ];
+
+        $strategy->validateRequest($params);
+        $accessToken = $strategy->execute($params);
+
+        $this->assertNotEmpty($accessToken->getAccessToken());
+    }
 }
