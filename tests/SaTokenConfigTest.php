@@ -91,6 +91,21 @@ class SaTokenConfigTest extends TestCase
         }
     }
 
+    public function testRefreshTokenTimeoutMustBePositiveOrExplicitlyPermanent(): void
+    {
+        foreach ([0, -2, PHP_INT_MAX] as $timeout) {
+            try {
+                (new SaTokenConfig())->setRefreshTokenTimeout($timeout);
+                $this->fail('Refresh Token 有效期必须为正数或 -1');
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('有效期', $e->getMessage());
+            }
+        }
+
+        $config = new SaTokenConfig(['refreshTokenTimeout' => -1]);
+        $this->assertSame(-1, $config->getRefreshTokenTimeout());
+    }
+
     public function testToArray(): void
     {
         $config = new SaTokenConfig(['tokenName' => 'test']);

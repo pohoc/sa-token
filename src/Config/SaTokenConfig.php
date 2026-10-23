@@ -965,6 +965,7 @@ class SaTokenConfig
 
     public function setRefreshTokenTimeout(int $refreshTokenTimeout): static
     {
+        SaTokenTimeout::validate($refreshTokenTimeout, 'Refresh Token');
         $this->refreshTokenTimeout = $refreshTokenTimeout;
         return $this;
     }

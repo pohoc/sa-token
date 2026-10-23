@@ -57,6 +57,23 @@ class RefreshTokenTest extends TestCase
         $this->assertTrue(StpUtil::isRefreshTokenValid($refreshToken));
     }
 
+    public function testInvalidCustomTimeoutDoesNotRevokeExistingRefreshToken(): void
+    {
+        $loginResult = StpUtil::login(10003);
+        $accessToken = $loginResult->getAccessToken();
+        $refreshToken = StpUtil::createRefreshToken($accessToken);
+
+        foreach ([0, -2, PHP_INT_MAX] as $timeout) {
+            try {
+                StpUtil::createRefreshToken($accessToken, $timeout);
+                $this->fail("无效 Refresh Token 有效期 {$timeout} 应被拒绝");
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('有效期', $e->getMessage());
+            }
+            $this->assertTrue(StpUtil::isRefreshTokenValid($refreshToken));
+        }
+    }
+
     public function testKickoutByTokenRevokesItsRefreshToken(): void
     {
         $loginResult = StpUtil::login(10020);

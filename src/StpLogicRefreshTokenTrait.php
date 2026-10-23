@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SaToken;
 
 use SaToken\Exception\SaTokenException;
+use SaToken\Util\SaTokenTimeout;
 
 trait StpLogicRefreshTokenTrait
 {
@@ -12,6 +13,7 @@ trait StpLogicRefreshTokenTrait
     {
         $config = $this->getConfig();
         $timeout = $timeout ?? $config->getRefreshTokenTimeout();
+        SaTokenTimeout::validate($timeout, 'Refresh Token');
 
         $loginId = $this->getLoginIdByToken($accessToken);
         if ($loginId === null) {
