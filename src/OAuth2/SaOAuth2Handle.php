@@ -396,6 +396,12 @@ class SaOAuth2Handle
         $rtData = new SaOAuth2RefreshToken($decoded);
         $familyId = $rtData->getFamilyId();
 
+        // 将旧版无 familyId 的 RT 在首次轮换时迁移进家族模型。
+        // 后续重放依靠 consumedKey 找到此家族，才能撤销首次轮换签发的后代令牌。
+        if ($familyId === '') {
+            $familyId = SaFoxUtil::randomString(32);
+        }
+
         if ($familyId !== '') {
             // 家族标记仅是注册表（已签发 AT + 派生 RT），存在与否不代表重放
             $familyMarkerKey = $familyMarkerPrefix . hash('sha256', $familyId);
@@ -412,11 +418,6 @@ class SaOAuth2Handle
             if ($rtData->getAccessToken() !== '') {
                 $this->updateTokenFamilyCurrentDescendants($familyMarkerKey, $rtData->getAccessToken(), '', $markerTimeout);
             }
-        } else {
-            $this->getDao()->set($legacyMarkerKey, $this->encryptValue(SaFoxUtil::toJson([
-                'tokens'    => [$rtData->getAccessToken()],
-                'revokedAt' => time(),
-            ])), $markerTimeout);
         }
 
         if ($rtData->getClientId() !== $clientId) {

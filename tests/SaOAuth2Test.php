@@ -477,6 +477,36 @@ class SaOAuth2Test extends TestCase
         }
     }
 
+    public function testLegacyRefreshTokenReplayRevokesMigratedFamilyDescendants(): void
+    {
+        $code = $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback');
+        $initial = $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
+        $legacyRefreshToken = $initial->getRefreshToken();
+        self::assertNotNull($legacyRefreshToken);
+
+        // 模拟升级前写入的 refresh token：存储记录没有 familyId 字段。
+        $legacyKey = 'oauth2:rt:' . $legacyRefreshToken;
+        $legacyData = json_decode((string) SaToken::getDao()->get($legacyKey), true);
+        self::assertIsArray($legacyData);
+        unset($legacyData['familyId']);
+        SaToken::getDao()->set($legacyKey, json_encode($legacyData, JSON_THROW_ON_ERROR), 86400);
+
+        $rotated = $this->handle->refreshToken($legacyRefreshToken, 'test-client', $this->clientSecret);
+        $childRefreshToken = $rotated->getRefreshToken();
+        self::assertNotNull($childRefreshToken);
+        self::assertNotNull($this->handle->validateAccessToken($rotated->getAccessToken()));
+
+        try {
+            $this->handle->refreshToken($legacyRefreshToken, 'test-client', $this->clientSecret);
+            self::fail('重放旧格式 refresh token 应撤销迁移后的整个家族');
+        } catch (SaTokenException $e) {
+            self::assertStringContainsString('已被使用', $e->getMessage());
+        }
+
+        self::assertNull($this->handle->validateAccessToken($rotated->getAccessToken()));
+        self::assertNull(SaToken::getDao()->get('oauth2:rt:' . $childRefreshToken));
+    }
+
     public function testRefreshTokenWithInvalidToken(): void
     {
         $this->expectException(SaTokenException::class);
