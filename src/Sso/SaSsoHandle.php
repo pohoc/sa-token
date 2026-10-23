@@ -53,11 +53,13 @@ class SaSsoHandle
      */
     public function buildLoginUrl(?string $redirect = null, ?string $currentUrl = null): string
     {
+        $loginUrl = $this->config->getLoginUrl();
+        $this->validateHttpsEndpoint($loginUrl, 'loginUrl');
+
         if ($currentUrl !== null) {
             $this->savePreLoginUrl($currentUrl);
         }
 
-        $loginUrl = $this->config->getLoginUrl();
         $backUrl = $redirect ?? $this->config->getBackUrl();
 
         if ($backUrl !== '' && !$this->validateDomain($backUrl)) {

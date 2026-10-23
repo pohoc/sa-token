@@ -363,6 +363,19 @@ class SaSsoTest extends TestCase
         (new SaSsoHandle($config))->buildLoginUrl('http://app.example.com/callback');
     }
 
+    public function testBuildLoginUrlRejectsInsecureLoginEndpoint(): void
+    {
+        $config = new SaSsoConfig([
+            'loginUrl'     => 'http://auth.example.com/login',
+            'clientId'     => 'app-1',
+            'allowDomains' => ['app.example.com'],
+        ]);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('loginUrl 必须使用 HTTPS');
+        (new SaSsoHandle($config))->buildLoginUrl('https://app.example.com/callback');
+    }
+
     public function testBuildLoginUrlAllowsLocalHttpRedirect(): void
     {
         $config = new SaSsoConfig([
