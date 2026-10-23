@@ -289,27 +289,33 @@ class StpLogic
     /**
      * 踢人下线（指定 Token）
      *
-     * @param  string $tokenValue Token 值
-     * @return void
+     * @param  string      $tokenValue    Token 值
+     * @param  bool        $dispatchEvent 是否立即派发事件；批量锁内操作应延后派发
+     * @return string|null 被踢出的 loginId，Token 无效时为 null
      */
-    public function kickoutByTokenValue(string $tokenValue): void
+    public function kickoutByTokenValue(string $tokenValue, bool $dispatchEvent = true): ?string
     {
         if ($this->getConfig()->isJwtStateless()) {
             $loginId = $this->getStatelessLoginIdByToken($tokenValue);
             if ($loginId === null || !$this->revokeToken($tokenValue)) {
-                return;
+                return null;
             }
-            $this->getEvent()->onKickout($this->loginType, $loginId, $tokenValue);
-            return;
+            if ($dispatchEvent) {
+                $this->getEvent()->onKickout($this->loginType, $loginId, $tokenValue);
+            }
+            return $loginId;
         }
 
         $loginId = $this->tokenManager->getLoginIdByToken($tokenValue);
         if ($loginId === null || !$this->isTokenOwnedByLoginType($tokenValue, $loginId)) {
-            return;
+            return null;
         }
 
         $this->removeTokenAndRefreshToken($tokenValue, $loginId);
-        $this->getEvent()->onKickout($this->loginType, $loginId, $tokenValue);
+        if ($dispatchEvent) {
+            $this->getEvent()->onKickout($this->loginType, $loginId, $tokenValue);
+        }
+        return $loginId;
     }
 
     /**

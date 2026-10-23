@@ -72,6 +72,7 @@ class SaLoginDeviceManager
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
 
+        $kickoutEvents = [];
         try {
             $tokenValues = [];
             foreach (self::loadDeviceTokenValues($key) as $existingToken) {
@@ -164,6 +165,7 @@ class SaLoginDeviceManager
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
 
+        $kickoutEvents = [];
         try {
             // A caller-supplied device ID can contain delimiters and address a
             // nested login type's key. Verify the stored owner before revoking
@@ -175,12 +177,18 @@ class SaLoginDeviceManager
             // 同一设备标识可能在 isShare=false 时关联多个有效登录 Token。
             // 全部撤销后再删除记录，避免只踢掉最近一次登录而留下旧会话。
             foreach (self::loadDeviceTokenValues($key) as $tokenValue) {
-                $logic->kickoutByTokenValue($tokenValue);
+                $eventLoginId = $logic->kickoutByTokenValue($tokenValue, false);
+                if ($eventLoginId !== null) {
+                    $kickoutEvents[] = [$eventLoginId, $tokenValue];
+                }
             }
 
             $dao->delete($key);
         } finally {
             $tokenManager->releaseLock($lockKey);
+            foreach ($kickoutEvents as [$eventLoginId, $tokenValue]) {
+                SaToken::getEvent()->onKickout($loginType, $eventLoginId, $tokenValue);
+            }
         }
     }
 
@@ -193,6 +201,7 @@ class SaLoginDeviceManager
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
 
+        $kickoutEvents = [];
         try {
             if (SaToken::getConfig()->isJwtStateless()) {
                 if ($exceptToken === null) {
@@ -212,8 +221,11 @@ class SaLoginDeviceManager
                             $remainingTokens[] = $tokenValue;
                             continue;
                         }
-                        $logic->kickoutByTokenValue($tokenValue);
-                        $revokedToken = true;
+                        $eventLoginId = $logic->kickoutByTokenValue($tokenValue, false);
+                        if ($eventLoginId !== null) {
+                            $kickoutEvents[] = [$eventLoginId, $tokenValue];
+                            $revokedToken = true;
+                        }
                     }
 
                     if ($remainingTokens !== []) {
@@ -242,8 +254,11 @@ class SaLoginDeviceManager
                     || !$tokenManager->isTokenValid($tokenValue)) {
                     continue;
                 }
-                $logic->kickoutByTokenValue($tokenValue);
-                $count++;
+                $eventLoginId = $logic->kickoutByTokenValue($tokenValue, false);
+                if ($eventLoginId !== null) {
+                    $kickoutEvents[] = [$eventLoginId, $tokenValue];
+                    $count++;
+                }
             }
 
             // Cleanup metadata only after the authoritative sessions are revoked;
@@ -263,6 +278,9 @@ class SaLoginDeviceManager
             return max($count, $deviceCount);
         } finally {
             $logic->getTokenManager()->releaseLock($lockKey);
+            foreach ($kickoutEvents as [$eventLoginId, $tokenValue]) {
+                SaToken::getEvent()->onKickout($loginType, $eventLoginId, $tokenValue);
+            }
         }
     }
 

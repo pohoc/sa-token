@@ -9,6 +9,7 @@ use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoMemory;
 use SaToken\Dao\SaTokenDaoPsr16;
 use SaToken\Data\SaLoginDevice;
+use SaToken\Listener\SaTokenListenerInterface;
 use SaToken\SaLoginParameter;
 use SaToken\SaToken;
 use SaToken\Security\SaLoginDeviceManager;
@@ -72,6 +73,24 @@ class SaLoginDeviceManagerTest extends TestCase
         $this->assertEquals('192.168.1.100', $savedDevice->getIp());
         $this->assertSame('', $savedDevice->getTokenValue());
         $this->assertTrue($this->logic->getTokenManager()->isTokenValid($token));
+    }
+
+    public function testKickoutAllDevicesDispatchesEventsAfterAccountLockRelease(): void
+    {
+        $loginId = 'device-kickout-event-lock';
+        $this->logic->login($loginId, (new SaLoginParameter())->setDeviceType('desktop'));
+        $this->logic->login($loginId, (new SaLoginParameter())->setDeviceType('mobile'));
+        $lockKey = \SaToken\TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId);
+
+        $listener = $this->createMock(SaTokenListenerInterface::class);
+        $listener->expects(self::exactly(2))
+            ->method('onKickout')
+            ->willReturnCallback(function () use ($lockKey): void {
+                self::assertNull($this->dao->get($lockKey));
+            });
+        SaToken::addListener($listener);
+
+        self::assertSame(2, $this->logic->kickoutAllDevices($loginId));
     }
 
     public function testDeviceListDoesNotCrossNestedLoginTypePrefixes(): void
