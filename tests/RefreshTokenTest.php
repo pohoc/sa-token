@@ -56,6 +56,56 @@ class RefreshTokenTest extends TestCase
         $this->assertTrue(StpUtil::isRefreshTokenValid($refreshToken));
     }
 
+    public function testKickoutByTokenRevokesItsRefreshToken(): void
+    {
+        $loginResult = StpUtil::login(10020);
+        $accessToken = $loginResult->getAccessToken();
+        $refreshToken = StpUtil::createRefreshToken($accessToken);
+
+        StpUtil::kickoutByTokenValue($accessToken);
+
+        $this->assertFalse(StpUtil::isRefreshTokenValid($refreshToken));
+        try {
+            StpUtil::refreshToken($refreshToken);
+            $this->fail('被踢出的会话对应 RefreshToken 不得重新签发会话');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('无效', $e->getMessage());
+        }
+    }
+
+    public function testKickoutByLoginIdRevokesAllRefreshTokens(): void
+    {
+        $loginResult = StpUtil::login(10021);
+        $accessToken = $loginResult->getAccessToken();
+        $refreshToken = StpUtil::createRefreshToken($accessToken);
+
+        StpUtil::kickout(10021);
+
+        $this->assertFalse(StpUtil::isRefreshTokenValid($refreshToken));
+    }
+
+    public function testRevokeAccessTokenRevokesItsRefreshToken(): void
+    {
+        $loginResult = StpUtil::login(10022);
+        $accessToken = $loginResult->getAccessToken();
+        $refreshToken = StpUtil::createRefreshToken($accessToken);
+
+        $this->assertTrue(StpUtil::revokeToken($accessToken));
+        $this->assertFalse(StpUtil::isRefreshTokenValid($refreshToken));
+    }
+
+    public function testMaxLoginCountEvictionRevokesOldRefreshToken(): void
+    {
+        SaToken::getConfig()->setMaxLoginCount(1);
+        $firstLogin = StpUtil::login(10023);
+        $oldRefreshToken = StpUtil::createRefreshToken($firstLogin->getAccessToken());
+
+        $secondLogin = StpUtil::login(10023);
+
+        $this->assertNotSame($firstLogin->getAccessToken(), $secondLogin->getAccessToken());
+        $this->assertFalse(StpUtil::isRefreshTokenValid($oldRefreshToken));
+    }
+
     public function testRefreshTokenRotation(): void
     {
         $loginResult = StpUtil::login(10003);

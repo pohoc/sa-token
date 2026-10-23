@@ -149,7 +149,7 @@ class StpLogic
         if ($isShare && $config->isConcurrent()) {
             $existingToken = $this->getTokenValueByDeviceType($loginId, $deviceType);
             if ($existingToken !== null) {
-                $this->tokenManager->deleteToken($existingToken, $loginId, $this->loginType);
+                $this->removeTokenAndRefreshToken($existingToken, $loginId);
             }
         }
 
@@ -265,7 +265,7 @@ class StpLogic
             return;
         }
 
-        $this->tokenManager->kickout($tokenValue, $loginId, $this->loginType);
+        $this->removeTokenAndRefreshToken($tokenValue, $loginId);
         $this->getEvent()->onKickout($this->loginType, $loginId, $tokenValue);
     }
 
@@ -277,15 +277,18 @@ class StpLogic
      */
     public function kickout(mixed $loginId): void
     {
-        $tokens = $this->tokenManager->getTokenListByLoginId($loginId, $this->loginType);
-        foreach ($tokens as $item) {
-            $tokenValue = is_string($item['tokenValue'] ?? null) ? $item['tokenValue'] : '';
-            if ($tokenValue === '') {
-                continue;
-            }
-            $this->tokenManager->kickout($tokenValue, $loginId, $this->loginType);
+        // 账号级原子批量删除同时清理关联 RefreshToken，并与并发登录互斥。
+        $tokens = $this->tokenManager->deleteAllTokenByLoginId($loginId, $this->loginType);
+        foreach ($tokens as $tokenValue) {
             $this->getEvent()->onKickout($this->loginType, $loginId, $tokenValue);
         }
+    }
+
+    /** 删除会话时一并撤销其 RefreshToken，避免旧凭据重新建立会话。 */
+    protected function removeTokenAndRefreshToken(string $tokenValue, mixed $loginId): void
+    {
+        $this->tokenManager->deleteRefreshTokenByAccessToken($loginId, $this->loginType, $tokenValue);
+        $this->tokenManager->kickout($tokenValue, $loginId, $this->loginType);
     }
 
     /**
@@ -696,7 +699,7 @@ class StpLogic
             $itemDeviceType = is_string($item['deviceType'] ?? null) ? $item['deviceType'] : '';
             $itemTokenValue = is_string($item['tokenValue'] ?? null) ? $item['tokenValue'] : '';
             if ($itemDeviceType === $deviceType && $this->tokenManager->isTokenValid($itemTokenValue)) {
-                $this->tokenManager->kickout($itemTokenValue, $loginId, $this->loginType);
+                $this->removeTokenAndRefreshToken($itemTokenValue, $loginId);
                 $this->getEvent()->onReplaced($this->loginType, $loginId, $itemTokenValue);
             }
         }
@@ -736,7 +739,7 @@ class StpLogic
                 if ($toKick !== null) {
                     $kickTokenValue = is_string($toKick['tokenValue'] ?? null) ? $toKick['tokenValue'] : '';
                     if ($kickTokenValue !== '') {
-                        $this->tokenManager->kickout($kickTokenValue, $loginId, $this->loginType);
+                        $this->removeTokenAndRefreshToken($kickTokenValue, $loginId);
                         $this->getEvent()->onReplaced($this->loginType, $loginId, $kickTokenValue);
                     }
                 }
@@ -843,7 +846,7 @@ class StpLogic
         // 同步删除会话记录，保证 logoutByLoginId/getTokenListByLoginId 等视图立即一致
         $loginId = $this->tokenManager->getLoginIdByToken($tokenValue);
         if ($loginId !== null) {
-            $this->tokenManager->deleteToken($tokenValue, $loginId, $this->loginType);
+            $this->removeTokenAndRefreshToken($tokenValue, $loginId);
         }
         return true;
     }
