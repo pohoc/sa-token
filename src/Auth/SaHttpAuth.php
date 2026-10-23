@@ -99,11 +99,19 @@ class SaHttpAuth
         }
 
         $request = SaTokenContext::getRequest();
-        $method = 'GET';
-        if (is_object($request) && method_exists($request, 'getMethod')) {
-            $m = $request->getMethod();
-            $method = is_string($m) ? strtoupper($m) : 'GET';
+        if (!is_object($request) || !method_exists($request, 'getMethod')) {
+            throw new SaTokenException('无法读取当前 HTTP 请求方法，拒绝 Digest 认证');
         }
+        $requestMethod = $request->getMethod();
+        if (!is_string($requestMethod) || $requestMethod === '') {
+            throw new SaTokenException('当前 HTTP 请求方法无效，拒绝 Digest 认证');
+        }
+        $requestTarget = $this->getDigestRequestTarget($request);
+        if ($requestTarget === null || !hash_equals($requestTarget, $uri)) {
+            $this->sendDigestChallenge($realm);
+            throw new SaTokenException('Digest URI 与当前请求目标不匹配');
+        }
+        $method = strtoupper($requestMethod);
 
         $ha2 = md5($method . ':' . $uri);
 
@@ -128,6 +136,23 @@ class SaHttpAuth
         }
 
         StpUtil::login($username);
+    }
+
+    /** 获取实际请求目标，避免把为其他资源签发的 Digest 响应移用到当前路径。 */
+    protected function getDigestRequestTarget(object $request): ?string
+    {
+        if (method_exists($request, 'getRequestTarget')) {
+            $target = $request->getRequestTarget();
+            return is_string($target) && $target !== '' ? $target : null;
+        }
+
+        // Symfony HttpFoundation 等常见适配器使用 getRequestUri()。
+        if (method_exists($request, 'getRequestUri')) {
+            $target = $request->getRequestUri();
+            return is_string($target) && $target !== '' ? $target : null;
+        }
+
+        return null;
     }
 
     public function setBasicValidator(callable $validator): static

@@ -132,6 +132,7 @@ class SaHttpAuthTest extends TestCase
             return $name === 'Authorization' ? [$header] : [];
         });
         $request->method('getMethod')->willReturn('GET');
+        $request->method('getRequestTarget')->willReturn('/test');
         SaTokenContext::setRequest($request);
         SaToken::getDao()->set('satoken:auth:digest:nonce:' . hash('sha256', $nonce), '1', 300);
 
@@ -207,6 +208,7 @@ class SaHttpAuthTest extends TestCase
             return [];
         });
         $request->method('getMethod')->willReturn('GET');
+        $request->method('getRequestTarget')->willReturn('/test');
         SaTokenContext::setRequest($request);
 
         // 模拟服务端此前已通过 sendDigestChallenge 签发该 nonce
@@ -239,6 +241,7 @@ class SaHttpAuthTest extends TestCase
             }
             return [];
         });
+        $request->method('getRequestTarget')->willReturn('/test');
         SaTokenContext::setRequest($request2);
         try {
             $auth->checkDigest($realm);
@@ -246,6 +249,45 @@ class SaHttpAuthTest extends TestCase
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('重放', $e->getMessage());
         }
+    }
+
+    public function testCheckDigestRejectsAuthorizationForDifferentRequestTarget(): void
+    {
+        $username = 'admin';
+        $realm = 'Test';
+        $nonce = 'issued-nonce-path-binding';
+        $signedUri = '/public';
+        $ha1 = md5($username . ':' . $realm . ':123456');
+        $ha2 = md5('GET:' . $signedUri);
+        $response = md5($ha1 . ':' . $nonce . ':00000001:xyz:auth:' . $ha2);
+        $header = sprintf(
+            'Digest username="%s", realm="%s", nonce="%s", uri="%s", qop=auth, nc=00000001, cnonce="xyz", response="%s"',
+            $username,
+            $realm,
+            $nonce,
+            $signedUri,
+            $response
+        );
+
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->willReturnCallback(static fn (string $name): array => $name === 'Authorization' ? [$header] : []);
+        $request->method('getMethod')->willReturn('GET');
+        $request->method('getRequestTarget')->willReturn('/admin');
+        SaTokenContext::setRequest($request);
+        SaToken::getDao()->set('satoken:auth:digest:nonce:' . hash('sha256', $nonce), '1', 300);
+
+        $auth = new SaHttpAuth();
+        $auth->setDigestValidator(static fn (string $user): ?string => $user === $username ? $ha1 : null);
+
+        try {
+            $auth->checkDigest($realm);
+            $this->fail('针对其他 URI 签发的 Digest 响应不得认证当前请求');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('URI', $e->getMessage());
+        }
+
+        $this->assertNull(\SaToken\StpUtil::getLoginId());
+        $this->assertNotNull(SaToken::getDao()->get('satoken:auth:digest:nonce:' . hash('sha256', $nonce)));
     }
 
     public function testCheckDigestThrowsOnMissingHeader(): void
