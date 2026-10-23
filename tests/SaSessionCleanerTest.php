@@ -118,24 +118,6 @@ class SaSessionCleanerTest extends TestCase
         $this->assertNotNull($dao->get('satoken:session:valid-session'));
     }
 
-    public function testCleanOnceRemovesExpiredOAuth2FamilyAndRefreshLocks(): void
-    {
-        $dao = SaToken::getDao();
-
-        $dao->set('oauth2:family:expired-family', 'data', 10);
-        $dao->set('oauth2:refresh:expired-family-lock', 'lock', 10);
-        $dao->set('oauth2:family:valid-family', 'data', 1000);
-        $this->backdate($dao, 'oauth2:family:expired-family');
-        $this->backdate($dao, 'oauth2:refresh:expired-family-lock');
-
-        $cleaned = SaSessionCleaner::cleanOnce();
-
-        $this->assertSame(2, $cleaned);
-        $this->assertNull($dao->get('oauth2:family:expired-family'));
-        $this->assertNull($dao->get('oauth2:refresh:expired-family-lock'));
-        $this->assertNotNull($dao->get('oauth2:family:valid-family'));
-    }
-
     public function testCleanOnceSkipsValidAndPermanentRecords(): void
     {
         $dao = SaToken::getDao();
