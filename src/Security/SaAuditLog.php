@@ -61,7 +61,9 @@ class SaAuditLog
             'loginId' => $loginId !== null ? (is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '')) : null,
             'loginType' => $loginType,
             'action' => $action,
-            'tokenValue' => $tokenValue !== null ? substr($tokenValue, 0, 32) . '...' : null,
+            // Token 风格/自定义生成器允许短于 32 字符；固定长度截断仍可能完整记录
+            // bearer 凭据，因此审计记录只保留字段存在性，不保留任何可复用 token 内容。
+            'tokenValue' => $tokenValue !== null ? '[redacted]' : null,
             'ip' => $ip ?? self::getClientIp(),
             'userAgent' => $userAgent ?? SaTokenContext::getHeader('User-Agent'),
             'extra' => $extra,

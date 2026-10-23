@@ -195,17 +195,29 @@ class SaAuditLogTest extends TestCase
         $this->assertCount(0, $logs);
     }
 
-    public function testTokenValueTruncated(): void
+    public function testTokenValueIsRedactedFromAuditLog(): void
     {
         SaAuditLog::setEnabled(true);
 
-        $longToken = str_repeat('a', 100);
-        $id = SaAuditLog::logLogin(10001, 'login', $longToken);
+        $token = 'custom-token-123';
+        $id = SaAuditLog::logLogin(10001, 'login', $token);
 
         $log = SaAuditLog::getLog($id ?? '', 'login');
         $this->assertNotNull($log);
-        $this->assertStringEndsWith('...', is_string($log['tokenValue'] ?? null) ? $log['tokenValue'] : '');
-        $this->assertEquals(35, strlen(is_string($log['tokenValue'] ?? null) ? $log['tokenValue'] : ''));
+        $this->assertSame('[redacted]', $log['tokenValue'] ?? null);
+        $this->assertStringNotContainsString($token, json_encode($log) ?: '');
+    }
+
+    public function testTokenValueIsRedactedForTokensLongerThanOldTruncation(): void
+    {
+        SaAuditLog::setEnabled(true);
+
+        $token = str_repeat('a', 100);
+        $id = SaAuditLog::logLogin(10001, 'login', $token);
+
+        $log = SaAuditLog::getLog($id ?? '', 'login');
+        $this->assertNotNull($log);
+        $this->assertSame('[redacted]', $log['tokenValue'] ?? null);
     }
 
     public function testMaxEntriesLimit(): void
