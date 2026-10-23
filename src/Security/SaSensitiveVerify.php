@@ -58,9 +58,10 @@ class SaSensitiveVerify
 
         try {
             $code = self::generateRandomCode();
+            $codeHash = password_hash($code, PASSWORD_DEFAULT);
 
             $data = [
-                'code' => $code,
+                'codeHash' => $codeHash,
                 'createdAt' => time(),
                 'expiresAt' => time() + self::$validSeconds,
                 'attempts' => 0,
@@ -164,8 +165,8 @@ class SaSensitiveVerify
                 throw new SaTokenException('验证码尝试次数过多，请重新获取', -1);
             }
 
-            $codeStr = $info['code'] ?? '';
-            if (!hash_equals(is_string($codeStr) ? $codeStr : (is_scalar($codeStr) ? (string) $codeStr : ''), $code)) {
+            $codeHash = $info['codeHash'] ?? null;
+            if (!is_string($codeHash) || !password_verify($code, $codeHash)) {
                 return false;
             }
 

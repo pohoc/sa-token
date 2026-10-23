@@ -78,6 +78,24 @@ class SaSensitiveVerifyTest extends TestCase
         $this->assertMatchesRegularExpression('/^\d{6}$/', $code);
     }
 
+    public function testGeneratedCodeIsStoredAsOneWayHash(): void
+    {
+        $scene = 'hashed-code-scene';
+        $loginId = 10001;
+
+        $code = SaSensitiveVerify::generateCode($scene, $loginId);
+        $stored = SaToken::getDao()->get(SaSensitiveVerify::getKey($scene, $loginId));
+        self::assertNotNull($stored);
+        $data = json_decode($stored, true);
+
+        $this->assertIsArray($data);
+        $this->assertArrayNotHasKey('code', $data);
+        $this->assertIsString($data['codeHash'] ?? null);
+        $this->assertNotSame($code, $data['codeHash']);
+        $this->assertTrue(password_verify($code, $data['codeHash']));
+        $this->assertTrue(SaSensitiveVerify::verifyCode($scene, $code, $loginId));
+    }
+
     public function testCodeLengthRejectsInsecureAndUnboundedValues(): void
     {
         foreach ([0, 1, 5, 13, PHP_INT_MAX] as $length) {
