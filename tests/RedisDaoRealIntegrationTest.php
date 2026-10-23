@@ -66,6 +66,22 @@ class RedisDaoRealIntegrationTest extends TestCase
         $this->assertFalse($this->dao->exists($key));
     }
 
+    public function testDeleteIfExpiredAgainstRealRedis(): void
+    {
+        $expiredKey = $this->prefix . 'expired';
+        $activeKey = $this->prefix . 'active';
+        $this->dao->set($expiredKey, 'old', 1);
+        $this->dao->set($activeKey, 'fresh', 60);
+        sleep(2);
+
+        // Redis removes expired keys itself; the conditional delete is a no-op
+        // after physical expiration and must preserve a still-active key.
+        $this->assertFalse($this->dao->deleteIfExpired($expiredKey));
+        $this->assertFalse($this->dao->exists($expiredKey));
+        $this->assertFalse($this->dao->deleteIfExpired($activeKey));
+        $this->assertSame('fresh', $this->dao->get($activeKey));
+    }
+
     public function testUpdatePreservesTtlAgainstRealRedis(): void
     {
         $key = $this->prefix . 'update-ttl';

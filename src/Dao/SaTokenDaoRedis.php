@@ -6,7 +6,7 @@ namespace SaToken\Dao;
 
 use SaToken\Exception\SaTokenException;
 
-class SaTokenDaoRedis implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface
+class SaTokenDaoRedis implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface, SaTokenDaoDeleteIfExpiredInterface
 {
     protected \Redis $client;
 
@@ -264,6 +264,19 @@ end
 return 0
 LUA;
         $result = ($this->saRedis ?? $this->client)->eval($script, [$key, $expectedValue], 1);
+        return $result === 1;
+    }
+
+    public function deleteIfExpired(string $key): bool
+    {
+        $script = <<<'LUA'
+local ttl = redis.call('PTTL', KEYS[1])
+if ttl == -2 or ttl == -1 or ttl > 0 then
+    return 0
+end
+return redis.call('DEL', KEYS[1])
+LUA;
+        $result = ($this->saRedis ?? $this->client)->eval($script, [$key], 1);
         return $result === 1;
     }
 

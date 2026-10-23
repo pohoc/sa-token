@@ -6,6 +6,7 @@ namespace SaToken\Tests;
 
 use PHPUnit\Framework\TestCase;
 use SaToken\Config\SaTokenConfig;
+use SaToken\Dao\SaTokenDaoDeleteIfExpiredInterface;
 use SaToken\Dao\SaTokenDaoInterface;
 use SaToken\Dao\SaTokenDaoMemory;
 use SaToken\SaToken;
@@ -16,8 +17,10 @@ use SaToken\Session\SaSessionCleaner;
  * （例如按 expire 字段过滤读取的数据库 DAO），这正是 SaSessionCleaner
  * 存在的意义：回收后端未自动删除的过期记录
  */
-final class LazyTtlDaoStub extends SaTokenDaoMemory
+final class LazyTtlDaoStub extends SaTokenDaoMemory implements SaTokenDaoDeleteIfExpiredInterface
 {
+    public ?string $refreshBeforeDeleteKey = null;
+
     #[\Override]
     public function get(string $key): ?string
     {
@@ -60,6 +63,25 @@ final class LazyTtlDaoStub extends SaTokenDaoMemory
     #[\Override]
     protected function cleanExpired(): void
     {
+    }
+
+    public function deleteIfExpired(string $key): bool
+    {
+        // Model a concurrent writer refreshing the key after the sweeper's scan.
+        if ($key === $this->refreshBeforeDeleteKey) {
+            $this->refreshBeforeDeleteKey = null;
+            $this->set($key, 'refreshed', 1000);
+        }
+
+        if (!isset($this->dataMap[$key])) {
+            return false;
+        }
+        $expireAt = $this->dataMap[$key]['expire_at'];
+        if ($expireAt === null || $expireAt > time()) {
+            return false;
+        }
+        $this->delete($key);
+        return true;
     }
 }
 
@@ -131,6 +153,39 @@ class SaSessionCleanerTest extends TestCase
         $this->assertSame(0, $cleaned);
         $this->assertNotNull($dao->get('satoken:login:token:valid-token-1'));
         $this->assertNotNull($dao->get('satoken:session:permanent-session'));
+    }
+
+    public function testCleanOnceRemovesExpiredOAuth2FamilyAndRefreshLocks(): void
+    {
+        $dao = SaToken::getDao();
+
+        $dao->set('oauth2:family:expired-family', 'data', 10);
+        $dao->set('oauth2:refresh:expired-family-lock', 'lock', 10);
+        $dao->set('oauth2:family:valid-family', 'data', 1000);
+        $this->backdate($dao, 'oauth2:family:expired-family');
+        $this->backdate($dao, 'oauth2:refresh:expired-family-lock');
+
+        $cleaned = SaSessionCleaner::cleanOnce();
+
+        $this->assertSame(2, $cleaned);
+        $this->assertNull($dao->get('oauth2:family:expired-family'));
+        $this->assertNull($dao->get('oauth2:refresh:expired-family-lock'));
+        $this->assertNotNull($dao->get('oauth2:family:valid-family'));
+    }
+
+    public function testCleanerDoesNotDeleteKeyRefreshedAfterItsScan(): void
+    {
+        $dao = SaToken::getDao();
+        self::assertInstanceOf(LazyTtlDaoStub::class, $dao);
+        $key = 'oauth2:family:refresh-race';
+        $dao->set($key, 'expired', 10);
+        $this->backdate($dao, $key);
+        $dao->refreshBeforeDeleteKey = $key;
+
+        $cleaned = SaSessionCleaner::cleanOnce();
+
+        $this->assertSame(0, $cleaned);
+        $this->assertSame('refreshed', $dao->get($key));
     }
 
     public function testCleanerNeverTouchesForeignPrefixes(): void
