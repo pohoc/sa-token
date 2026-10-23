@@ -16,6 +16,7 @@ use SaToken\OAuth2\SaOAuth2Handle;
 use SaToken\SaToken;
 use SaToken\Sso\SaSsoConfig;
 use SaToken\Sso\SaSsoHandle;
+use SaToken\Sso\SaSsoTemplate;
 use SaToken\StpUtil;
 use SaToken\TokenManager;
 use SaToken\Util\SaTokenContext;
@@ -1013,6 +1014,49 @@ class SecurityRegressionTest extends TestCase
             StpUtil::getStpLogic()->getTokenManager()->isTokenValid($token),
             '缺少签名 loginId 时不得注销会话'
         );
+    }
+
+    public function testSloCallbackRequiresSignedNonce(): void
+    {
+        $handle = new SaSsoHandle(new SaSsoConfig([
+            'clientSecret' => 'slo-shared-secret',
+        ]));
+        $token = StpUtil::login(40006)->getAccessToken();
+        $params = (new SaSsoTemplate())->signParams([
+            'loginId' => '40006',
+            'timestamp' => (string) time(),
+        ], 'slo-shared-secret');
+
+        try {
+            $handle->doSloCallback(40006, $params);
+            $this->fail('签名数据必须包含一次性 nonce');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('nonce', $e->getMessage());
+        }
+
+        $this->assertTrue(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($token));
+    }
+
+    public function testSloCallbackRejectsReplayAfterUserLogsInAgain(): void
+    {
+        $handle = new SaSsoHandle(new SaSsoConfig([
+            'clientSecret' => 'slo-shared-secret',
+        ]));
+        $params = $handle->buildSloCallbackParams(40005);
+        $handle->doSloCallback(40005, $params);
+
+        $newToken = StpUtil::login(40005)->getAccessToken();
+        $this->actAsToken($newToken);
+
+        try {
+            $handle->doSloCallback(40005, $params);
+            $this->fail('重放的 SLO 回调不能再次注销用户后来建立的会话');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('nonce', $e->getMessage());
+        }
+
+        $this->assertSame('40005', StpUtil::getLoginId());
+        $this->assertTrue(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($newToken));
     }
 
     public function testSsoCheckTicketResponseRequiresTicketBinding(): void

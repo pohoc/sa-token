@@ -651,7 +651,7 @@ $params = $sso->buildSloCallbackParams($loginId);
 $sso->doSloCallback($loginId, $params);
 ```
 
-`doSloCallback` 必须配置 `clientSecret` 并验签（回调参数必须包含 `sign`），否则拒绝处理，防止伪造注销请求。
+`doSloCallback` 必须配置 `clientSecret` 并验签；参数须包含 `sign`、签名的 `loginId` 和一次性 `nonce`。同一注销回调在时间窗内只能处理一次，防止重放旧请求注销后续会话。
 
 ## OAuth2.0
 

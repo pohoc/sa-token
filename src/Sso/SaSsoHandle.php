@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SaToken\Sso;
 
 use SaToken\Exception\SaTokenException;
+use SaToken\SaToken;
 use SaToken\StpUtil;
 use SaToken\Util\SaFoxUtil;
 use SaToken\Util\SaTokenContext;
@@ -23,6 +24,8 @@ use SaToken\Util\SaTokenContext;
  */
 class SaSsoHandle
 {
+    protected const SLO_CALLBACK_MAX_AGE = 300;
+
     /**
      * SSO 配置
      */
@@ -409,12 +412,23 @@ class SaSsoHandle
         if ($params === null || !isset($params['sign']) || !is_string($params['sign'])) {
             throw new SaTokenException('SSO 单点注销回调缺少签名，拒绝处理');
         }
-        if (!$this->template->verifySign($params, $clientSecret, 300)) {
+        if (!$this->template->verifySign($params, $clientSecret, self::SLO_CALLBACK_MAX_AGE)) {
             throw new SaTokenException('SSO 单点注销回调签名验证失败（或已过期）');
         }
         $signedLoginId = isset($params['loginId']) && is_scalar($params['loginId']) ? (string) $params['loginId'] : null;
         if ($signedLoginId === null || $signedLoginId !== SaFoxUtil::toString($loginId)) {
             throw new SaTokenException('SSO 单点注销回调 loginId 与签名数据不一致');
+        }
+
+        $nonce = $params['nonce'] ?? null;
+        if (!is_string($nonce) || $nonce === '') {
+            throw new SaTokenException('SSO 单点注销回调缺少 nonce，拒绝处理');
+        }
+        $nonceKey = 'satoken:sso:slo:nonce:' . hash('sha256', $nonce);
+        // Timestamp limits replay duration; atomic storage makes each valid,
+        // signed callback one-time even when duplicate requests race.
+        if (!SaToken::getDao()->setIfNotExists($nonceKey, '1', self::SLO_CALLBACK_MAX_AGE * 2 + 60)) {
+            throw new SaTokenException('SSO 单点注销回调 nonce 已使用，拒绝重放');
         }
 
         StpUtil::logoutByLoginId($loginId);
@@ -435,6 +449,7 @@ class SaSsoHandle
         $params = [
             'loginId'   => SaFoxUtil::toString($loginId),
             'timestamp' => (string) time(),
+            'nonce'     => bin2hex(random_bytes(16)),
         ];
 
         $params = $this->template->signParams($params, $clientSecret);
