@@ -65,6 +65,7 @@ class SaSensitiveVerify
         $jsonStr = json_encode($data);
         $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', self::$validSeconds + 60);
         $dao->delete($key . ':att');
+        $dao->delete($key . ':verified');
 
         return $code;
     }
@@ -146,6 +147,11 @@ class SaSensitiveVerify
             return false;
         }
 
+        // 先用原子门闩消费成功机会，避免并发请求同时读到 verified=false 后都通过。
+        if (!$dao->setIfNotExists($key . ':verified', '1', self::$validSeconds + 60)) {
+            return false;
+        }
+
         $info['verified'] = true;
         $info['verifiedAt'] = time();
         $jsonStr = json_encode($info);
@@ -185,6 +191,7 @@ class SaSensitiveVerify
         $dao = SaToken::getDao();
         $key = self::getKey($scene, $loginId, $loginType);
         $dao->delete($key);
+        $dao->delete($key . ':verified');
     }
 
     public static function getRemainingAttempts(string $scene, mixed $loginId, string $loginType = 'login'): int
@@ -239,17 +246,22 @@ class SaSensitiveVerify
             return false;
         }
 
-        // 存储键只含 token 前 16 个 hex 字符，必须用完整 token 哈希校验，
-        // 否则有效熵从 256 bit 缩水到 64 bit
+        // 存储键只含 token 前 16 个 hex 字符，必须用完整 token 哈希校验。
+        // 缺少哈希的旧记录 fail closed，不能退回到仅 64 bit 前缀校验。
         $tokenHash = $info['tokenHash'] ?? null;
-        if (is_string($tokenHash)) {
-            if (!hash_equals($tokenHash, hash('sha256', $token))) {
-                return false;
-            }
+        if (!is_string($tokenHash) || !hash_equals($tokenHash, hash('sha256', $token))) {
+            return false;
         }
 
-        $dao->delete($key);
-        return true;
+        // 读取和删除必须作为一次原子消费；消费后再核对载荷，防止同一前缀下
+        // 并发重发或新令牌覆盖时，两个请求都拿到成功结果。
+        $consumed = $dao->getAndDelete($key);
+        if ($consumed === null) {
+            return false;
+        }
+        $consumedInfo = @json_decode($consumed, true);
+        $consumedHash = is_array($consumedInfo) ? ($consumedInfo['tokenHash'] ?? null) : null;
+        return is_string($consumedHash) && hash_equals($consumedHash, hash('sha256', $token));
     }
 
     public static function verifySafeTokenAndThrow(string $scene, string $token, mixed $loginId, string $loginType = 'login'): void

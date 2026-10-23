@@ -48,6 +48,18 @@ class SaSensitiveVerifyTest extends TestCase
         $this->assertTrue($result);
     }
 
+    public function testConcurrentSuccessfulCodeVerificationIsRejectedByAtomicClaim(): void
+    {
+        $scene = 'test-scene';
+        $loginId = 10001;
+        $code = SaSensitiveVerify::generateCode($scene, $loginId);
+
+        // Represents another worker having atomically claimed this verification.
+        SaToken::getDao()->setIfNotExists(SaSensitiveVerify::getKey($scene, $loginId) . ':verified', '1', 360);
+
+        $this->assertFalse(SaSensitiveVerify::verifyCode($scene, $code, $loginId));
+    }
+
     public function testVerifyWrongCodeReturnsFalse(): void
     {
         $scene = 'test-scene';
@@ -141,6 +153,23 @@ class SaSensitiveVerifyTest extends TestCase
 
         $secondResult = SaSensitiveVerify::verifySafeToken($scene, $token, $loginId);
         $this->assertFalse($secondResult);
+    }
+
+    public function testSafeTokenWithoutFullTokenHashIsRejected(): void
+    {
+        $scene = 'test-scene';
+        $loginId = 10001;
+        $token = SaSensitiveVerify::createSafeToken($scene, $loginId);
+        $key = 'satoken:sensitive:login:safe-token:' . $scene . ':' . md5((string) $loginId) . ':' . substr($token, 0, 16);
+
+        SaToken::getDao()->set($key, json_encode([
+            'scene' => $scene,
+            'loginId' => (string) $loginId,
+            'loginType' => 'login',
+            'expiresAt' => time() + 600,
+        ]) ?: '{}', 660);
+
+        $this->assertFalse(SaSensitiveVerify::verifySafeToken($scene, $token, $loginId));
     }
 
     public function testGetRemainingAttemptsDecreasesOnWrongCode(): void
