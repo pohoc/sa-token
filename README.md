@@ -951,12 +951,15 @@ return [
 
 ### 自定义 DAO
 
-实现 `SaTokenDaoInterface`：
+实现 `SaTokenDaoInterface`。另外，登录、会话、OAuth2 刷新和敏感验证码状态更新使用带租约互斥锁，
+自定义 DAO 还必须实现 `SaTokenDaoCompareAndDeleteInterface`，并保证比较后删除是原子操作；
+否则这些加锁操作会在获取锁前抛出 `SaTokenException`。不要用先读取再删除来模拟原子比较删除。
 
 ```php
 use SaToken\Dao\SaTokenDaoInterface;
+use SaToken\Dao\SaTokenDaoCompareAndDeleteInterface;
 
-class MyDao implements SaTokenDaoInterface
+class MyDao implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface
 {
     public function get(string $key): ?string { /* ... */ }
     public function set(string $key, string $value, ?int $timeout = null): void { /* ... */ }
@@ -973,6 +976,7 @@ class MyDao implements SaTokenDaoInterface
     public function searchKeys(string $prefix, string $keyword, int $start, int $size): array { /* ... */ } // 仅返回键名列表
     public function setIfNotExists(string $key, string $value, ?int $timeout = null): bool { /* ... */ } // 仅当 key 不存在时设置（登录锁/签名防重放依赖）
     public function increment(string $key, int $amount = 1, ?int $timeout = null): int { /* ... */ } // 原子计数（防爆破/OTP 依赖）
+    public function compareAndDelete(string $key, string $expectedValue): bool { /* 原子比较并删除 */ }
 }
 ```
 

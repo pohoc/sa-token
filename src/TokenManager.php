@@ -1123,7 +1123,7 @@ class TokenManager
 
         $lockValue = bin2hex(random_bytes(8));
 
-        $acquired = $this->getDao()->setIfNotExists($lockKey, $lockValue, $ttl > 0 ? $ttl : null);
+        $acquired = \SaToken\Dao\SaTokenDaoLock::acquire($this->getDao(), $lockKey, $lockValue, $ttl > 0 ? $ttl : null);
         if ($acquired) {
             $this->lockValues[$stateKey] = $lockValue;
             $this->lockDepths[$stateKey] = 1;
@@ -1147,11 +1147,7 @@ class TokenManager
         }
 
         $dao = $this->getDao();
-        if ($dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
-            $dao->compareAndDelete($lockKey, $lockValue);
-        } elseif ($dao->get($lockKey) === $lockValue) {
-            $dao->delete($lockKey);
-        }
+        \SaToken\Dao\SaTokenDaoLock::release($dao, $lockKey, $lockValue);
 
         unset($this->lockValues[$stateKey]);
         unset($this->lockDepths[$stateKey]);

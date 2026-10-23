@@ -247,7 +247,7 @@ class SaSensitiveVerify
     protected static function acquireStateLock(string $key): string
     {
         $lockValue = bin2hex(random_bytes(16));
-        if (!SaToken::getDao()->setIfNotExists($key . ':state-lock', $lockValue, 30)) {
+        if (!\SaToken\Dao\SaTokenDaoLock::acquire(SaToken::getDao(), $key . ':state-lock', $lockValue, 30)) {
             throw new SaTokenException('敏感验证码状态正在更新，请重试');
         }
         return $lockValue;
@@ -256,11 +256,7 @@ class SaSensitiveVerify
     protected static function releaseStateLock(string $key, string $lockValue): void
     {
         $dao = SaToken::getDao();
-        if ($dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
-            $dao->compareAndDelete($key . ':state-lock', $lockValue);
-        } elseif ($dao->get($key . ':state-lock') === $lockValue) {
-            $dao->delete($key . ':state-lock');
-        }
+        \SaToken\Dao\SaTokenDaoLock::release($dao, $key . ':state-lock', $lockValue);
     }
 
     public static function getRemainingAttempts(string $scene, mixed $loginId, string $loginType = 'login'): int

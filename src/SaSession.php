@@ -207,18 +207,14 @@ class SaSession
         $lockValue = bin2hex(random_bytes(16));
 
         for ($i = 0; $i < 10; $i++) {
-            if ($dao->setIfNotExists($lockKey, $lockValue, 5)) {
+            if (\SaToken\Dao\SaTokenDaoLock::acquire($dao, $lockKey, $lockValue, 5)) {
                 try {
                     $dao->delete($this->id);
                     $this->dataMap = [];
                     $this->loaded = true;
                     return;
                 } finally {
-                    if ($dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
-                        $dao->compareAndDelete($lockKey, $lockValue);
-                    } elseif ($dao->get($lockKey) === $lockValue) {
-                        $dao->delete($lockKey);
-                    }
+                    \SaToken\Dao\SaTokenDaoLock::release($dao, $lockKey, $lockValue);
                 }
             }
             usleep(50000);
@@ -245,7 +241,7 @@ class SaSession
         $lockValue = bin2hex(random_bytes(16));
 
         for ($i = 0; $i < 10; $i++) {
-            if ($dao->setIfNotExists($lockKey, $lockValue, 5)) {
+            if (\SaToken\Dao\SaTokenDaoLock::acquire($dao, $lockKey, $lockValue, 5)) {
                 try {
                     $fresh = $this->readFreshDataMap();
                     $fn($fresh);
@@ -254,11 +250,7 @@ class SaSession
                     $this->saveData();
                     return;
                 } finally {
-                    if ($dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
-                        $dao->compareAndDelete($lockKey, $lockValue);
-                    } elseif ($dao->get($lockKey) === $lockValue) {
-                        $dao->delete($lockKey);
-                    }
+                    \SaToken\Dao\SaTokenDaoLock::release($dao, $lockKey, $lockValue);
                 }
             }
             usleep(50000);

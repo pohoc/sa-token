@@ -278,7 +278,7 @@ class SaOAuth2Handle
     {
         $dao = $this->getDao();
         for ($attempt = 0; $attempt <= 100; $attempt++) {
-            if ($dao->setIfNotExists($lockKey, $lockValue, 120)) {
+            if (\SaToken\Dao\SaTokenDaoLock::acquire($dao, $lockKey, $lockValue, 120)) {
                 return;
             }
             if ($attempt < 100) {
@@ -292,11 +292,7 @@ class SaOAuth2Handle
     protected function releaseRefreshLock(string $lockKey, string $lockValue): void
     {
         $dao = $this->getDao();
-        if ($dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
-            $dao->compareAndDelete($lockKey, $lockValue);
-        } elseif ($dao->get($lockKey) === $lockValue) {
-            $dao->delete($lockKey);
-        }
+        \SaToken\Dao\SaTokenDaoLock::release($dao, $lockKey, $lockValue);
     }
 
     /**
