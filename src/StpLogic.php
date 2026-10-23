@@ -235,7 +235,7 @@ class StpLogic
         }
 
         $loginId = $this->tokenManager->getLoginIdByToken($tokenValue);
-        if ($loginId === null) {
+        if ($loginId === null || !$this->isTokenOwnedByLoginType($tokenValue, $loginId)) {
             return;
         }
 
@@ -284,7 +284,7 @@ class StpLogic
         }
 
         $loginId = $this->tokenManager->getLoginIdByToken($tokenValue);
-        if ($loginId === null) {
+        if ($loginId === null || !$this->isTokenOwnedByLoginType($tokenValue, $loginId)) {
             return;
         }
 
@@ -875,6 +875,12 @@ class StpLogic
             return true;
         }
 
+        $loginId = $this->tokenManager->getLoginIdByToken($tokenValue);
+        if (!$this->getConfig()->isJwtStateless()
+            && ($loginId === null || !$this->isTokenOwnedByLoginType($tokenValue, $loginId))) {
+            return false;
+        }
+
         $daoTimeout = $this->tokenManager->getTokenTimeout($tokenValue);
         $blacklistTimeout = null;
 
@@ -894,7 +900,6 @@ class StpLogic
             return false;
         }
 
-        $loginId = $this->tokenManager->getLoginIdByToken($tokenValue);
         if ($loginId !== null) {
             $loginIdStr = $loginId;
             $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', $loginIdStr);

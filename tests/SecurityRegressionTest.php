@@ -131,6 +131,25 @@ class SecurityRegressionTest extends TestCase
         $this->assertSame('sensitive-admin-id', $adminLogic->getTokenInfo()->getLoginId());
     }
 
+    public function testWrongLoginTypeCannotRevokeAnotherTypesToken(): void
+    {
+        $adminLogic = new \SaToken\StpLogic('admin');
+        $userLogic = new \SaToken\StpLogic('user');
+
+        $logoutToken = $adminLogic->login('admin-logout-user')->getAccessToken();
+        $this->actAsToken($logoutToken);
+        $userLogic->logout();
+        $this->assertSame('admin-logout-user', $adminLogic->getLoginIdByToken($logoutToken));
+
+        $kickoutToken = $adminLogic->login('admin-kickout-user')->getAccessToken();
+        $userLogic->kickoutByTokenValue($kickoutToken);
+        $this->assertSame('admin-kickout-user', $adminLogic->getLoginIdByToken($kickoutToken));
+
+        $revokeToken = $adminLogic->login('admin-revoke-user')->getAccessToken();
+        $this->assertFalse($userLogic->revokeToken($revokeToken));
+        $this->assertSame('admin-revoke-user', $adminLogic->getLoginIdByToken($revokeToken));
+    }
+
     // ======== C1: mixed JWT 模式下会话必须可终止 ========
 
     public function testMixedJwtModeLogoutInvalidatesToken(): void
