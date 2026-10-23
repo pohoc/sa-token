@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoMemory;
 use SaToken\Exception\NotLoginException;
+use SaToken\Exception\NotSafeException;
 use SaToken\Exception\SaTokenException;
 use SaToken\OAuth2\Data\SaOAuth2Client;
 use SaToken\OAuth2\SaOAuth2Config;
@@ -223,6 +224,20 @@ class SecurityRegressionTest extends TestCase
         // 吊销后 getLoginId 返回 null → 权限校验不再放行
         $this->assertNull(StpUtil::getStpLogic()->getLoginId());
         $this->assertFalse(StpUtil::hasPermission('admin'));
+    }
+
+    public function testRevokedTokenCannotPassSafeCheck(): void
+    {
+        $token = StpUtil::login(20005)->getAccessToken();
+        $this->actAsToken($token);
+        StpUtil::openSafe(300, 'payment');
+        $this->assertTrue(StpUtil::isSafe('payment'));
+
+        StpUtil::revokeToken($token);
+
+        $this->assertFalse(StpUtil::isSafe('payment'));
+        $this->expectException(NotSafeException::class);
+        StpUtil::checkSafe('payment');
     }
 
     public function testRevokeTokenWithPermanentTimeoutStaysRevoked(): void

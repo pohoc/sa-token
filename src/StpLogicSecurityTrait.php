@@ -52,6 +52,7 @@ trait StpLogicSecurityTrait
 
     public function openSafe(int $safeTime, string $service = 'default'): void
     {
+        $this->checkLogin();
         $tokenValue = $this->getTokenValue();
         if ($tokenValue === null) {
             throw new NotLoginException('未登录，请先登录', NotLoginException::NOT_LOGIN);
@@ -68,6 +69,12 @@ trait StpLogicSecurityTrait
 
     public function isSafe(string $service = 'default'): bool
     {
+        try {
+            $this->checkLogin();
+        } catch (NotLoginException) {
+            return false;
+        }
+
         $tokenValue = $this->getTokenValue();
         if ($tokenValue === null) {
             return false;
