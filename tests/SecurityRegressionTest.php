@@ -348,6 +348,42 @@ class SecurityRegressionTest extends TestCase
         $this->assertSame(-1, SaToken::getDao()->getTimeout($blacklistKey));
     }
 
+    public function testRevokingUnknownTokenDoesNotAllocateBlacklistEntry(): void
+    {
+        $token = 'attacker-controlled-random-token';
+
+        $this->assertFalse(StpUtil::revokeToken($token));
+        $this->assertSame(-2, SaToken::getDao()->getTimeout('satoken:blacklist:' . $token));
+    }
+
+    public function testRevokingStatelessJwtWithoutExpiryKeepsItRevokedPermanently(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]));
+        $jwt = new \SaToken\Plugin\SaTokenJwt([
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]);
+        $token = $jwt->createStatelessToken(29999, 'login');
+
+        $this->assertTrue(StpUtil::revokeToken($token));
+        $this->assertSame(-1, SaToken::getDao()->getTimeout('satoken:blacklist:' . $token));
+        $this->assertNull(StpUtil::getStpLogic()->getLoginIdByToken($token));
+    }
+
+    public function testRevokingInvalidStatelessJwtDoesNotAllocateBlacklistEntry(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]));
+        $token = 'not-a-valid-jwt';
+
+        $this->assertFalse(StpUtil::revokeToken($token));
+        $this->assertSame(-2, SaToken::getDao()->getTimeout('satoken:blacklist:' . $token));
+    }
+
     // ======== OAuth2 授权绑定 ========
 
     public function testOAuth2RegistrationRequiresSecret(): void

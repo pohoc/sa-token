@@ -819,35 +819,27 @@ class StpLogic
 
     public function revokeToken(string $tokenValue): bool
     {
-        $daoTimeout = $this->tokenManager->getTokenTimeout($tokenValue);
-        $configTimeout = $this->getConfig()->getTimeout();
-
-        // 永不过期的 Token（timeout=-1）对应的黑名单条目同样永不过期，防止 Token "复活"。
-        // 但 Token 不存在（-2，可能是任意外部输入）时不得写永久键（存储耗尽向量），
-        // 退化为 max(配置, 86400) 的有限期封禁
-        $blacklistTimeout = null;
-        if ($daoTimeout === -1) {
-            $blacklistTimeout = null;
-        } elseif ($daoTimeout > 0) {
-            $blacklistTimeout = $daoTimeout;
-        } else {
-            $blacklistTimeout = $configTimeout > 0 ? $configTimeout : 86400;
+        if ($this->tokenManager->isBlacklisted($tokenValue)) {
+            return true;
         }
 
-        // stateless JWT 无 Dao 记录，黑名单 TTL 必须覆盖 JWT 自身剩余寿命，
-        // 否则黑名单先过期、JWT 在其 exp 内"复活"
+        $daoTimeout = $this->tokenManager->getTokenTimeout($tokenValue);
+        $blacklistTimeout = null;
+
+        // Stateless JWT 的签名与 loginType 是撤销资格的依据。未知或伪造值不能写入
+        // 黑名单，否则攻击者可用任意输入持续占用存储。无 exp 的有效 JWT 永不过期。
         if ($this->getConfig()->isJwtStateless()) {
-            try {
-                $payload = $this->getJwt()->validateStatelessToken($tokenValue);
-                if ($payload !== null && isset($payload['exp']) && is_int($payload['exp'])) {
-                    $remaining = $payload['exp'] - time();
-                    if ($remaining > 0 && ($blacklistTimeout === null || $remaining > $blacklistTimeout)) {
-                        $blacklistTimeout = $remaining;
-                    }
-                }
-            } catch (SaTokenException) {
-                // 无法解析的 Token 无需延长
+            if ($this->getStatelessLoginIdByToken($tokenValue) === null) {
+                return false;
             }
+            $payload = $this->getJwt()->validateStatelessToken($tokenValue);
+            if ($payload !== null && isset($payload['exp']) && is_int($payload['exp'])) {
+                $blacklistTimeout = max(1, $payload['exp'] - time());
+            }
+        } elseif ($daoTimeout === -1 || $daoTimeout > 0) {
+            $blacklistTimeout = $daoTimeout === -1 ? null : $daoTimeout;
+        } else {
+            return false;
         }
 
         $loginId = $this->tokenManager->getLoginIdByToken($tokenValue);
