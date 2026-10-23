@@ -210,6 +210,20 @@ class TokenManagerTest extends TestCase
         self::assertFalse($this->manager->isRefreshTokenValid($refreshToken));
     }
 
+    public function testRefreshTokenMapDoesNotCollideAcrossTupleComponents(): void
+    {
+        $accessTokenA = 'access-token-a';
+        $accessTokenB = 'access-token-b';
+        $refreshTokenA = 'refresh-token-a';
+        $refreshTokenB = 'refresh-token-b';
+        // These tuples produced the same legacy key: a:b:c:d.
+        $this->manager->saveRefreshToken($refreshTokenA, $accessTokenA, 'b:c', 'a', 3600);
+        $this->manager->saveRefreshToken($refreshTokenB, $accessTokenB, 'c', 'a:b', 3600);
+
+        self::assertSame($refreshTokenA, $this->manager->getRefreshTokenByAccessToken('b:c', 'a', $accessTokenA));
+        self::assertSame($refreshTokenB, $this->manager->getRefreshTokenByAccessToken('c', 'a:b', $accessTokenB));
+    }
+
     public function testAccountLogoutCanFindRefreshTokenAfterAccessTokenExpires(): void
     {
         $loginId = 'short-access-long-refresh-user';
@@ -354,6 +368,20 @@ class TokenManagerTest extends TestCase
 
         $this->manager->clearSwitch($token, 'login');
         $this->assertNull($this->manager->getSwitchTo($token, 'login'));
+    }
+
+    public function testSwitchStateDoesNotCollideAcrossLoginTypeAndToken(): void
+    {
+        $tokenA = 'b:c:1234567890123456';
+        $tokenB = 'c:1234567890123456';
+        $this->manager->saveToken($tokenA, 'owner-a', 'a', 'PC');
+        $this->manager->saveToken($tokenB, 'owner-b', 'a:b', 'PC');
+
+        // These pairs also produced the same legacy key: a:b:c:1234567890123456.
+        $this->manager->setSwitchTo($tokenA, 'privileged-user', 'a');
+
+        self::assertSame('privileged-user', $this->manager->getSwitchTo($tokenA, 'a'));
+        self::assertNull($this->manager->getSwitchTo($tokenB, 'a:b'));
     }
 
     public function testTokenEncryptDisabledByDefault(): void

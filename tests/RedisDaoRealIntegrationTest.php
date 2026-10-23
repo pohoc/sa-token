@@ -98,6 +98,48 @@ class RedisDaoRealIntegrationTest extends TestCase
         }
     }
 
+    public function testSecurityTupleKeysStayDistinctAgainstRealRedis(): void
+    {
+        SaToken::reset();
+        SaToken::setDao($this->dao);
+        $manager = new TokenManager();
+        $suffix = bin2hex(random_bytes(8));
+        $tokenA = 'b:c:' . $suffix;
+        $tokenB = 'c:' . $suffix;
+        $refreshA = 'refresh-a-' . $suffix;
+        $refreshB = 'refresh-b-' . $suffix;
+        $keys = [
+            TokenManager::TOKEN_PREFIX . $tokenA,
+            TokenManager::TOKEN_PREFIX . $tokenB,
+            TokenManager::SWITCH_PREFIX . 'a:b%3A' . $suffix,
+            TokenManager::SWITCH_PREFIX . 'a%3Ab:c%3A' . $suffix,
+            TokenManager::REFRESH_TOKEN_PREFIX . $refreshA,
+            TokenManager::REFRESH_TOKEN_PREFIX . $refreshB,
+            TokenManager::REFRESH_TOKEN_MAP_PREFIX . 'a:b%3Ac:d',
+            TokenManager::REFRESH_TOKEN_MAP_PREFIX . 'a%3Ab:c:d',
+            TokenManager::buildLoginIdKey('a', 'b:c'),
+            TokenManager::buildLoginIdKey('a:b', 'c'),
+            TokenManager::buildSessionId('a', 'b:c'),
+            TokenManager::buildSessionId('a:b', 'c'),
+        ];
+
+        try {
+            $manager->saveToken($tokenA, 'owner-a', 'a', 'PC');
+            $manager->saveToken($tokenB, 'owner-b', 'a:b', 'PC');
+            $manager->setSwitchTo($tokenA, 'switched-user', 'a');
+            self::assertSame('switched-user', $manager->getSwitchTo($tokenA, 'a'));
+            self::assertNull($manager->getSwitchTo($tokenB, 'a:b'));
+
+            $manager->saveRefreshToken($refreshA, 'd', 'b:c', 'a', 60);
+            $manager->saveRefreshToken($refreshB, 'd', 'c', 'a:b', 60);
+            self::assertSame($refreshA, $manager->getRefreshTokenByAccessToken('b:c', 'a', 'd'));
+            self::assertSame($refreshB, $manager->getRefreshTokenByAccessToken('c', 'a:b', 'd'));
+        } finally {
+            $this->redis->del($keys);
+            SaToken::reset();
+        }
+    }
+
     public function testDeleteIfExpiredAgainstRealRedis(): void
     {
         $expiredKey = $this->prefix . 'expired';

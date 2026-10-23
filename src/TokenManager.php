@@ -303,7 +303,7 @@ class TokenManager
         $dao->delete(self::LAST_ACTIVE_PREFIX . $tokenValue);
         $dao->delete(self::TOKEN_SESSION_PREFIX . $tokenValue);
         $dao->delete(self::FINGERPRINT_PREFIX . $tokenValue);
-        $dao->delete(self::SWITCH_PREFIX . $loginType . ':' . $tokenValue);
+        $this->clearSwitch($tokenValue, $loginType);
 
         $services = $this->getSafeServices($tokenValue, $loginType);
         foreach ($services as $service) {
@@ -739,7 +739,7 @@ class TokenManager
 
     public function setSwitchTo(string $tokenValue, mixed $switchToId, string $loginType): void
     {
-        $key = self::SWITCH_PREFIX . $loginType . ':' . $tokenValue;
+        $key = self::buildSwitchKey($tokenValue, $loginType);
         // 身份切换跟随 Token 生命周期：Token 过期/被删除后切换关系不应残留；
         // Token 不存在（-2）时直接拒绝写入，避免产生永不回收的孤儿键
         $tokenTimeout = $this->getTokenTimeout($tokenValue);
@@ -752,8 +752,13 @@ class TokenManager
 
     public function getSwitchTo(string $tokenValue, string $loginType): ?string
     {
-        $key = self::SWITCH_PREFIX . $loginType . ':' . $tokenValue;
-        $value = $this->getDao()->get($key);
+        $dao = $this->getDao();
+        $value = $dao->get(self::buildSwitchKey($tokenValue, $loginType));
+        if ($value === null && !str_contains($loginType, ':') && !str_contains($tokenValue, ':')) {
+            // Keep unambiguous legacy keys readable during upgrade. Delimiter-bearing
+            // components must never fall back to the collision-prone legacy namespace.
+            $value = $dao->get(self::buildLegacySwitchKey($tokenValue, $loginType));
+        }
         if ($value === null) {
             return null;
         }
@@ -762,8 +767,21 @@ class TokenManager
 
     public function clearSwitch(string $tokenValue, string $loginType): void
     {
-        $key = self::SWITCH_PREFIX . $loginType . ':' . $tokenValue;
-        $this->getDao()->delete($key);
+        $dao = $this->getDao();
+        $dao->delete(self::buildSwitchKey($tokenValue, $loginType));
+        if (!str_contains($loginType, ':') && !str_contains($tokenValue, ':')) {
+            $dao->delete(self::buildLegacySwitchKey($tokenValue, $loginType));
+        }
+    }
+
+    protected static function buildSwitchKey(string $tokenValue, string $loginType): string
+    {
+        return self::SWITCH_PREFIX . self::encodeKeyComponent($loginType) . ':' . self::encodeKeyComponent($tokenValue);
+    }
+
+    protected static function buildLegacySwitchKey(string $tokenValue, string $loginType): string
+    {
+        return self::SWITCH_PREFIX . $loginType . ':' . $tokenValue;
     }
 
     /**
@@ -891,6 +909,20 @@ class TokenManager
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
         $mapKey = self::buildRefreshTokenMapKey($loginIdStr, $loginType, $accessToken);
         $value = $this->getDao()->get($mapKey);
+        if ($value === null && !str_contains($loginIdStr, ':') && !str_contains($loginType, ':') && !str_contains($accessToken, ':')) {
+            // Legacy tuple keys are safe to read only when every component excludes
+            // the delimiter; verify the referenced record before trusting the index.
+            $value = $this->getDao()->get(self::buildLegacyRefreshTokenMapKey($loginIdStr, $loginType, $accessToken));
+            if ($value !== null) {
+                $legacyRefreshToken = $this->decryptValue($value);
+                $legacyData = $this->getRefreshTokenData($legacyRefreshToken);
+                if (($legacyData['loginId'] ?? null) !== $loginIdStr
+                    || ($legacyData['loginType'] ?? null) !== $loginType
+                    || ($legacyData['accessToken'] ?? null) !== $accessToken) {
+                    return null;
+                }
+            }
+        }
         if ($value === null) {
             return null;
         }
@@ -915,7 +947,13 @@ class TokenManager
     protected static function buildRefreshTokenMapKey(mixed $loginId, string $loginType, string $accessToken): string
     {
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-        return self::REFRESH_TOKEN_MAP_PREFIX . $loginType . ':' . $loginIdStr . ':' . $accessToken;
+        return self::REFRESH_TOKEN_MAP_PREFIX . self::encodeKeyComponent($loginType) . ':'
+            . self::encodeKeyComponent($loginIdStr) . ':' . self::encodeKeyComponent($accessToken);
+    }
+
+    protected static function buildLegacyRefreshTokenMapKey(string $loginId, string $loginType, string $accessToken): string
+    {
+        return self::REFRESH_TOKEN_MAP_PREFIX . $loginType . ':' . $loginId . ':' . $accessToken;
     }
 
     protected function extendLoginIdListTimeout(string $loginId, string $loginType, int $refreshTimeout): void
