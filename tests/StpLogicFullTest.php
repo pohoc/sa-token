@@ -11,6 +11,7 @@ use SaToken\Dao\SaTokenDaoMemory;
 use SaToken\Exception\DisableServiceException;
 use SaToken\Exception\NotLoginException;
 use SaToken\Exception\NotSafeException;
+use SaToken\Exception\SaTokenException;
 use SaToken\Listener\SaTokenListenerInterface;
 use SaToken\SaLoginParameter;
 use SaToken\SaToken;
@@ -434,6 +435,35 @@ class StpLogicFullTest extends TestCase
 
         $loginId = $this->tokenManager->getLoginIdByToken($tempToken);
         $this->assertEquals('10001', $loginId);
+    }
+
+    public function testCreateTempTokenUsesAccountLock(): void
+    {
+        $loginId = '10001';
+        $lockKey = TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId);
+        $this->dao->set($lockKey, 'logout-owner', 30);
+
+        try {
+            $this->logic->createTempToken((int) $loginId, 300);
+            $this->fail('账号注销持锁期间不能签发临时 Token');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('正在处理中', $e->getMessage());
+        }
+
+        $this->assertSame([], $this->tokenManager->getTokenListByLoginId($loginId, 'login'));
+        $this->assertSame('logout-owner', $this->dao->get($lockKey));
+    }
+
+    public function testCreateTempTokenRejectsInvalidLoginIds(): void
+    {
+        foreach ([null, '', false, [], new \stdClass()] as $invalidLoginId) {
+            try {
+                $this->logic->createTempToken($invalidLoginId, 300);
+                $this->fail('临时 Token 不能绑定空或非标量登录 ID');
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('loginId 不能为空', $e->getMessage());
+            }
+        }
     }
 
     // ======== kickoutByTokenValue ========

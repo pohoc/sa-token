@@ -679,9 +679,23 @@ class StpLogic
      */
     public function createTempToken(mixed $loginId, int $timeout): string
     {
-        $tokenValue = $this->tokenManager->createTokenValue($loginId, $this->loginType);
-        // mixed 模式下实际存储的是 JWT，必须返回真实值
-        return $this->tokenManager->saveToken($tokenValue, $loginId, $this->loginType, 'temp', $timeout);
+        if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
+            throw new SaTokenException('loginId 不能为空且必须是非布尔标量');
+        }
+
+        $loginIdStr = (string) $loginId;
+        $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', $loginIdStr);
+        if (!$this->tokenManager->acquireLock($lockKey, 5)) {
+            throw new SaTokenException('同账号会话正在处理中，请稍后重试');
+        }
+
+        try {
+            $tokenValue = $this->tokenManager->createTokenValue($loginId, $this->loginType);
+            // mixed 模式下实际存储的是 JWT，必须返回真实值
+            return $this->tokenManager->saveToken($tokenValue, $loginId, $this->loginType, 'temp', $timeout);
+        } finally {
+            $this->tokenManager->releaseLock($lockKey);
+        }
     }
 
     // ---- 内部辅助方法 ----
