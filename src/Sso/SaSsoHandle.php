@@ -333,8 +333,8 @@ class SaSsoHandle
         if ($clientSecret !== '') {
             $scalarResult = self::normalizeScalarMap($result);
             if (!isset($scalarResult['sign'])
-                || !$this->template->verifySign($scalarResult, $clientSecret)) {
-                throw new SaTokenException('SSO check-ticket 响应签名验证失败，拒绝信任该响应');
+                || !$this->template->verifySign($scalarResult, $clientSecret, 300)) {
+                throw new SaTokenException('SSO check-ticket 响应签名验证失败（或已过期），拒绝信任该响应');
             }
             // 跨 Redis 响应同样必须绑定本次请求的 ticket，
             // 否则合法签名响应可在有效期内被重放到其他 ticket 请求上。

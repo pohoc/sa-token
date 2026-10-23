@@ -72,7 +72,7 @@ class SaSsoTemplate
     /**
      * 接受外部输入的参数集（值可能为 mixed），仅标量值参与规范化。
      *
-     * $maxAge 非 null 且参数集含 timestamp 时额外校验时效（秒），
+     * $maxAge 非 null 时要求 timestamp 存在且为数字，并校验时效（秒），
      * 防止合法签名在窗口外被无限重放（check-ticket/SLO 回调建议传入）
      *
      * @param array<string, mixed> $params
@@ -80,8 +80,8 @@ class SaSsoTemplate
     public function verifySign(array $params, string $clientSecret, ?int $maxAge = null): bool
     {
         $ts = $params['timestamp'] ?? null;
-        if ($maxAge !== null && is_scalar($ts)) {
-            if (abs(time() - (int) (string) $ts) > $maxAge) {
+        if ($maxAge !== null) {
+            if (!is_scalar($ts) || !is_numeric($ts) || abs(time() - (int) (string) $ts) > $maxAge) {
                 return false;
             }
         }

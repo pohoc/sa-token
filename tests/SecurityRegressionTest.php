@@ -770,6 +770,12 @@ class SecurityRegressionTest extends TestCase
         // 过期（把 timestamp 改为 10 分钟前并重签 -> 模拟旧响应直接改时间戳不重签则签名失败；此处直接构造过期签名）
         $stale = $template->signParams(['loginId' => '1', 'ticket' => 't1', 'timestamp' => (string) (time() - 3600)], $secret);
         $this->assertFalse($template->verifySign($stale, $secret, 300));
+
+        $missingTimestamp = $template->signParams(['loginId' => '1', 'ticket' => 't1'], $secret);
+        $this->assertFalse($template->verifySign($missingTimestamp, $secret, 300));
+
+        $invalidTimestamp = $template->signParams(['loginId' => '1', 'ticket' => 't1', 'timestamp' => 'now'], $secret);
+        $this->assertFalse($template->verifySign($invalidTimestamp, $secret, 300));
     }
 
     public function testSaSessionKeepsOriginalTtlOnUpdate(): void
