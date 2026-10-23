@@ -51,23 +51,28 @@ class SaSensitiveVerify
     {
         $dao = SaToken::getDao();
         $key = self::getKey($scene, $loginId, $loginType);
+        $lockValue = self::acquireStateLock($key);
 
-        $code = self::generateRandomCode();
+        try {
+            $code = self::generateRandomCode();
 
-        $data = [
-            'code' => $code,
-            'createdAt' => time(),
-            'expiresAt' => time() + self::$validSeconds,
-            'attempts' => 0,
-            'verified' => false,
-        ];
+            $data = [
+                'code' => $code,
+                'createdAt' => time(),
+                'expiresAt' => time() + self::$validSeconds,
+                'attempts' => 0,
+                'verified' => false,
+            ];
 
-        $jsonStr = json_encode($data);
-        $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', self::$validSeconds + 60);
-        $dao->delete($key . ':att');
-        $dao->delete($key . ':verified');
+            $jsonStr = json_encode($data);
+            $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', self::$validSeconds + 60);
+            $dao->delete($key . ':att');
+            $dao->delete($key . ':verified');
 
-        return $code;
+            return $code;
+        } finally {
+            self::releaseStateLock($key, $lockValue);
+        }
     }
 
     protected static function generateRandomCode(): string
@@ -89,7 +94,15 @@ class SaSensitiveVerify
             throw new SaTokenException('验证码发送过于频繁，请 ' . self::$sendInterval . ' 秒后再试');
         }
 
-        $code = self::generateCode($scene, $loginId, $loginType);
+        try {
+            $code = self::generateCode($scene, $loginId, $loginType);
+        } catch (SaTokenException $e) {
+            $dao = SaToken::getDao();
+            if ($dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
+                $dao->compareAndDelete($rateKey, '1');
+            }
+            throw $e;
+        }
 
         self::sendNotification($scene, $code, $loginId);
 
@@ -110,55 +123,60 @@ class SaSensitiveVerify
     {
         $dao = SaToken::getDao();
         $key = self::getKey($scene, $loginId, $loginType);
-        $attemptsKey = $key . ':att';
-        $data = $dao->get($key);
+        $lockValue = self::acquireStateLock($key);
+        try {
+            $attemptsKey = $key . ':att';
+            $data = $dao->get($key);
 
-        if ($data === null) {
-            return false;
-        }
+            if ($data === null) {
+                return false;
+            }
 
-        $info = @json_decode($data, true);
-        if (!is_array($info)) {
-            return false;
-        }
+            $info = @json_decode($data, true);
+            if (!is_array($info)) {
+                return false;
+            }
 
-        if (($info['verified'] ?? false) === true) {
-            return false;
-        }
+            if (($info['verified'] ?? false) === true) {
+                return false;
+            }
 
-        $expiresAt = $info['expiresAt'] ?? 0;
-        if ($expiresAt > 0 && $expiresAt < time()) {
-            $dao->delete($key);
+            $expiresAt = $info['expiresAt'] ?? 0;
+            if ($expiresAt > 0 && $expiresAt < time()) {
+                $dao->delete($key);
+                $dao->delete($attemptsKey);
+                return false;
+            }
+
+            // 先原子递增尝试计数再校验：读-改-写在并发提交下会被覆盖，
+            // 攻击者可用远超 maxAttempts 的次数爆破 6 位验证码
+            $attempts = $dao->increment($attemptsKey, 1, max(60, self::$validSeconds));
+            if ($attempts > self::$maxAttempts) {
+                $dao->delete($key);
+                $dao->delete($attemptsKey);
+                throw new SaTokenException('验证码尝试次数过多，请重新获取', -1);
+            }
+
+            $codeStr = $info['code'] ?? '';
+            if (!hash_equals(is_string($codeStr) ? $codeStr : (is_scalar($codeStr) ? (string) $codeStr : ''), $code)) {
+                return false;
+            }
+
+            // 先用原子门闩消费成功机会，避免并发请求同时读到 verified=false 后都通过。
+            if (!$dao->setIfNotExists($key . ':verified', '1', self::$validSeconds + 60)) {
+                return false;
+            }
+
+            $info['verified'] = true;
+            $info['verifiedAt'] = time();
+            $jsonStr = json_encode($info);
+            $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', 60);
             $dao->delete($attemptsKey);
-            return false;
+
+            return true;
+        } finally {
+            self::releaseStateLock($key, $lockValue);
         }
-
-        // 先原子递增尝试计数再校验：读-改-写在并发提交下会被覆盖，
-        // 攻击者可用远超 maxAttempts 的次数爆破 6 位验证码
-        $attempts = $dao->increment($attemptsKey, 1, max(60, self::$validSeconds));
-        if ($attempts > self::$maxAttempts) {
-            $dao->delete($key);
-            $dao->delete($attemptsKey);
-            throw new SaTokenException('验证码尝试次数过多，请重新获取', -1);
-        }
-
-        $codeStr = $info['code'] ?? '';
-        if (!hash_equals(is_string($codeStr) ? $codeStr : (is_scalar($codeStr) ? (string) $codeStr : ''), $code)) {
-            return false;
-        }
-
-        // 先用原子门闩消费成功机会，避免并发请求同时读到 verified=false 后都通过。
-        if (!$dao->setIfNotExists($key . ':verified', '1', self::$validSeconds + 60)) {
-            return false;
-        }
-
-        $info['verified'] = true;
-        $info['verifiedAt'] = time();
-        $jsonStr = json_encode($info);
-        $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', 60);
-        $dao->delete($attemptsKey);
-
-        return true;
     }
 
     public static function verifyCodeAndThrow(string $scene, string $code, mixed $loginId, string $loginType = 'login'): void
@@ -190,8 +208,33 @@ class SaSensitiveVerify
     {
         $dao = SaToken::getDao();
         $key = self::getKey($scene, $loginId, $loginType);
-        $dao->delete($key);
-        $dao->delete($key . ':verified');
+        $lockValue = self::acquireStateLock($key);
+        try {
+            $dao->delete($key);
+            $dao->delete($key . ':att');
+            $dao->delete($key . ':verified');
+        } finally {
+            self::releaseStateLock($key, $lockValue);
+        }
+    }
+
+    protected static function acquireStateLock(string $key): string
+    {
+        $lockValue = bin2hex(random_bytes(16));
+        if (!SaToken::getDao()->setIfNotExists($key . ':state-lock', $lockValue, 30)) {
+            throw new SaTokenException('敏感验证码状态正在更新，请重试');
+        }
+        return $lockValue;
+    }
+
+    protected static function releaseStateLock(string $key, string $lockValue): void
+    {
+        $dao = SaToken::getDao();
+        if ($dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
+            $dao->compareAndDelete($key . ':state-lock', $lockValue);
+        } elseif ($dao->get($key . ':state-lock') === $lockValue) {
+            $dao->delete($key . ':state-lock');
+        }
     }
 
     public static function getRemainingAttempts(string $scene, mixed $loginId, string $loginType = 'login'): int

@@ -11,6 +11,28 @@ use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
 use SaToken\Security\SaSensitiveVerify;
 
+class SensitiveVerifyInterleavingDao extends SaTokenDaoMemory
+{
+    /** @var callable(string, ?string): void|null */
+    private $afterNextGet = null;
+
+    public function afterNextGet(callable $callback): void
+    {
+        $this->afterNextGet = $callback;
+    }
+
+    public function get(string $key): ?string
+    {
+        $value = parent::get($key);
+        if ($this->afterNextGet !== null) {
+            $callback = $this->afterNextGet;
+            $this->afterNextGet = null;
+            $callback($key, $value);
+        }
+        return $value;
+    }
+}
+
 class SaSensitiveVerifyTest extends TestCase
 {
     protected function setUp(): void
@@ -46,6 +68,36 @@ class SaSensitiveVerifyTest extends TestCase
         $result = SaSensitiveVerify::verifyCode($scene, $code, $loginId);
 
         $this->assertTrue($result);
+    }
+
+    public function testCodeRegenerationCannotInterleaveWithVerification(): void
+    {
+        $dao = new SensitiveVerifyInterleavingDao();
+        SaToken::setDao($dao);
+        $scene = 'interleaved-scene';
+        $loginId = 10001;
+        $oldCode = SaSensitiveVerify::generateCode($scene, $loginId);
+        $regenerationWasBlocked = false;
+        $key = SaSensitiveVerify::getKey($scene, $loginId);
+
+        $dao->afterNextGet(static function (string $readKey, ?string $ignoredValue) use ($key, $scene, $loginId, &$regenerationWasBlocked): void {
+            if ($readKey !== $key) {
+                return;
+            }
+            try {
+                SaSensitiveVerify::generateCode($scene, $loginId);
+            } catch (SaTokenException $e) {
+                $regenerationWasBlocked = str_contains($e->getMessage(), '状态正在更新');
+            }
+        });
+
+        $this->assertTrue(SaSensitiveVerify::verifyCode($scene, $oldCode, $loginId));
+        $this->assertTrue($regenerationWasBlocked);
+
+        $newCode = SaSensitiveVerify::generateCode($scene, $loginId);
+        $this->assertFalse(SaSensitiveVerify::isVerified($scene, $loginId));
+        $this->assertFalse(SaSensitiveVerify::verifyCode($scene, $oldCode, $loginId));
+        $this->assertTrue(SaSensitiveVerify::verifyCode($scene, $newCode, $loginId));
     }
 
     public function testConcurrentSuccessfulCodeVerificationIsRejectedByAtomicClaim(): void
