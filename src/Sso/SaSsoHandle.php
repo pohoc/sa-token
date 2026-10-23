@@ -545,7 +545,7 @@ class SaSsoHandle
             }
             if (str_starts_with($pattern, '*.')) {
                 $suffix = substr($pattern, 2);
-                if ($host === $suffix || str_ends_with($host, '.' . $suffix)) {
+                if (str_ends_with($host, '.' . $suffix)) {
                     return true;
                 }
             }

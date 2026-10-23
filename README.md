@@ -622,7 +622,7 @@ $loginId = $sso->doLoginCallback($ticket, $redirect, $state);
 
 ### 域名校验
 
-配置 `allowDomains` 后，SSO 回调会校验 redirect 域名是否在白名单内，防止开放重定向攻击。支持通配符（如 `*.example.com`）。
+配置 `allowDomains` 后，SSO 回调会校验 redirect 域名是否在白名单内，防止开放重定向攻击。支持通配符（如 `*.example.com`）；该规则匹配其子域，不包含 `example.com` 根域，若需允许根域请单独添加。
 
 SSO `state` 使用 `__Host-` 前缀的 Secure、HttpOnly、host-only Cookie，固定 `Path=/` 且不设置 `Domain`，避免父域 Cookie 配置下被兄弟子域注入覆盖。SSO 回调应返回发起登录的同一主机；若跨子域回调，请在目标主机发起登录。该状态 Cookie 始终要求 HTTPS（浏览器对 localhost 开发地址有特殊处理）。
 

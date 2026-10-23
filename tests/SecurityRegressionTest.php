@@ -896,6 +896,21 @@ class SecurityRegressionTest extends TestCase
         $this->assertFalse($ref->invoke($handle, 'https://user@app.example.com/callback'));
     }
 
+    public function testSsoWildcardDomainDoesNotIncludeApexDomain(): void
+    {
+        $handle = new SaSsoHandle(new SaSsoConfig([
+            'allowDomains' => ['*.example.com'],
+        ]));
+
+        $ref = new \ReflectionMethod(SaSsoHandle::class, 'validateDomain');
+        $ref->setAccessible(true);
+
+        $this->assertTrue($ref->invoke($handle, 'https://app.example.com/callback'));
+        $this->assertTrue($ref->invoke($handle, 'https://deep.app.example.com/callback'));
+        $this->assertFalse($ref->invoke($handle, 'https://example.com/callback'));
+        $this->assertFalse($ref->invoke($handle, 'https://notexample.com/callback'));
+    }
+
     // ======== SaSign 强制防重放 ========
 
     public function testSaSignRejectsReplayWithinWindow(): void
