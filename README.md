@@ -627,7 +627,7 @@ $loginId = $sso->doLoginCallback($ticket, $redirect, $state);
 // buildLoginUrl 只有一个参数，携带当前 URL 请通过模式处理器调用
 $loginUrl = $sso->getModeHandler()->buildLoginUrl(null, $currentUrl);
 
-$result = $sso->getModeHandler()->doLoginCallbackWithRedirect($ticket);
+$result = $sso->getModeHandler()->doLoginCallbackWithRedirect($ticket, $state);
 $loginId = $result['loginId'];
 $redirect = $result['redirect'];
 ```

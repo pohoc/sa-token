@@ -9,9 +9,11 @@ use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoMemory;
 use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
+use SaToken\Sso\Mode\SsoModeCrossDomain;
 use SaToken\Sso\SaSsoConfig;
 use SaToken\Sso\SaSsoHandle;
 use SaToken\Sso\SaSsoManager;
+use SaToken\Util\SaTokenContext;
 
 /**
  * SSO 模块测试
@@ -95,6 +97,24 @@ class SaSsoTest extends TestCase
         $this->assertStringContainsString('https://auth.example.com/login', $url);
         $this->assertStringContainsString('redirect=', $url);
         $this->assertStringContainsString('client_id=app-1', $url);
+    }
+
+    public function testCrossDomainCallbackWithRedirectPassesState(): void
+    {
+        SaTokenContext::setRequest(new class () {
+            public function cookie(string $name): ?string
+            {
+                return $name === 'sso_params_state' ? 'expected-state' : null;
+            }
+        });
+
+        $mode = new SsoModeCrossDomain(new SaSsoConfig());
+        try {
+            $mode->doLoginCallbackWithRedirect('ticket', 'expected-state');
+            $this->fail('缺少 ticket 校验地址时必须失败');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('ticket 校验地址未配置', $e->getMessage());
+        }
     }
 
     public function testBuildLoginUrlWithoutRedirect(): void
