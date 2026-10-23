@@ -124,6 +124,25 @@ class TokenManager
 
     public function saveToken(string $tokenValue, mixed $loginId, string $loginType, string $deviceType = '', ?int $timeout = null): string
     {
+        if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
+            throw new SaTokenException('loginId 不能为空且必须是非布尔标量');
+        }
+
+        $loginIdStr = (string) $loginId;
+        $loginLockKey = 'login:' . $loginType . ':' . hash('sha256', $loginIdStr);
+        if (!$this->acquireLock($loginLockKey, 5)) {
+            throw new SaTokenException('同账号会话正在处理中，请稍后重试');
+        }
+
+        try {
+            return $this->saveTokenWithLoginLock($tokenValue, $loginId, $loginType, $deviceType, $timeout);
+        } finally {
+            $this->releaseLock($loginLockKey);
+        }
+    }
+
+    protected function saveTokenWithLoginLock(string $tokenValue, mixed $loginId, string $loginType, string $deviceType, ?int $timeout): string
+    {
         $config = $this->getConfig();
         $timeout = $timeout ?? $config->getTimeout();
         $effectiveTimeout = ($timeout === -1) ? null : $timeout;
@@ -703,24 +722,37 @@ class TokenManager
 
     public function saveRefreshToken(string $refreshToken, string $accessToken, mixed $loginId, string $loginType, int $timeout): void
     {
-        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-        $data = SaFoxUtil::toJson([
-            'loginId'      => $loginIdStr,
-            'loginType'    => $loginType,
-            'accessToken'  => $accessToken,
-            'createTime'   => SaFoxUtil::getTime(),
-        ]);
-        $effectiveTimeout = ($timeout === -1) ? null : $timeout;
-        if (!$this->getDao()->setIfNotExists(
-            self::REFRESH_TOKEN_PREFIX . $refreshToken,
-            $this->encryptValue($data),
-            $effectiveTimeout
-        )) {
-            throw new SaTokenException('RefreshToken 值冲突，拒绝覆盖其他会话凭据');
+        if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
+            throw new SaTokenException('loginId 不能为空且必须是非布尔标量');
         }
 
-        $mapKey = self::REFRESH_TOKEN_MAP_PREFIX . $loginType . ':' . $loginIdStr . ':' . $accessToken;
-        $this->getDao()->set($mapKey, $this->encryptValue($refreshToken), $effectiveTimeout);
+        $loginIdStr = (string) $loginId;
+        $loginLockKey = 'login:' . $loginType . ':' . hash('sha256', $loginIdStr);
+        if (!$this->acquireLock($loginLockKey, 5)) {
+            throw new SaTokenException('同账号会话正在处理中，请稍后重试');
+        }
+
+        try {
+            $data = SaFoxUtil::toJson([
+                'loginId'      => $loginIdStr,
+                'loginType'    => $loginType,
+                'accessToken'  => $accessToken,
+                'createTime'   => SaFoxUtil::getTime(),
+            ]);
+            $effectiveTimeout = ($timeout === -1) ? null : $timeout;
+            if (!$this->getDao()->setIfNotExists(
+                self::REFRESH_TOKEN_PREFIX . $refreshToken,
+                $this->encryptValue($data),
+                $effectiveTimeout
+            )) {
+                throw new SaTokenException('RefreshToken 值冲突，拒绝覆盖其他会话凭据');
+            }
+
+            $mapKey = self::REFRESH_TOKEN_MAP_PREFIX . $loginType . ':' . $loginIdStr . ':' . $accessToken;
+            $this->getDao()->set($mapKey, $this->encryptValue($refreshToken), $effectiveTimeout);
+        } finally {
+            $this->releaseLock($loginLockKey);
+        }
     }
 
     /**

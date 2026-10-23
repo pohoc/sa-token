@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
 use SaToken\StpUtil;
+use SaToken\TokenManager;
 use SaToken\Util\SaTokenContext;
 
 class RefreshTokenTest extends TestCase
@@ -142,6 +143,26 @@ class RefreshTokenTest extends TestCase
         $this->assertSame('10026', $data['loginId'] ?? null);
         $this->assertSame('same-refresh-token', $manager->getRefreshTokenByAccessToken(10026, 'login', 'access-a'));
         $this->assertNull($manager->getRefreshTokenByAccessToken(10027, 'login', 'access-b'));
+    }
+
+    public function testSaveRefreshTokenRequiresAccountLock(): void
+    {
+        $manager = StpUtil::getStpLogic()->getTokenManager();
+        $otherManager = new TokenManager();
+        $loginId = 'refresh-save-lock-user';
+        $lockKey = 'login:login:' . hash('sha256', $loginId);
+        self::assertTrue($otherManager->acquireLock($lockKey));
+
+        try {
+            $manager->saveRefreshToken('refresh-save-lock-token', 'access-save-lock-token', $loginId, 'login', 3600);
+            self::fail('账号锁被其他请求持有时不能写入 RefreshToken');
+        } catch (SaTokenException $e) {
+            self::assertStringContainsString('同账号', $e->getMessage());
+        }
+
+        self::assertNull($manager->getRefreshTokenData('refresh-save-lock-token'));
+        self::assertNull($manager->getRefreshTokenByAccessToken($loginId, 'login', 'access-save-lock-token'));
+        $otherManager->releaseLock($lockKey);
     }
 
     public function testRefreshTokenRotation(): void

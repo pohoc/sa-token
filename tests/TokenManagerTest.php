@@ -7,6 +7,7 @@ namespace SaToken\Tests;
 use PHPUnit\Framework\TestCase;
 use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoMemory;
+use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
 use SaToken\TokenManager;
 use SaToken\Util\SaTokenContext;
@@ -60,6 +61,31 @@ class TokenManagerTest extends TestCase
 
         $loginId = $this->manager->getLoginIdByToken($token);
         $this->assertEquals('10001', $loginId);
+    }
+
+    public function testSaveTokenRequiresAccountLock(): void
+    {
+        $loginId = 'save-lock-user';
+        $lockKey = 'login:login:' . hash('sha256', $loginId);
+        $otherManager = new TokenManager();
+        self::assertTrue($otherManager->acquireLock($lockKey));
+        $token = $this->manager->createTokenValue($loginId, 'login');
+
+        try {
+            $this->manager->saveToken($token, $loginId, 'login');
+            self::fail('账号锁被其他请求持有时不能写入 Token');
+        } catch (SaTokenException $e) {
+            self::assertStringContainsString('同账号', $e->getMessage());
+        }
+
+        self::assertNull($this->manager->getLoginIdByToken($token));
+        $otherManager->releaseLock($lockKey);
+    }
+
+    public function testSaveTokenRejectsInvalidLoginId(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->manager->saveToken('invalid-login-id-token', '', 'login');
     }
 
     public function testTamperedEncryptedLoginIdMakesTokenInvalid(): void
