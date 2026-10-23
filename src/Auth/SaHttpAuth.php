@@ -79,9 +79,13 @@ class SaHttpAuth
         $uri = $params['uri'] ?? null;
         $response = $params['response'] ?? null;
 
-        if ($username === null || $nonce === null || $uri === null || $response === null) {
+        if ($username === null || $nonce === null || $uri === null || $response === null
+            || ($params['realm'] ?? null) !== $realm
+            || $qop !== 'auth'
+            || !is_string($nc) || preg_match('/^[0-9a-fA-F]{8}$/D', $nc) !== 1
+            || !is_string($cnonce) || $cnonce === '') {
             $this->sendDigestChallenge($realm);
-            throw new SaTokenException('Digest 认证信息不完整');
+            throw new SaTokenException('Digest 认证信息不完整或与服务端挑战不匹配');
         }
 
         // nonce 必须是服务端签发的（RFC 2617 允许 nonce 未过期期间复用，
@@ -100,7 +104,10 @@ class SaHttpAuth
 
         $ha1 = ($this->digestValidator)($username);
 
-        if ($ha1 === null || is_bool($ha1)) {
+        // Digest HA1 is an MD5 hex digest in this implementation. Empty or
+        // malformed validator sentinels must fail closed; otherwise an empty
+        // HA1 lets callers forge a valid response for an unknown user.
+        if (!is_string($ha1) || preg_match('/^[0-9a-fA-F]{32}$/D', $ha1) !== 1) {
             SaAntiBruteUtil::recordFailure($username);
             $this->sendDigestChallenge($realm);
             throw new SaTokenException('Digest 认证失败');
@@ -123,13 +130,7 @@ class SaHttpAuth
 
         $ha2 = md5($method . ':' . $uri);
 
-        $ha1Str = is_string($ha1) ? $ha1 : (is_scalar($ha1) ? (string) $ha1 : '');
-
-        if ($qop !== null && ($qop === 'auth' || $qop === 'auth-int')) {
-            $expected = md5($ha1Str . ':' . $nonce . ':' . $nc . ':' . $cnonce . ':' . $qop . ':' . $ha2);
-        } else {
-            $expected = md5($ha1Str . ':' . $nonce . ':' . $ha2);
-        }
+        $expected = md5($ha1 . ':' . $nonce . ':' . $nc . ':' . $cnonce . ':auth:' . $ha2);
 
         if (!hash_equals($expected, $response)) {
             SaAntiBruteUtil::recordFailure($username);
@@ -235,7 +236,7 @@ class SaHttpAuth
 
         $result = [];
 
-        preg_match_all('/(\w+)=(?:"([^"]*)"|([\w=\/+]+))/', $headerPart, $matches, PREG_SET_ORDER);
+        preg_match_all('/(\w+)\s*=\s*(?:"([^"]*)"|([^,\s]+))/', $headerPart, $matches, PREG_SET_ORDER);
 
         foreach ($matches as $match) {
             $key = $match[1];

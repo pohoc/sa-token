@@ -209,6 +209,78 @@ class SaHttpAuthTest extends TestCase
         $auth->checkDigest('Test');
     }
 
+    public function testCheckDigestRejectsEmptyHa1FromValidator(): void
+    {
+        $username = 'unknown-user';
+        $nonce = 'issued-empty-ha1-nonce';
+        $uri = '/test';
+        $ha2 = md5('GET:' . $uri);
+        $response = md5(':' . $nonce . ':00000001:xyz:auth:' . $ha2);
+        $header = sprintf(
+            'Digest username="%s", realm="Test", nonce="%s", uri="%s", qop=auth, nc=00000001, cnonce="xyz", response="%s"',
+            $username,
+            $nonce,
+            $uri,
+            $response
+        );
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->willReturnCallback(static fn (string $name): array => $name === 'Authorization' ? [$header] : []);
+        $request->method('getMethod')->willReturn('GET');
+        $request->method('getRequestTarget')->willReturn($uri);
+        SaTokenContext::setRequest($request);
+        SaToken::getDao()->set('satoken:auth:digest:nonce:' . hash('sha256', $nonce), '1', 300);
+
+        $auth = new SaHttpAuth();
+        $auth->setDigestValidator(static fn (): string => '');
+
+        $this->expectException(SaTokenException::class);
+        $auth->checkDigest('Test');
+    }
+
+    public function testCheckDigestRejectsRealmMismatchAndUnsupportedQop(): void
+    {
+        foreach ([
+            ['headerRealm' => 'Other', 'challengeRealm' => 'Test', 'qop' => 'auth'],
+            ['headerRealm' => 'Test', 'challengeRealm' => 'Test', 'qop' => 'auth-int'],
+        ] as $case) {
+            $nonce = 'issued-invalid-digest-' . bin2hex(random_bytes(4));
+            $uri = '/test';
+            $username = 'admin';
+            $ha1 = md5($username . ':' . $case['headerRealm'] . ':secret');
+            $ha2 = md5('GET:' . $uri);
+            $response = md5($ha1 . ':' . $nonce . ':00000001:xyz:' . $case['qop'] . ':' . $ha2);
+            $header = sprintf(
+                'Digest username="%s", realm="%s", nonce="%s", uri="%s", qop=%s, nc=00000001, cnonce="xyz", response="%s"',
+                $username,
+                $case['headerRealm'],
+                $nonce,
+                $uri,
+                $case['qop'],
+                $response
+            );
+            $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+            $request->method('getHeader')->willReturnCallback(static fn (string $name): array => $name === 'Authorization' ? [$header] : []);
+            $request->method('getMethod')->willReturn('GET');
+            $request->method('getRequestTarget')->willReturn($uri);
+            SaTokenContext::setRequest($request);
+            SaToken::getDao()->set('satoken:auth:digest:nonce:' . hash('sha256', $nonce), '1', 300);
+
+            $auth = new SaHttpAuth();
+            $validatorCalls = 0;
+            $auth->setDigestValidator(static function () use (&$validatorCalls, $username, $case): string {
+                $validatorCalls++;
+                return md5($username . ':' . $case['challengeRealm'] . ':secret');
+            });
+            try {
+                $auth->checkDigest($case['challengeRealm']);
+                self::fail('Realm mismatch and unsupported qop must be rejected');
+            } catch (SaTokenException) {
+                self::assertSame(0, $validatorCalls);
+            }
+            SaTokenContext::clear();
+        }
+    }
+
     public function testSendChallengeSetsHeader(): void
     {
         $auth = new SaHttpAuth();
