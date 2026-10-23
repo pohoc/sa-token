@@ -184,6 +184,26 @@ class SecurityRegressionTest extends TestCase
         $this->actAsToken($jwt);
 
         $this->assertFalse(StpUtil::getStpLogic()->isLogin());
+        $this->assertNull(StpUtil::getLoginId());
+        $this->assertNull(StpUtil::getStpLogic()->getLoginIdByToken($jwt));
+    }
+
+    public function testStatelessJwtProvidesIdentityOnlyForMatchingLoginType(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'isReadHeader' => true,
+        ]));
+
+        $jwt = (new \SaToken\Plugin\SaTokenJwt([
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]))->createStatelessToken(29999, 'login', 3600);
+        $this->actAsToken($jwt);
+
+        $this->assertTrue(StpUtil::getStpLogic()->isLogin());
+        $this->assertSame('29999', StpUtil::getLoginId());
+        $this->assertSame('29999', StpUtil::getStpLogic()->getLoginIdByToken($jwt));
     }
 
     // ======== C2: 吊销黑名单必须覆盖权限校验层 ========

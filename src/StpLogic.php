@@ -309,15 +309,7 @@ class StpLogic
         }
 
         if ($config->isJwtStateless()) {
-            $jwt = $this->getJwt();
-            $payload = $jwt->validateStatelessToken($tokenValue);
-            $subject = $payload['sub'] ?? null;
-            $type = $payload['type'] ?? null;
-            if ($payload !== null
-                && is_string($subject)
-                && $subject !== ''
-                && is_string($type)
-                && $type === $this->loginType) {
+            if ($this->getStatelessLoginIdByToken($tokenValue) !== null) {
                 return;
             }
             throw new NotLoginException('Token 已失效，请重新登录', NotLoginException::TOKEN_TIMEOUT);
@@ -375,6 +367,10 @@ class StpLogic
         // 被吊销（拉黑）的 Token 不产生有效身份，保证 checkPermission/checkRole 等下游校验一致失效
         if ($this->tokenManager->isBlacklisted($tokenValue)) {
             return null;
+        }
+
+        if ($this->getConfig()->isJwtStateless()) {
+            return $this->getStatelessLoginIdByToken($tokenValue);
         }
 
         $loginId = $this->tokenManager->getLoginIdByToken($tokenValue);
@@ -473,11 +469,38 @@ class StpLogic
 
     public function getLoginIdByToken(string $tokenValue): ?string
     {
+        if ($this->getConfig()->isJwtStateless()) {
+            if ($this->tokenManager->isBlacklisted($tokenValue)) {
+                return null;
+            }
+
+            return $this->getStatelessLoginIdByToken($tokenValue);
+        }
+
         $loginId = $this->tokenManager->getLoginIdByToken($tokenValue);
         if ($loginId === null || !$this->isTokenOwnedByLoginType($tokenValue, $loginId)) {
             return null;
         }
         return $loginId;
+    }
+
+    /**
+     * 无状态 JWT 的身份来源是已验签的 sub，且必须属于当前 loginType。
+     */
+    protected function getStatelessLoginIdByToken(string $tokenValue): ?string
+    {
+        $payload = $this->getJwt()->validateStatelessToken($tokenValue);
+        if ($payload === null) {
+            return null;
+        }
+
+        $subject = $payload['sub'] ?? null;
+        $type = $payload['type'] ?? null;
+        if (!is_string($subject) || $subject === '' || !is_string($type) || $type !== $this->loginType) {
+            return null;
+        }
+
+        return $subject;
     }
 
     /**
