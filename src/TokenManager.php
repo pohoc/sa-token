@@ -201,7 +201,31 @@ class TokenManager
             }
         }
 
-        $this->getDao()->set($loginIdKey, $this->encryptValue(SaFoxUtil::toJson($existingTokens)), $effectiveTimeout);
+        // The account list may contain tokens with different TTLs. Its lifetime
+        // must cover the longest-lived token, otherwise a newer short session
+        // can make older valid tokens fail the loginType ownership check early.
+        /** @var int|null $listTimeout */
+        $listTimeout = 1;
+        foreach ($existingTokens as $item) {
+            $itemTokenValue = is_string($item['tokenValue'] ?? null) ? $item['tokenValue'] : '';
+            if ($itemTokenValue === '') {
+                continue;
+            }
+            $tokenTimeout = $this->getDao()->getTimeout(self::TOKEN_PREFIX . $itemTokenValue);
+            if ($tokenTimeout === -1) {
+                $listTimeout = null;
+                break;
+            }
+            if ($tokenTimeout > $listTimeout) {
+                $listTimeout = $tokenTimeout;
+            }
+        }
+
+        $this->getDao()->set(
+            $loginIdKey,
+            $this->encryptValue(SaFoxUtil::toJson($existingTokens)),
+            $listTimeout
+        );
 
         // mixed 模式下实际存储的是 JWT，必须返回真实值供调用方下发给客户端
         return $tokenValue;
