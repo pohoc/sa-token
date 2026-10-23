@@ -46,6 +46,12 @@ class TokenManager
         return self::LOGIN_ID_PREFIX . self::encodeKeyComponent($loginType) . ':' . self::encodeKeyComponent($loginId);
     }
 
+    protected static function buildDisableKey(string $loginType, string $loginId, string $service): string
+    {
+        return self::DISABLE_PREFIX . self::encodeKeyComponent($loginType) . ':'
+            . self::encodeKeyComponent($loginId) . ':' . self::encodeKeyComponent($service);
+    }
+
     protected ?SaTokenEncryptor $encryptor = null;
 
     protected ?SaTokenJwt $jwtInstance = null;
@@ -524,7 +530,7 @@ class TokenManager
     {
         SaTokenTimeout::validate($time, '封禁时长');
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-        $key = self::DISABLE_PREFIX . $loginType . ':' . $loginIdStr . ':' . $service;
+        $key = self::buildDisableKey($loginType, $loginIdStr, $service);
         $data = SaFoxUtil::toJson([
             'level'   => $level,
             'disable' => true,
@@ -536,7 +542,7 @@ class TokenManager
     public function isDisable(mixed $loginId, string $service, string $loginType): bool
     {
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-        $key = self::DISABLE_PREFIX . $loginType . ':' . $loginIdStr . ':' . $service;
+        $key = self::buildDisableKey($loginType, $loginIdStr, $service);
         $json = $this->getDao()->get($key);
         if ($json === null) {
             return false;
@@ -551,7 +557,7 @@ class TokenManager
     public function getDisableLevel(mixed $loginId, string $service, string $loginType): int
     {
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-        $key = self::DISABLE_PREFIX . $loginType . ':' . $loginIdStr . ':' . $service;
+        $key = self::buildDisableKey($loginType, $loginIdStr, $service);
         $json = $this->getDao()->get($key);
         if ($json === null) {
             return -1;
@@ -567,14 +573,14 @@ class TokenManager
     public function getDisableTime(mixed $loginId, string $service, string $loginType): int
     {
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-        $key = self::DISABLE_PREFIX . $loginType . ':' . $loginIdStr . ':' . $service;
+        $key = self::buildDisableKey($loginType, $loginIdStr, $service);
         return $this->getDao()->getTimeout($key);
     }
 
     public function untieDisable(mixed $loginId, string $service, string $loginType): void
     {
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-        $key = self::DISABLE_PREFIX . $loginType . ':' . $loginIdStr . ':' . $service;
+        $key = self::buildDisableKey($loginType, $loginIdStr, $service);
         $this->getDao()->delete($key);
     }
 

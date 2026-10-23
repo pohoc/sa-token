@@ -202,6 +202,18 @@ class TokenManagerTest extends TestCase
         $this->assertEquals(1, $this->manager->getDisableLevel(10001, 'comment', 'login'));
     }
 
+    public function testDisableStateIsIsolatedAcrossDelimitedLoginTypes(): void
+    {
+        $this->manager->disable('42', 'comment', 1, -1, 'user:admin');
+
+        self::assertTrue($this->manager->isDisable('42', 'comment', 'user:admin'));
+        self::assertFalse($this->manager->isDisable('admin:42', 'comment', 'user'));
+
+        $this->manager->untieDisable('42', 'comment', 'user:admin');
+        self::assertFalse($this->manager->isDisable('42', 'comment', 'user:admin'));
+        self::assertFalse($this->manager->isDisable('admin:42', 'comment', 'user'));
+    }
+
     public function testDisableRejectsInvalidDurationsInsteadOfCreatingPermanentBan(): void
     {
         foreach ([0, -2, PHP_INT_MAX] as $duration) {
