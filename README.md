@@ -12,7 +12,9 @@
 
 > **v0.1.3 安全加固说明**：本版本修复了安全审计发现的多处高危问题，部分行为为有意收紧（详见 [CHANGELOG.md](CHANGELOG.md)）：
 > OAuth2 换 token 必须携带 redirect_uri、SSO 回调强制校验 state、客户端注册必须配置非空 secret、
-> `SaSign` 强制 timestamp/nonce 且移除 MD5、加密插件密文格式升级（兼容读取旧格式）。升级前请阅读变更日志。
+> `SaSign` 强制 timestamp/nonce 且移除 MD5、加密插件密文格式升级（AES 旧格式兼容读取；安全敏感路径拒绝旧版无密钥 SM3 摘要）。升级前请阅读变更日志。
+
+> **存储完整性说明**：安全敏感读取会拒绝 MAC 校验失败的密文。旧版 SM4 存储使用无密钥 SM3 摘要，无法验证篡改；启用 SM 模式升级后，应重新登录并清理旧版持久化会话和 OAuth2 令牌。
 
 ## 特性一览
 
@@ -510,6 +512,7 @@ SaToken::init([
 
 - 国际算法：AES-256-CBC + HMAC-SHA256
 - 国密算法：SM4-CBC + HMAC-SM3（需 `cryptoType => 'sm'`）
+- 安全敏感数据通过带密钥的 MAC 校验；旧版无密钥 SM3 摘要只保留在 `decrypt()` 的迁移兼容路径，不会被内置认证、Session 和 OAuth2 读取接受。
 
 ## 国密全链路
 
@@ -868,6 +871,8 @@ use SaToken\SaToken;
 SaToken::setDao(new SaTokenDaoFile(['path' => __DIR__ . '/runtime/sa-token']));
 ```
 
+新建的存储目录仅当前用户可访问，数据文件和锁文件使用 `0600` 权限。
+
 ### Redis 存储
 
 ```php
@@ -1224,7 +1229,7 @@ try {
 | `cookieHttpOnly` | bool | `true` | Cookie HttpOnly |
 | `cookieSameSite` | string | `'Strict'` | Cookie SameSite：`Strict` / `Lax` / `None` |
 | `tokenFingerprint` | bool | `false` | 是否启用 Token 指纹绑定（IP + User-Agent） |
-| `storage` | array | `['type' => 'memory']` | 存储层配置，`type`: `memory` / `file` / `redis`；`file` 可配 `path`、`scanLimit`，`redis` 可配 `host` / `port` / `password` / `database` / `timeout`；PSR-16 请用 `SaToken::setDao()` |
+| `storage` | array | `['type' => 'memory']` | 存储层配置，`type`: `memory` / `file` / `redis`；`file` 可配 `path`、`scanLimit`，`redis` 可配 `url` 或 `host` / `port` / `username` / `password` / `database` / `timeout`；PSR-16 请用 `SaToken::setDao()` |
 
 ### 加密配置
 
