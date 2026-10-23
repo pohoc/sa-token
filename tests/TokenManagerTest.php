@@ -9,6 +9,7 @@ use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoMemory;
 use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
+use SaToken\StpLogic;
 use SaToken\TokenManager;
 use SaToken\Util\SaTokenContext;
 use SaToken\Util\SaTokenEncryptor;
@@ -61,6 +62,17 @@ class TokenManagerTest extends TestCase
 
         $loginId = $this->manager->getLoginIdByToken($token);
         $this->assertEquals('10001', $loginId);
+    }
+
+    public function testPercentEscapeLegacyKeyCollisionCannotAuthenticateAcrossLoginTypes(): void
+    {
+        $owner = new StpLogic('user%');
+        $otherType = new StpLogic('user%25');
+        $token = $this->manager->createTokenValue('shared-account', 'user%');
+        $this->manager->saveToken($token, 'shared-account', 'user%');
+
+        self::assertNull($otherType->getLoginIdByToken($token));
+        self::assertSame('shared-account', $owner->getLoginIdByToken($token));
     }
 
     public function testLoginTokenListsAreIsolatedAcrossDelimitedLoginTypes(): void

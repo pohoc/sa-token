@@ -16,6 +16,7 @@ class TokenManager
 {
     public const TOKEN_PREFIX = 'satoken:login:token:';
     public const LOGIN_ID_PREFIX = 'satoken:login:loginId:';
+    public const LOGIN_ID_V2_PREFIX = 'satoken:login:v2:loginId:';
     public const LAST_ACTIVE_PREFIX = 'satoken:login:lastActive:';
     public const SESSION_PREFIX = 'satoken:session:';
     public const TOKEN_SESSION_PREFIX = 'satoken:tokenSession:';
@@ -43,7 +44,7 @@ class TokenManager
 
     public static function buildLoginIdKey(string $loginType, string $loginId): string
     {
-        return self::LOGIN_ID_PREFIX . self::encodeKeyComponent($loginType) . ':' . self::encodeKeyComponent($loginId);
+        return self::LOGIN_ID_V2_PREFIX . self::encodeKeyComponent($loginType) . ':' . self::encodeKeyComponent($loginId);
     }
 
     protected static function buildLegacyLoginIdKey(string $loginType, string $loginId): string
@@ -352,12 +353,11 @@ class TokenManager
         $loginIdKey = self::buildLoginIdKey($loginType, $loginIdStr);
         $json = $this->getDao()->get($loginIdKey);
         if ($json === null) {
-            // Read legacy delimiter-based indexes during upgrade. A legacy key
-            // may contain several accounts after a tuple collision, so only
-            // return entries whose authoritative token record belongs to this
-            // exact loginId. The new index remains isolated from the next write.
-            if (self::encodeKeyComponent($loginType) === $loginType
-                && self::encodeKeyComponent($loginIdStr) === $loginIdStr) {
+            // Read old raw/encoded indexes when their spelling is unambiguous.
+            // Any percent sign could be either literal legacy data or an escape
+            // from the prior encoded format (%25 / %3A), so fail closed instead
+            // of mistaking another login type's new index for this old index.
+            if (str_contains($loginType, '%') || str_contains($loginIdStr, '%')) {
                 return [];
             }
             $legacyJson = $this->getDao()->get(self::buildLegacyLoginIdKey($loginType, $loginIdStr));

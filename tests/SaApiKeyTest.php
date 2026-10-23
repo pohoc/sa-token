@@ -85,7 +85,7 @@ class SaApiKeyTest extends TestCase
         $api->registerKey('my-key', 'my-secret', 10001);
         $api->checkApiKey();
 
-        $this->assertTrue(SaToken::getDao()->exists('satoken:login:loginId:login:10001'));
+        $this->assertTrue(SaToken::getDao()->exists(\SaToken\TokenManager::buildLoginIdKey('login', '10001')));
     }
 
     public function testCheckApiKeyThrowsOnMissingHeaders(): void
@@ -152,7 +152,7 @@ class SaApiKeyTest extends TestCase
         $api->setKeyRegistry(['123' => ['secret' => 'numeric-key-secret', 'loginId' => 10001]]);
         $api->checkApiKey();
 
-        $this->assertTrue(SaToken::getDao()->exists('satoken:login:loginId:login:10001'));
+        $this->assertTrue(SaToken::getDao()->exists(\SaToken\TokenManager::buildLoginIdKey('login', '10001')));
     }
 
     public function testCheckApiKeyWithCustomValidator(): void
@@ -172,7 +172,7 @@ class SaApiKeyTest extends TestCase
         });
         $api->checkApiKey();
 
-        $this->assertTrue(SaToken::getDao()->exists('satoken:login:loginId:login:20001'));
+        $this->assertTrue(SaToken::getDao()->exists(\SaToken\TokenManager::buildLoginIdKey('login', '20001')));
     }
 
     public function testCheckApiKeyTreatsFalseValidatorResultAsFailure(): void

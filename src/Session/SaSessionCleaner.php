@@ -32,6 +32,7 @@ class SaSessionCleaner
         'satoken:login:token:',
         'satoken:login:lastActive:',
         'satoken:login:loginId:',
+        'satoken:login:v2:loginId:',
         'satoken:session:',
         'satoken:session:lock:',
         'satoken:tokenSession:',

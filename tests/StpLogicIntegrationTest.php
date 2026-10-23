@@ -77,7 +77,7 @@ class StpLogicIntegrationTest extends TestCase
         $longLogin = $this->logic->login($loginId, new SaLoginParameter(['timeout' => 3600, 'isShare' => false]));
         $shortLogin = $this->logic->login($loginId, new SaLoginParameter(['timeout' => 60, 'isShare' => false]));
 
-        $listKey = TokenManager::LOGIN_ID_PREFIX . 'login:' . $loginId;
+        $listKey = TokenManager::buildLoginIdKey('login', $loginId);
         $this->assertGreaterThan(3500, $this->dao->getTimeout($listKey));
         $this->assertSame($loginId, $this->logic->getLoginIdByToken($longLogin->getAccessToken()));
         $this->assertSame($loginId, $this->logic->getLoginIdByToken($shortLogin->getAccessToken()));

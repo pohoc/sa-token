@@ -142,6 +142,32 @@ class RedisDaoRealIntegrationTest extends TestCase
         }
     }
 
+    public function testPercentEscapeLegacyIndexCannotAuthenticateAcrossTypesAgainstRealRedis(): void
+    {
+        SaToken::reset();
+        SaToken::setConfig(new SaTokenConfig([
+            'timeout'         => 60,
+            'activityTimeout' => -1,
+            'concurrent'      => true,
+            'isShare'         => true,
+            'maxLoginCount'   => 12,
+        ]));
+        SaToken::setDao($this->dao);
+
+        $loginId = 'redis-percent-user-' . bin2hex(random_bytes(6));
+        $owner = new StpLogic('redis-user%');
+        $otherType = new StpLogic('redis-user%25');
+        try {
+            $token = $owner->login($loginId)->getAccessToken();
+
+            self::assertSame($loginId, $owner->getLoginIdByToken($token));
+            self::assertNull($otherType->getLoginIdByToken($token));
+        } finally {
+            $owner->kickout($loginId);
+            SaToken::reset();
+        }
+    }
+
     public function testSecurityTupleKeysStayDistinctAgainstRealRedis(): void
     {
         SaToken::reset();

@@ -11,6 +11,7 @@ use SaToken\Dao\SaTokenDaoInterface;
 use SaToken\Dao\SaTokenDaoMemory;
 use SaToken\SaToken;
 use SaToken\Session\SaSessionCleaner;
+use SaToken\TokenManager;
 
 /**
  * 模拟一个"记录了 TTL 但从不物理删除过期记录"的自定义存储后端
@@ -119,6 +120,17 @@ class SaSessionCleanerTest extends TestCase
         $this->assertNull($dao->get('satoken:login:token:expired-token-1'));
         $this->assertNull($dao->get('satoken:login:token:expired-token-2'));
         $this->assertNotNull($dao->get('satoken:login:token:valid-token'));
+    }
+
+    public function testCleanOnceRemovesExpiredVersionedLoginIdIndex(): void
+    {
+        $dao = SaToken::getDao();
+        $key = TokenManager::buildLoginIdKey('login', 'expired-index-user');
+        $dao->set($key, 'index', 10);
+        $this->backdate($dao, $key);
+
+        self::assertSame(1, SaSessionCleaner::cleanOnce());
+        self::assertNull($dao->get($key));
     }
 
     public function testCleanOnceRemovesExpiredSessions(): void
