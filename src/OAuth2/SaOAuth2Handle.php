@@ -565,7 +565,15 @@ class SaOAuth2Handle
         SaAntiBruteUtil::checkAndThrow($username);
 
         // 用户验证由外部回调处理
-        $loginId = $this->validateUserCredentials($username, $password);
+        try {
+            $loginId = $this->validateUserCredentials($username, $password);
+        } catch (\Throwable $exception) {
+            // Validator callbacks may signal rejected credentials by throwing.
+            // Count those failures too, otherwise callers can bypass brute-force
+            // protection simply by using an exception-based validator.
+            SaAntiBruteUtil::recordFailure($username);
+            throw $exception;
+        }
         if ($loginId === null || is_bool($loginId) || !is_scalar($loginId) || $loginId === '') {
             SaAntiBruteUtil::recordFailure($username);
             throw new SaTokenException('用户名或密码错误');

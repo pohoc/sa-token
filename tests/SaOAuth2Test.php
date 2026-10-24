@@ -17,6 +17,7 @@ use SaToken\OAuth2\SaOAuth2Handle;
 use SaToken\OAuth2\SaOAuth2Manager;
 use SaToken\OAuth2\Strategy\ImplicitStrategy;
 use SaToken\SaToken;
+use SaToken\Security\SaAntiBruteUtil;
 use SaToken\Util\SaTokenContext;
 
 /**
@@ -129,6 +130,24 @@ class SaOAuth2Test extends TestCase
 
         $token = $this->handle->tokenByClientCredentials('test-client', $this->clientSecret, 'read');
         $this->assertNotEmpty($token->getAccessToken());
+    }
+
+    public function testPasswordValidatorExceptionCountsAsAuthenticationFailure(): void
+    {
+        SaTokenContext::setRequest($this->requestFromIp('192.0.2.30'));
+        $expected = new SaTokenException('credential backend rejected credentials');
+        $this->handle->setUserCredentialsValidator(static function () use ($expected): never {
+            throw $expected;
+        });
+
+        try {
+            $this->handle->tokenByPassword('test-client', $this->clientSecret, 'throwing-user', 'bad-password');
+            $this->fail('Validator exception should propagate');
+        } catch (SaTokenException $exception) {
+            $this->assertSame($expected->getMessage(), $exception->getMessage());
+        }
+
+        $this->assertSame(1, SaAntiBruteUtil::getFailCount('throwing-user'));
     }
 
     public function testClientSecretRotationIsObservedByOtherHandleInstances(): void
