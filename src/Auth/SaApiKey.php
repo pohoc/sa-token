@@ -74,11 +74,16 @@ class SaApiKey
             $reuseToken = $this->findReusableToken($loginId, $apiKey);
             if ($reuseToken !== null) {
                 SaTokenContext::setHeader(SaToken::getConfig()->getTokenName(), $reuseToken);
+                SaTokenContext::setTokenOverride(StpUtil::getStpLogic()->getLoginType(), $reuseToken);
                 return;
             }
 
             try {
-                StpUtil::login($loginId, (new \SaToken\SaLoginParameter())->setDeviceType($deviceType));
+                $result = StpUtil::login($loginId, (new \SaToken\SaLoginParameter())->setDeviceType($deviceType));
+                SaTokenContext::setTokenOverride(
+                    StpUtil::getStpLogic()->getLoginType(),
+                    $result->getAccessToken()
+                );
                 return;
             } catch (SaTokenException $e) {
                 // 冷启动并发：多个请求同时发现无可复用会话时，只有一个能拿到

@@ -106,6 +106,36 @@ class SaApiKeyTest extends TestCase
         $this->assertTrue(SaToken::getDao()->exists(\SaToken\TokenManager::buildLoginIdKey('login', '10001')));
     }
 
+    public function testApiKeyIdentityOverridesAnUnrelatedBearerTokenForCurrentRequest(): void
+    {
+        SaToken::setConfig(SaToken::getConfig()->setIsReadHeader(true));
+        $logic = SaToken::getStpLogic();
+        $unrelatedToken = $logic->login('bearer-account')->getAccessToken();
+        $api = new SaApiKey();
+        $api->registerKey('service-key', 'service-secret', 'api-key-account');
+
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'satoken' => $unrelatedToken,
+            'api-key' => 'service-key',
+            'api-secret' => 'service-secret',
+        ]));
+
+        $api->checkApiKey();
+
+        self::assertSame('api-key-account', $logic->getLoginId());
+        self::assertSame('bearer-account', $logic->getLoginIdByToken($unrelatedToken));
+
+        // The next request reuses the API Key session, but still must not let
+        // an unrelated incoming bearer override the validated API Key identity.
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'satoken' => $unrelatedToken,
+            'api-key' => 'service-key',
+            'api-secret' => 'service-secret',
+        ]));
+        $api->checkApiKey();
+        self::assertSame('api-key-account', $logic->getLoginId());
+    }
+
     public function testCheckApiKeyThrowsOnMissingHeaders(): void
     {
         $api = new SaApiKey();
