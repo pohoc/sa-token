@@ -443,8 +443,9 @@ LUA;
         if ($timeout !== null && $timeout > 0) {
             // 仅在 key 首次创建时设置 TTL，保证"计数 + 过期"原子生效
             $script = <<<'LUA'
+local existed = redis.call('EXISTS', KEYS[1]) == 1
 local value = redis.call('INCRBY', KEYS[1], ARGV[1])
-if redis.call('TTL', KEYS[1]) == -1 then
+if not existed then
     redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
 end
 return value

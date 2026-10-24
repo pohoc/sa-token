@@ -395,6 +395,11 @@ class RedisDaoRealIntegrationTest extends TestCase
         $this->assertSame(1, $this->dao->increment($key2, 1, null));
         $this->assertSame(-1, $this->dao->getTimeout($key2));
         $this->assertSame(3, $this->dao->increment($key2, 2, null));
+
+        // A timeout applies only when increment creates the key; an existing
+        // permanent counter must remain permanent when a later caller passes one.
+        $this->assertSame(4, $this->dao->increment($key2, 1, 60));
+        $this->assertSame(-1, $this->dao->getTimeout($key2));
     }
 
     public function testSearchKeysAgainstRealRedis(): void
