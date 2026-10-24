@@ -54,6 +54,31 @@ class SaTokenContextTest extends TestCase
         $this->assertSame('198.51.100.24', SaTokenContext::getClientIp());
     }
 
+    public function testTrustedProxyAllowlistUsesFrameworkRequestRawPeerAddress(): void
+    {
+        SaTokenContext::setTrustedProxies(['198.51.100.1']);
+        SaTokenContext::setRequest(new class () {
+            public function getClientIp(): string
+            {
+                // Simulate a framework configured to trust a broader proxy set.
+                return '203.0.113.66';
+            }
+
+            /** @return array{REMOTE_ADDR: string} */
+            public function getServerParams(): array
+            {
+                return ['REMOTE_ADDR' => '198.51.100.1'];
+            }
+
+            public function getHeaderLine(string $name): string
+            {
+                return strcasecmp($name, 'X-Forwarded-For') === 0 ? '192.0.2.9' : '';
+            }
+        });
+
+        $this->assertSame('192.0.2.9', SaTokenContext::getClientIp());
+    }
+
     public function testGetClientIpFromPsr7ServerParams(): void
     {
         $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);

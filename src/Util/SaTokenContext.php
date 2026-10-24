@@ -214,23 +214,29 @@ class SaTokenContext
             $addr = $serverParams['REMOTE_ADDR'] ?? null;
             $remoteAddr = is_string($addr) ? $addr : null;
         } elseif (is_object($request)) {
-            // Framework request wrappers commonly expose the resolved address
-            // directly (Laravel/Symfony: getClientIp; ThinkPHP: ip). Prefer
-            // that over forwarded headers, whose trust is adapter-specific.
-            foreach (['getClientIp', 'ip'] as $method) {
-                if (method_exists($request, $method)) {
-                    $addr = $request->$method();
-                    if (is_string($addr) && $addr !== '') {
-                        $remoteAddr = $addr;
-                        break;
-                    }
-                }
-            }
-
-            if ($remoteAddr === null && method_exists($request, 'getServerParams')) {
+            // When the library has an explicit proxy allowlist, resolve the
+            // forwarding chain from the raw peer address below. A framework's
+            // getClientIp()/ip() may trust a different proxy configuration and
+            // would otherwise bypass this allowlist entirely.
+            if (method_exists($request, 'getServerParams')) {
                 $serverParams = $request->getServerParams();
                 $addr = is_array($serverParams) ? ($serverParams['REMOTE_ADDR'] ?? null) : null;
                 $remoteAddr = is_string($addr) ? $addr : null;
+            }
+
+            // Framework request wrappers commonly expose the resolved address
+            // directly (Laravel/Symfony: getClientIp; ThinkPHP: ip). Prefer
+            // that over forwarded headers, whose trust is adapter-specific.
+            if (empty(self::$trustedProxies) || $remoteAddr === null) {
+                foreach (['getClientIp', 'ip'] as $method) {
+                    if (method_exists($request, $method)) {
+                        $addr = $request->$method();
+                        if (is_string($addr) && $addr !== '') {
+                            $remoteAddr = $addr;
+                            break;
+                        }
+                    }
+                }
             }
         }
 
