@@ -179,6 +179,60 @@ class SaSessionTest extends TestCase
         $this->assertNull(SaSession::getBySessionId('expiring-session'));
     }
 
+    public function testStaleObjectCannotMutateSessionRecreatedWithSameId(): void
+    {
+        $sessionId = TokenManager::buildSessionId('login', 'reused-account');
+        $stale = new SaSession($sessionId);
+        $stale->set('generation', 'old');
+        $stale->destroy();
+
+        $current = new SaSession($sessionId);
+        $current->set('generation', 'new');
+
+        try {
+            $stale->set('staleMutation', 'from-old-object');
+            self::fail('旧 Session 对象不能修改同 ID 新建的会话');
+        } catch (SaTokenException $e) {
+            self::assertStringContainsString('重新创建', $e->getMessage());
+        }
+
+        $loaded = SaSession::getBySessionId($sessionId);
+        self::assertNotNull($loaded);
+        self::assertSame('new', $loaded->get('generation'));
+        self::assertFalse($loaded->has('staleMutation'));
+    }
+
+    public function testLegacySessionRecordMigratesWithoutLosingData(): void
+    {
+        SaToken::getDao()->set('legacy-session', json_encode(['legacy' => 'value'], JSON_THROW_ON_ERROR), 300);
+
+        $session = SaSession::getBySessionId('legacy-session');
+
+        self::assertNotNull($session);
+        self::assertSame('value', $session->get('legacy'));
+        self::assertStringStartsWith("\0sa-token-session:v1\n", (string) SaToken::getDao()->get('legacy-session'));
+    }
+
+    public function testStaleObjectCannotDestroySessionRecreatedWithSameId(): void
+    {
+        $sessionId = TokenManager::buildSessionId('login', 'reused-account-destroy');
+        $stale = new SaSession($sessionId);
+        $stale->set('generation', 'old');
+        $stale->destroy();
+
+        $current = new SaSession($sessionId);
+        $current->set('generation', 'new');
+
+        try {
+            $stale->destroy();
+            self::fail('旧 Session 对象不能销毁同 ID 新建的会话');
+        } catch (SaTokenException $e) {
+            self::assertStringContainsString('重新创建', $e->getMessage());
+        }
+
+        self::assertSame('new', SaSession::getBySessionId($sessionId)?->get('generation'));
+    }
+
     public function testTokenSession(): void
     {
         $tokenSession = new SaSession('satoken:tokenSession:test-token-123');

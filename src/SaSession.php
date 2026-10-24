@@ -20,6 +20,8 @@ use SaToken\Util\SaTokenEncryptor;
  */
 class SaSession
 {
+    protected const RECORD_PREFIX = "\0sa-token-session:v1\n";
+
     /**
      * Session ID
      */
@@ -39,6 +41,8 @@ class SaSession
     /** Whether this object was loaded from an existing storage record. */
     protected bool $persisted = false;
 
+    protected string $generation;
+
     protected ?int $timeout = null;
 
     public function __construct(string $id, bool $skipLoad = false, ?int $timeout = null)
@@ -46,6 +50,7 @@ class SaSession
         self::assertSafeSessionId($id);
         $this->id = $id;
         $this->timeout = $timeout;
+        $this->generation = bin2hex(random_bytes(16));
         if (!$skipLoad) {
             $this->loadData();
         }
@@ -60,26 +65,8 @@ class SaSession
     public static function getBySessionId(string $sessionId): ?static
     {
         self::assertSafeSessionId($sessionId);
-        $dao = SaToken::getDao();
-        $json = $dao->get($sessionId);
-        if ($json === null) {
-            return null;
-        }
-
-        $encryptor = self::getEncryptor();
-        $decrypted = $encryptor->decryptChecked($json);
-        if ($decrypted === null) {
-            throw new \SaToken\Exception\SaTokenException('会话数据完整性校验失败');
-        }
-
-        $session = new static($sessionId, true);
-        $dataMap = SaFoxUtil::fromJson($decrypted);
-        /** @var array<string, mixed> $dataMap */
-        $dataMap = is_array($dataMap) ? $dataMap : [];
-        $session->dataMap = $dataMap;
-        $session->loaded = true;
-        $session->persisted = true;
-        return $session;
+        $session = new static($sessionId);
+        return $session->persisted ? $session : null;
     }
 
     /**
@@ -210,26 +197,19 @@ class SaSession
      */
     public function destroy(): void
     {
-        $dao = SaToken::getDao();
-        $lockKey = 'satoken:session:lock:' . $this->id;
-        $lockValue = bin2hex(random_bytes(16));
-
-        for ($i = 0; $i < 10; $i++) {
-            if (\SaToken\Dao\SaTokenDaoLock::acquire($dao, $lockKey, $lockValue, 5)) {
-                try {
-                    $dao->delete($this->id);
-                    $this->dataMap = [];
-                    $this->loaded = true;
-                    $this->persisted = true;
-                    return;
-                } finally {
-                    \SaToken\Dao\SaTokenDaoLock::release($dao, $lockKey, $lockValue);
-                }
+        $this->withSessionLock(function (): void {
+            $current = $this->readFreshSession();
+            if ($current === null) {
+                return;
             }
-            usleep(50000);
-        }
-
-        throw new \SaToken\Exception\SaTokenException('会话并发冲突：锁获取超时，请稍后重试');
+            if ($this->persisted && !hash_equals($this->generation, $current['generation'])) {
+                throw new \SaToken\Exception\SaTokenException('会话已被销毁并重新创建，拒绝旧对象销毁');
+            }
+            SaToken::getDao()->delete($this->id);
+            $this->dataMap = [];
+            $this->loaded = true;
+            $this->persisted = true;
+        });
     }
 
     /**
@@ -245,51 +225,52 @@ class SaSession
      */
     protected function mutate(callable $fn): void
     {
-        $dao = SaToken::getDao();
-        $lockKey = 'satoken:session:lock:' . $this->id;
-        $lockValue = bin2hex(random_bytes(16));
-
-        for ($i = 0; $i < 10; $i++) {
-            if (\SaToken\Dao\SaTokenDaoLock::acquire($dao, $lockKey, $lockValue, 5)) {
-                try {
-                    $fresh = $this->readFreshDataMap();
-                    $fn($fresh);
-                    $previousDataMap = $this->dataMap;
-                    $previousLoaded = $this->loaded;
-                    $this->dataMap = $fresh;
-                    $this->loaded = true;
-                    try {
-                        $this->saveData();
-                    } catch (\Throwable $exception) {
-                        $this->dataMap = $previousDataMap;
-                        $this->loaded = $previousLoaded;
-                        throw $exception;
-                    }
-                    return;
-                } finally {
-                    \SaToken\Dao\SaTokenDaoLock::release($dao, $lockKey, $lockValue);
+        $this->withSessionLock(function () use ($fn): void {
+            $previousDataMap = $this->dataMap;
+            $previousLoaded = $this->loaded;
+            $previousPersisted = $this->persisted;
+            $previousGeneration = $this->generation;
+            $current = $this->readFreshSession();
+            if ($current === null) {
+                if ($this->persisted) {
+                    throw new \SaToken\Exception\SaTokenException('会话已过期或销毁，拒绝重新创建');
                 }
+                $fresh = [];
+            } else {
+                if ($this->persisted && !hash_equals($this->generation, $current['generation'])) {
+                    throw new \SaToken\Exception\SaTokenException('会话已被销毁并重新创建，拒绝旧对象写入');
+                }
+                $this->generation = $current['generation'];
+                $this->persisted = true;
+                $fresh = $current['data'];
             }
-            usleep(50000);
-        }
 
-        throw new \SaToken\Exception\SaTokenException('会话并发冲突：锁获取超时，请稍后重试');
+            $fn($fresh);
+            $this->dataMap = $fresh;
+            $this->loaded = true;
+            try {
+                $this->saveData();
+            } catch (\Throwable $exception) {
+                $this->dataMap = $previousDataMap;
+                $this->loaded = $previousLoaded;
+                $this->persisted = $previousPersisted;
+                $this->generation = $previousGeneration;
+                throw $exception;
+            }
+        });
     }
 
     /**
-     * 从存储层强制重读最新数据（不解密失败静默清空：用 decryptChecked 区分）
+     * 从存储层强制重读最新数据及其代际标识。
      *
-     * @return array<string, mixed>
+     * @return array{generation: string, data: array<string, mixed>}|null
      */
-    protected function readFreshDataMap(): array
+    protected function readFreshSession(): ?array
     {
         $dao = SaToken::getDao();
         $json = $dao->get($this->id);
         if ($json === null) {
-            if ($this->persisted) {
-                throw new \SaToken\Exception\SaTokenException('会话已过期或销毁，拒绝重新创建');
-            }
-            return [];
+            return null;
         }
 
         $encryptor = self::getEncryptor();
@@ -299,9 +280,11 @@ class SaSession
             throw new \SaToken\Exception\SaTokenException('会话数据完整性校验失败，拒绝修改（请检查加密配置或存储是否被篡改）');
         }
 
-        $data = SaFoxUtil::fromJson($decrypted);
-        /** @var array<string, mixed> $data */
-        return is_array($data) ? $data : [];
+        $record = self::decodeRecord($decrypted);
+        if ($record === null) {
+            throw new \SaToken\Exception\SaTokenException('会话数据格式无效');
+        }
+        return $record;
     }
 
     /**
@@ -317,15 +300,47 @@ class SaSession
 
         $json = SaToken::getDao()->get($this->id);
         if ($json !== null) {
-            $this->persisted = true;
-            $encryptor = self::getEncryptor();
-            $decrypted = $encryptor->decryptChecked($json);
+            $decrypted = self::getEncryptor()->decryptChecked($json);
             if ($decrypted === null) {
                 throw new \SaToken\Exception\SaTokenException('会话数据完整性校验失败');
             }
-            $data = SaFoxUtil::fromJson($decrypted);
-            /** @var array<string, mixed> $data */
-            $this->dataMap = is_array($data) ? $data : [];
+
+            if (str_starts_with($decrypted, self::RECORD_PREFIX)) {
+                $record = self::decodeRecord($decrypted);
+                if ($record === null) {
+                    throw new \SaToken\Exception\SaTokenException('会话数据格式无效');
+                }
+                $this->generation = $record['generation'];
+                $this->dataMap = $record['data'];
+            } else {
+                $this->withSessionLock(function (): void {
+                    $latest = SaToken::getDao()->get($this->id);
+                    if ($latest === null) {
+                        return;
+                    }
+                    $latestData = self::getEncryptor()->decryptChecked($latest);
+                    if ($latestData === null) {
+                        throw new \SaToken\Exception\SaTokenException('会话数据完整性校验失败');
+                    }
+                    if (str_starts_with($latestData, self::RECORD_PREFIX)) {
+                        $record = self::decodeRecord($latestData);
+                        if ($record === null) {
+                            throw new \SaToken\Exception\SaTokenException('会话数据格式无效');
+                        }
+                        $this->generation = $record['generation'];
+                        $this->dataMap = $record['data'];
+                    } else {
+                        // Migrate under the session lock. update preserves storage TTL.
+                        $this->dataMap = self::normalizeDataMap(SaFoxUtil::fromJson($latestData));
+                        $this->generation = bin2hex(random_bytes(16));
+                        SaToken::getDao()->update($this->id, self::getEncryptor()->encrypt($this->encodeRecord()));
+                    }
+                    $this->persisted = true;
+                });
+                $this->loaded = true;
+                return;
+            }
+            $this->persisted = true;
         }
         $this->loaded = true;
     }
@@ -337,15 +352,8 @@ class SaSession
      */
     protected function saveData(): void
     {
-        // 序列化失败时（如存入 NAN/非法 UTF-8）绝不能写空串——
-        // 那会把整个会话的所有键值一并销毁
-        $json = SaFoxUtil::toJson($this->dataMap);
-        if ($json === '' && $this->dataMap !== []) {
-            throw new \SaToken\Exception\SaTokenException('会话数据序列化失败，已中止写入以保护存量数据');
-        }
-
         $encryptor = self::getEncryptor();
-        $encrypted = $encryptor->encrypt($json);
+        $encrypted = $encryptor->encrypt($this->encodeRecord());
 
         if ($this->persisted) {
             // update preserves the storage record's TTL and never creates a
@@ -359,8 +367,76 @@ class SaSession
             return;
         }
 
-        SaToken::getDao()->set($this->id, $encrypted, $this->timeout);
+        if (!SaToken::getDao()->setIfNotExists($this->id, $encrypted, $this->timeout)) {
+            throw new \SaToken\Exception\SaTokenException('会话已并发创建，请重新加载后重试');
+        }
         $this->persisted = true;
+    }
+
+    protected function encodeRecord(): string
+    {
+        $json = SaFoxUtil::toJson([
+            'generation' => $this->generation,
+            'data' => $this->dataMap,
+        ]);
+        if ($json === '') {
+            throw new \SaToken\Exception\SaTokenException('会话数据序列化失败，已中止写入以保护存量数据');
+        }
+        return self::RECORD_PREFIX . $json;
+    }
+
+    /** @return array{generation: string, data: array<string, mixed>}|null */
+    protected static function decodeRecord(string $record): ?array
+    {
+        if (!str_starts_with($record, self::RECORD_PREFIX)) {
+            return null;
+        }
+        $decoded = SaFoxUtil::fromJson(substr($record, strlen(self::RECORD_PREFIX)));
+        if (!is_array($decoded)
+            || !is_string($decoded['generation'] ?? null)
+            || preg_match('/^[a-f0-9]{32}$/D', $decoded['generation']) !== 1
+            || !is_array($decoded['data'] ?? null)) {
+            return null;
+        }
+
+        $data = self::normalizeDataMap($decoded['data']);
+        return ['generation' => $decoded['generation'], 'data' => $data];
+    }
+
+    /** @return array<string, mixed> */
+    protected static function normalizeDataMap(mixed $data): array
+    {
+        if (!is_array($data)) {
+            return [];
+        }
+
+        $normalized = [];
+        foreach ($data as $key => $value) {
+            $normalized[(string) $key] = $value;
+        }
+        return $normalized;
+    }
+
+    /** @param callable(): void $operation */
+    protected function withSessionLock(callable $operation): void
+    {
+        $dao = SaToken::getDao();
+        $lockKey = 'satoken:session:lock:' . $this->id;
+        $lockValue = bin2hex(random_bytes(16));
+
+        for ($i = 0; $i < 10; $i++) {
+            if (\SaToken\Dao\SaTokenDaoLock::acquire($dao, $lockKey, $lockValue, 5)) {
+                try {
+                    $operation();
+                    return;
+                } finally {
+                    \SaToken\Dao\SaTokenDaoLock::release($dao, $lockKey, $lockValue);
+                }
+            }
+            usleep(50000);
+        }
+
+        throw new \SaToken\Exception\SaTokenException('会话并发冲突：锁获取超时，请稍后重试');
     }
 
     protected static function getEncryptor(): SaTokenEncryptor
