@@ -93,11 +93,14 @@ class SaApiKey
     {
         $logic = StpUtil::getStpLogic();
         $deviceType = 'apikey:' . hash('sha256', $apiKey);
+        $expectedLoginId = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
         $tokens = $logic->getTokenManager()->getTokenListByLoginId($loginId, $logic->getLoginType());
         foreach ($tokens as $item) {
             $tokenValue = is_string($item['tokenValue'] ?? null) ? $item['tokenValue'] : '';
             $itemDevice = is_string($item['deviceType'] ?? null) ? $item['deviceType'] : '';
-            if ($tokenValue !== '' && $itemDevice === $deviceType && $logic->getTokenManager()->isTokenValid($tokenValue)) {
+            if ($tokenValue !== ''
+                && $itemDevice === $deviceType
+                && $logic->getLoginIdByToken($tokenValue) === $expectedLoginId) {
                 return $tokenValue;
             }
         }

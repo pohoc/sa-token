@@ -247,6 +247,40 @@ class SaApiKeyTest extends TestCase
         $this->assertTrue(SaToken::getDao()->exists(\SaToken\TokenManager::buildLoginIdKey('login', '20001')));
     }
 
+    public function testExpiredActivityTokenIsReplacedDuringApiKeyAuthentication(): void
+    {
+        SaToken::setConfig(SaToken::getConfig()->setActivityTimeout(60));
+        $api = new SaApiKey();
+        $api->registerKey('activity-key', 'activity-secret', 10001);
+
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'api-key' => 'activity-key',
+            'api-secret' => 'activity-secret',
+        ]));
+        $api->checkApiKey();
+
+        $logic = SaToken::getStpLogic();
+        $tokens = $logic->getTokenManager()->getTokenListByLoginId(10001, 'login');
+        $oldToken = $tokens[0]['tokenValue'];
+        self::assertIsString($oldToken);
+        self::assertSame('10001', $logic->getLoginIdByToken($oldToken));
+
+        SaToken::getDao()->delete(\SaToken\TokenManager::LAST_ACTIVE_PREFIX . $oldToken);
+        self::assertNull($logic->getLoginIdByToken($oldToken));
+
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'api-key' => 'activity-key',
+            'api-secret' => 'activity-secret',
+        ]));
+        $api->checkApiKey();
+
+        $tokens = $logic->getTokenManager()->getTokenListByLoginId(10001, 'login');
+        $newToken = $tokens[0]['tokenValue'];
+        self::assertIsString($newToken);
+        self::assertNotSame($oldToken, $newToken);
+        self::assertSame('10001', $logic->getLoginIdByToken($newToken));
+    }
+
     public function testCheckApiKeyTreatsFalseValidatorResultAsFailure(): void
     {
         SaTokenContext::setRequest($this->mockRequestWithHeaders([
