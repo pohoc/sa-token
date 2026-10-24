@@ -58,7 +58,7 @@ class SaSensitiveVerify
         return self::$keyPrefix
             . \SaToken\TokenManager::encodeKeyComponent($loginType) . ':'
             . \SaToken\TokenManager::encodeKeyComponent($scene) . ':'
-            . md5($loginIdStr);
+            . hash('sha256', $loginIdStr);
     }
 
     public static function generateCode(string $scene, mixed $loginId, string $loginType = 'login'): string
@@ -79,7 +79,7 @@ class SaSensitiveVerify
                 'verified' => false,
             ];
 
-            $dao->set($key, self::encodeCodeState($data), self::$validSeconds + 60);
+            $dao->set($key, self::encodeSensitiveState($data, $key), self::$validSeconds + 60);
             $dao->delete($key . ':att');
             $dao->delete($key . ':verified');
 
@@ -153,7 +153,7 @@ class SaSensitiveVerify
                 return false;
             }
 
-            $info = self::decodeCodeState($data);
+            $info = self::decodeSensitiveState($data, $key);
             if (!is_array($info)) {
                 return false;
             }
@@ -179,7 +179,7 @@ class SaSensitiveVerify
                 $dao->delete($key . ':att');
                 throw new SaTokenException('验证码尝试次数过多，请重新获取', -1);
             }
-            $dao->set($key, self::encodeCodeState($info), max(60, $expiresAt - time() + 60));
+            $dao->set($key, self::encodeSensitiveState($info, $key), max(60, $expiresAt - time() + 60));
 
             $codeHash = $info['codeHash'] ?? null;
             if (!is_string($codeHash) || !password_verify($code, $codeHash)) {
@@ -193,7 +193,7 @@ class SaSensitiveVerify
 
             $info['verified'] = true;
             $info['verifiedAt'] = time();
-            $dao->set($key, self::encodeCodeState($info), 60);
+            $dao->set($key, self::encodeSensitiveState($info, $key), 60);
             $dao->delete($key . ':att');
 
             return true;
@@ -219,7 +219,7 @@ class SaSensitiveVerify
             return false;
         }
 
-        $info = self::decodeCodeState($data);
+        $info = self::decodeSensitiveState($data, $key);
         if (!is_array($info)) {
             return false;
         }
@@ -267,7 +267,8 @@ class SaSensitiveVerify
             return max(0, self::$maxAttempts);
         }
 
-        $info = self::decodeCodeState($data);
+        $key = self::getKey($scene, $loginId, $loginType);
+        $info = self::decodeSensitiveState($data, $key);
         if (!is_array($info)) {
             return 0;
         }
@@ -277,27 +278,27 @@ class SaSensitiveVerify
     }
 
     /** @param array<string, mixed> $data */
-    protected static function encodeCodeState(array $data): string
+    protected static function encodeSensitiveState(array $data, string $key): string
     {
         $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         if (!is_string($json)) {
-            throw new SaTokenException('验证码状态序列化失败');
+            throw new SaTokenException('敏感验证状态序列化失败');
         }
 
         $payload = base64_encode($json);
         $record = json_encode([
             'payload' => $payload,
-            'mac' => hash_hmac('sha256', $payload, self::getCodeStateMacKey()),
+            'mac' => hash_hmac('sha256', self::stateMacInput($payload, $key), self::getStateMacKey()),
         ]);
         if (!is_string($record)) {
-            throw new SaTokenException('验证码状态序列化失败');
+            throw new SaTokenException('敏感验证状态序列化失败');
         }
 
         return $record;
     }
 
     /** @return array<string, mixed>|null */
-    protected static function decodeCodeState(string $record): ?array
+    protected static function decodeSensitiveState(string $record, string $key): ?array
     {
         $envelope = json_decode($record, true);
         if (!is_array($envelope)
@@ -306,7 +307,7 @@ class SaSensitiveVerify
             return null;
         }
 
-        $expectedMac = hash_hmac('sha256', $envelope['payload'], self::getCodeStateMacKey());
+        $expectedMac = hash_hmac('sha256', self::stateMacInput($envelope['payload'], $key), self::getStateMacKey());
         if (!hash_equals($expectedMac, $envelope['mac'])) {
             return null;
         }
@@ -321,21 +322,26 @@ class SaSensitiveVerify
         }
 
         $normalized = [];
-        foreach ($data as $key => $value) {
-            if (!is_string($key)) {
+        foreach ($data as $field => $value) {
+            if (!is_string($field)) {
                 return null;
             }
-            $normalized[$key] = $value;
+            $normalized[$field] = $value;
         }
 
         return $normalized;
     }
 
-    protected static function getCodeStateMacKey(): string
+    protected static function stateMacInput(string $payload, string $key): string
+    {
+        return "sa-token-sensitive-state:v1\0" . pack('N', strlen($key)) . $key . $payload;
+    }
+
+    protected static function getStateMacKey(): string
     {
         $signKey = SaToken::getConfig()->getSignKey();
         if (strlen($signKey) < 32) {
-            throw new SaTokenException('敏感验证码状态保护需要配置至少 32 字节的 signKey');
+            throw new SaTokenException('敏感验证状态保护需要配置至少 32 字节的 signKey');
         }
 
         return hash_hkdf('sha256', $signKey, 32, 'sa-token-sensitive-verify-state', '');
@@ -348,7 +354,7 @@ class SaSensitiveVerify
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
         $key = self::$keyPrefix . \SaToken\TokenManager::encodeKeyComponent($loginType)
             . ':safe-token:' . \SaToken\TokenManager::encodeKeyComponent($scene)
-            . ':' . md5($loginIdStr) . ':' . substr($token, 0, 16);
+            . ':' . hash('sha256', $loginIdStr) . ':' . substr($token, 0, 16);
 
         $dao = SaToken::getDao();
         $data = [
@@ -360,8 +366,7 @@ class SaSensitiveVerify
             'tokenHash' => hash('sha256', $token),
         ];
 
-        $jsonStr = json_encode($data);
-        $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', $validSeconds + 60);
+        $dao->set($key, self::encodeSensitiveState($data, $key), $validSeconds + 60);
 
         return $token;
     }
@@ -371,7 +376,7 @@ class SaSensitiveVerify
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
         $key = self::$keyPrefix . \SaToken\TokenManager::encodeKeyComponent($loginType)
             . ':safe-token:' . \SaToken\TokenManager::encodeKeyComponent($scene)
-            . ':' . md5($loginIdStr) . ':' . substr($token, 0, 16);
+            . ':' . hash('sha256', $loginIdStr) . ':' . substr($token, 0, 16);
         $dao = SaToken::getDao();
         $data = $dao->get($key);
 
@@ -379,8 +384,14 @@ class SaSensitiveVerify
             return false;
         }
 
-        $info = @json_decode($data, true);
+        $info = self::decodeSensitiveState($data, $key);
         if (!is_array($info)) {
+            return false;
+        }
+
+        if (($info['scene'] ?? null) !== $scene
+            || ($info['loginId'] ?? null) !== $loginIdStr
+            || ($info['loginType'] ?? null) !== $loginType) {
             return false;
         }
 
@@ -402,7 +413,7 @@ class SaSensitiveVerify
         if ($consumed === null) {
             return false;
         }
-        $consumedInfo = @json_decode($consumed, true);
+        $consumedInfo = self::decodeSensitiveState($consumed, $key);
         $consumedHash = is_array($consumedInfo) ? ($consumedInfo['tokenHash'] ?? null) : null;
         return is_string($consumedHash) && hash_equals($consumedHash, hash('sha256', $token));
     }

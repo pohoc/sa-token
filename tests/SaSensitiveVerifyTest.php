@@ -298,12 +298,25 @@ class SaSensitiveVerifyTest extends TestCase
         $this->assertFalse($secondResult);
     }
 
+    public function testSafeTokenStateCannotBeCopiedToAnotherLoginId(): void
+    {
+        $scene = 'copied-safe-token-state';
+        $token = SaSensitiveVerify::createSafeToken($scene, 'alice');
+        $sourceKey = 'satoken:sensitive:login:safe-token:' . $scene . ':' . hash('sha256', 'alice') . ':' . substr($token, 0, 16);
+        $targetKey = 'satoken:sensitive:login:safe-token:' . $scene . ':' . hash('sha256', 'bob') . ':' . substr($token, 0, 16);
+        $sourceState = SaToken::getDao()->get($sourceKey);
+        self::assertNotNull($sourceState);
+        SaToken::getDao()->set($targetKey, $sourceState, 660);
+
+        self::assertFalse(SaSensitiveVerify::verifySafeToken($scene, $token, 'bob'));
+    }
+
     public function testSafeTokenWithoutFullTokenHashIsRejected(): void
     {
         $scene = 'test-scene';
         $loginId = 10001;
         $token = SaSensitiveVerify::createSafeToken($scene, $loginId);
-        $key = 'satoken:sensitive:login:safe-token:' . $scene . ':' . md5((string) $loginId) . ':' . substr($token, 0, 16);
+        $key = 'satoken:sensitive:login:safe-token:' . $scene . ':' . hash('sha256', (string) $loginId) . ':' . substr($token, 0, 16);
 
         SaToken::getDao()->set($key, json_encode([
             'scene' => $scene,
@@ -481,6 +494,23 @@ class SaSensitiveVerifyTest extends TestCase
         self::assertFalse(SaSensitiveVerify::verifyCode($scene, '000000', $loginId));
     }
 
+    public function testVerifiedOtpStateCannotBeCopiedToAnotherLoginId(): void
+    {
+        $scene = 'copied-verification-state';
+        $sourceLoginId = 'alice';
+        $targetLoginId = 'bob';
+        $code = SaSensitiveVerify::generateCode($scene, $sourceLoginId);
+        self::assertTrue(SaSensitiveVerify::verifyCode($scene, $code, $sourceLoginId));
+
+        $sourceKey = SaSensitiveVerify::getKey($scene, $sourceLoginId);
+        $targetKey = SaSensitiveVerify::getKey($scene, $targetLoginId);
+        $sourceState = SaToken::getDao()->get($sourceKey);
+        self::assertNotNull($sourceState);
+        SaToken::getDao()->set($targetKey, $sourceState, 60);
+
+        self::assertFalse(SaSensitiveVerify::isVerified($scene, $targetLoginId));
+    }
+
     public function testCodeGenerationRequiresStateSigningKey(): void
     {
         SaToken::getConfig()->setSignKey('');
@@ -496,12 +526,12 @@ class SaSensitiveVerifyTest extends TestCase
         SaSensitiveVerify::createSafeToken('invalid-expiry-safe-token', 10032, 'login', 0);
     }
 
-    public function testSafeTokenWithInvalidExpiryFailsClosed(): void
+    public function testTamperedSafeTokenStateFailsClosed(): void
     {
         $scene = 'invalid-expiry-safe-token';
         $loginId = 10033;
         $token = SaSensitiveVerify::createSafeToken($scene, $loginId);
-        $key = 'satoken:sensitive:login:safe-token:' . $scene . ':' . md5((string) $loginId) . ':' . substr($token, 0, 16);
+        $key = 'satoken:sensitive:login:safe-token:' . $scene . ':' . hash('sha256', (string) $loginId) . ':' . substr($token, 0, 16);
         SaToken::getDao()->set($key, json_encode([
             'scene' => $scene,
             'loginId' => (string) $loginId,
