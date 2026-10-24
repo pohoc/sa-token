@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace SaToken\Sso;
 
+use SaToken\Exception\SaTokenException;
+
 /**
  * SSO 配置类
  *
@@ -157,6 +159,9 @@ class SaSsoConfig
 
     public function setClientSecret(string $clientSecret): static
     {
+        if ($clientSecret !== '' && strlen($clientSecret) < 32) {
+            throw new SaTokenException('SSO 客户端密钥长度不足，至少需要 32 字节');
+        }
         $this->clientSecret = $clientSecret;
         return $this;
     }

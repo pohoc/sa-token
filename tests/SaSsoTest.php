@@ -70,7 +70,7 @@ class SaSsoTest extends TestCase
             'sloUrl'         => 'https://auth.example.com/slo',
             'mode'           => 'cross-domain',
             'clientId'       => 'app-1',
-            'clientSecret'   => 'secret-1',
+            'clientSecret'   => 'sso-test-secret-with-at-least-32-bytes',
         ]);
 
         $this->assertEquals('https://auth.example.com/login', $config->getLoginUrl());
@@ -80,7 +80,7 @@ class SaSsoTest extends TestCase
         $this->assertEquals('https://auth.example.com/slo', $config->getSloUrl());
         $this->assertEquals('cross-domain', $config->getMode());
         $this->assertEquals('app-1', $config->getClientId());
-        $this->assertEquals('secret-1', $config->getClientSecret());
+        $this->assertEquals('sso-test-secret-with-at-least-32-bytes', $config->getClientSecret());
     }
 
     // ======== buildLoginUrl 测试 ========
@@ -101,13 +101,21 @@ class SaSsoTest extends TestCase
         $this->assertStringContainsString('client_id=app-1', $url);
     }
 
+    public function testShortSsoClientSecretIsRejected(): void
+    {
+        $this->expectException(\SaToken\Exception\SaTokenException::class);
+        $this->expectExceptionMessage('SSO 客户端密钥长度不足');
+
+        new SaSsoConfig(['clientSecret' => 'secret-1']);
+    }
+
     public function testSsoTransientCookiesUseLaxForCrossSiteCallback(): void
     {
         SaTokenContext::clear();
         $handle = new SaSsoHandle(new SaSsoConfig([
             'loginUrl' => 'https://auth.example.com/login',
             'allowDomains' => ['app.example.com'],
-            'clientSecret' => 'sso-client-secret',
+            'clientSecret' => 'sso-cookie-test-secret-with-at-least-32-bytes',
         ]));
         $handle->buildLoginUrl('https://app.example.com/callback', 'https://app.example.com/page');
 

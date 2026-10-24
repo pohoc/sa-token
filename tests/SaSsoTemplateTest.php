@@ -45,7 +45,7 @@ class SaSsoTemplateTest extends TestCase
 
         $template = new SaSsoTemplate('sm');
         $params = ['appId' => 'app-1', 'timestamp' => '1700000000', 'nonce' => 'abc123'];
-        $clientSecret = getenv('TEST_SSO_CLIENT_SECRET') ?: 'my-client-secret';
+        $clientSecret = getenv('TEST_SSO_CLIENT_SECRET') ?: 'test-sso-secret-with-at-least-32-bytes';
 
         $signed = $template->signParams($params, $clientSecret);
 
@@ -57,7 +57,7 @@ class SaSsoTemplateTest extends TestCase
     {
         $template = new SaSsoTemplate('intl');
         $params = ['appId' => 'app-1', 'timestamp' => '1700000000', 'nonce' => 'abc123'];
-        $clientSecret = getenv('TEST_SSO_CLIENT_SECRET') ?: 'my-client-secret';
+        $clientSecret = getenv('TEST_SSO_CLIENT_SECRET') ?: 'test-sso-secret-with-at-least-32-bytes';
 
         $signed = $template->signParams($params, $clientSecret);
         $result = $template->verifySign($signed, $clientSecret);
@@ -73,7 +73,7 @@ class SaSsoTemplateTest extends TestCase
 
         $template = new SaSsoTemplate('sm');
         $params = ['appId' => 'app-1', 'timestamp' => '1700000000', 'nonce' => 'abc123'];
-        $clientSecret = getenv('TEST_SSO_CLIENT_SECRET') ?: 'my-client-secret';
+        $clientSecret = getenv('TEST_SSO_CLIENT_SECRET') ?: 'test-sso-secret-with-at-least-32-bytes';
 
         $signed = $template->signParams($params, $clientSecret);
         $result = $template->verifySign($signed, $clientSecret);
@@ -85,7 +85,7 @@ class SaSsoTemplateTest extends TestCase
     {
         $template = new SaSsoTemplate('intl');
         $params = ['appId' => 'app-1', 'timestamp' => '1700000000', 'nonce' => 'abc123'];
-        $clientSecret = getenv('TEST_SSO_CLIENT_SECRET') ?: 'my-client-secret';
+        $clientSecret = getenv('TEST_SSO_CLIENT_SECRET') ?: 'test-sso-secret-with-at-least-32-bytes';
 
         $signed = $template->signParams($params, $clientSecret);
         $signed['appId'] = 'tampered-app';
@@ -100,5 +100,19 @@ class SaSsoTemplateTest extends TestCase
         $this->expectException(SaTokenException::class);
         $this->expectExceptionMessage('Only HTTP and HTTPS URLs are allowed');
         (new SaSsoTemplate('intl'))->post('file://localhost/etc/passwd', ['ticket' => 'secret']);
+    }
+
+    public function testShortSecretCannotSignOrVerify(): void
+    {
+        $template = new SaSsoTemplate('intl');
+
+        try {
+            $template->signParams(['ticket' => 't'], 'weak');
+            $this->fail('短 SSO 密钥不得生成 HMAC');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('至少需要 32 字节', $e->getMessage());
+        }
+
+        $this->assertFalse($template->verifySign(['sign' => str_repeat('0', 64)], 'weak'));
     }
 }

@@ -1005,7 +1005,7 @@ class SecurityRegressionTest extends TestCase
     public function testSloCallbackRequiresSignatureWhenSecretConfigured(): void
     {
         $handle = new SaSsoHandle(new SaSsoConfig([
-            'clientSecret' => 'slo-shared-secret',
+            'clientSecret' => 'slo-test-secret-with-at-least-32-bytes',
         ]));
 
         try {
@@ -1048,13 +1048,13 @@ class SecurityRegressionTest extends TestCase
     public function testSloCallbackRequiresSignedLoginId(): void
     {
         $handle = new SaSsoHandle(new SaSsoConfig([
-            'clientSecret' => 'slo-shared-secret',
+            'clientSecret' => 'slo-test-secret-with-at-least-32-bytes',
         ]));
         $loginResult = StpUtil::login(40002);
         $token = $loginResult->getAccessToken();
         $params = (new \SaToken\Sso\SaSsoTemplate())->signParams([
             'timestamp' => (string) time(),
-        ], 'slo-shared-secret');
+        ], 'slo-test-secret-with-at-least-32-bytes');
 
         try {
             $handle->doSloCallback(40002, $params);
@@ -1072,13 +1072,13 @@ class SecurityRegressionTest extends TestCase
     public function testSloCallbackRequiresSignedNonce(): void
     {
         $handle = new SaSsoHandle(new SaSsoConfig([
-            'clientSecret' => 'slo-shared-secret',
+            'clientSecret' => 'slo-test-secret-with-at-least-32-bytes',
         ]));
         $token = StpUtil::login(40006)->getAccessToken();
         $params = (new SaSsoTemplate())->signParams([
             'loginId' => '40006',
             'timestamp' => (string) time(),
-        ], 'slo-shared-secret');
+        ], 'slo-test-secret-with-at-least-32-bytes');
 
         try {
             $handle->doSloCallback(40006, $params);
@@ -1093,7 +1093,7 @@ class SecurityRegressionTest extends TestCase
     public function testSloCallbackRejectsReplayAfterUserLogsInAgain(): void
     {
         $handle = new SaSsoHandle(new SaSsoConfig([
-            'clientSecret' => 'slo-shared-secret',
+            'clientSecret' => 'slo-test-secret-with-at-least-32-bytes',
         ]));
         $params = $handle->buildSloCallbackParams(40005);
         $handle->doSloCallback(40005, $params);
@@ -1114,7 +1114,7 @@ class SecurityRegressionTest extends TestCase
 
     public function testSsoCheckTicketResponseRequiresTicketBinding(): void
     {
-        $secret = 'sso-shared-secret';
+        $secret = 'sso-test-secret-with-at-least-32-bytes';
         $template = new \SaToken\Sso\SaSsoTemplate();
         $response = $template->signParams([
             'loginId' => '40003',
@@ -1224,7 +1224,7 @@ class SecurityRegressionTest extends TestCase
     public function testSsoCheckTicketResponseFreshnessAndBinding(): void
     {
         $template = new \SaToken\Sso\SaSsoTemplate();
-        $secret = 'sso-shared-secret';
+        $secret = 'sso-test-secret-with-at-least-32-bytes';
 
         // 时效内通过
         $fresh = $template->signParams(['loginId' => '1', 'ticket' => 't1', 'timestamp' => (string) time()], $secret);

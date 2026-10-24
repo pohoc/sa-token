@@ -56,6 +56,9 @@ class SaSsoTemplate
      */
     public function signParams(array $params, string $clientSecret): array
     {
+        if (strlen($clientSecret) < 32) {
+            throw new SaTokenException('SSO 客户端密钥长度不足，至少需要 32 字节');
+        }
         unset($params['sign']);
         ksort($params);
         $signStr = http_build_query($params) . '&key=' . $clientSecret;
@@ -79,6 +82,9 @@ class SaSsoTemplate
      */
     public function verifySign(array $params, string $clientSecret, ?int $maxAge = null): bool
     {
+        if (strlen($clientSecret) < 32) {
+            return false;
+        }
         $ts = $params['timestamp'] ?? null;
         if ($maxAge !== null) {
             if (!is_scalar($ts) || !is_numeric($ts) || abs(time() - (int) (string) $ts) > $maxAge) {

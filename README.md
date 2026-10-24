@@ -587,7 +587,7 @@ SaToken::init([
         'sloUrl'       => 'https://sso.example.com/logout',
         'mode'         => 'cross-domain',
         'clientId'     => 'your-client-id',
-        'clientSecret' => 'your-client-secret',
+        'clientSecret' => 'replace-with-a-random-secret-of-at-least-32-bytes',
         'allowDomains' => ['*.example.com', 'app.mycompany.cn'],
         'checkState'   => true,   // 强制校验回调 state 防 CSRF（默认 true，不推荐关闭）
         'crossRedis'   => false,  // 认证中心与客户端是否跨 Redis 部署
@@ -641,7 +641,7 @@ $loginId = $result['loginId'];
 $redirect = $result['redirect'];
 ```
 
-注意：`restorePreLoginUrl` 恢复登录前 URL 时会强制过 `allowDomains` 白名单（未配置 `allowDomains` 时返回空串）；配置 `clientSecret` 后预登录 URL Cookie 附带 HMAC 签名防篡改。
+注意：`restorePreLoginUrl` 恢复登录前 URL 时会强制过 `allowDomains` 白名单（未配置 `allowDomains` 时返回空串）；配置至少 32 字节的 `clientSecret` 后，预登录 URL Cookie 附带 HMAC 签名防篡改。
 
 ### 单点注销回调
 
