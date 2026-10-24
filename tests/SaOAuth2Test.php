@@ -263,6 +263,31 @@ class SaOAuth2Test extends TestCase
         $strategy->authorize('implicit-client', 10001, '', 'https://attacker.example/callback');
     }
 
+    public function testImplicitStrategyNeverIssuesRefreshToken(): void
+    {
+        $config = new SaOAuth2Config([
+            'grantTypes'          => ['authorization_code', 'implicit'],
+            'refreshTokenTimeout' => 86400,
+            'isNewRefreshToken'   => true,
+        ]);
+        $handle = new SaOAuth2Handle($config);
+        $handle->registerClient(new SaOAuth2Client([
+            'clientId'     => 'implicit-no-refresh-client',
+            'clientSecret' => 'oauth-implicit-test-secret-at-least-32-bytes',
+            'redirectUris' => ['https://example.com/callback'],
+            'grantTypes'   => ['implicit'],
+        ]));
+
+        $token = (new ImplicitStrategy($handle))->authorize(
+            'implicit-no-refresh-client',
+            10001,
+            '',
+            'https://example.com/callback'
+        );
+
+        self::assertNull($token->getRefreshToken());
+    }
+
     // ======== 授权码模式 ========
 
     public function testGenerateAuthorizationCode(): void
