@@ -319,11 +319,21 @@ class SaTokenCrypto
 
     public static function bcryptVerify(string $data, string $hash): bool
     {
+        // bcrypt only incorporates the first 72 bytes. Accepting longer input
+        // would make distinct passwords verify as the same credential.
+        if (strlen($data) > 72) {
+            return false;
+        }
+
         return password_verify($data, $hash);
     }
 
     public static function bcryptHash(string $data, int $cost = 10): string
     {
+        if (strlen($data) > 72) {
+            throw new SaTokenException('bcrypt 密码不能超过 72 字节');
+        }
+
         return password_hash($data, PASSWORD_BCRYPT, ['cost' => $cost]);
     }
 

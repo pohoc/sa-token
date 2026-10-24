@@ -22,6 +22,22 @@ class SaTokenCryptoTest extends TestCase
         ]);
     }
 
+    public function testBcryptRejectsPasswordsLongerThanIts72ByteInputLimit(): void
+    {
+        $prefix = str_repeat('a', 72);
+        $hash = SaTokenCrypto::bcryptHash($prefix, 4);
+
+        self::assertTrue(SaTokenCrypto::bcryptVerify($prefix, $hash));
+        self::assertFalse(SaTokenCrypto::bcryptVerify($prefix . 'suffix', $hash));
+
+        try {
+            SaTokenCrypto::bcryptHash($prefix . 'suffix', 4);
+            self::fail('bcrypt must reject passwords that would be silently truncated');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('72 字节', $exception->getMessage());
+        }
+    }
+
     // ---- AES ----
 
     public function testAesEncryptAndDecrypt(): void
