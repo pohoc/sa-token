@@ -549,6 +549,7 @@ class SaOAuth2Handle
 
         $client = $this->validateClientWithSecret($clientId, $clientSecret);
         $this->validateGrantTypeForClient($client, 'password');
+        $this->validateScopeForClient($client, $scope);
 
         // 密码模式是暴露在公网的用户凭据验证端点，必须接入防暴力锁定：
         // 同一来源 IP 连续失败达到 antiBruteMaxFailures 后临时锁定（原子计数）
@@ -583,6 +584,7 @@ class SaOAuth2Handle
 
         $client = $this->validateClientWithSecret($clientId, $clientSecret);
         $this->validateGrantTypeForClient($client, 'client_credentials');
+        $this->validateScopeForClient($client, $scope);
 
         return $this->generateAccessToken($clientId, 'client:' . $clientId, $scope);
     }
