@@ -669,7 +669,7 @@ SaToken::init([
     // 通过密钥管理服务注入预生成的随机密钥，至少 32 字节
     'jwtSecretKey' => getenv('SA_TOKEN_JWT_SECRET_KEY') ?: '',
     'oauth2' => [
-        'grantTypes'           => ['authorization_code', 'password'],
+        'grantTypes'           => ['authorization_code'],
         'codeTimeout'          => 60,
         'accessTokenTimeout'   => 7200,
         'refreshTokenTimeout'  => 2592000,
@@ -684,10 +684,12 @@ SaToken::init([
 
 | 模式 | 说明 |
 |------|------|
-| `authorization_code` | 授权码模式（推荐） |
-| `implicit` | 隐藏式 |
-| `password` | 密码模式 |
+| `authorization_code` | 授权码模式（推荐；公开客户端必须使用 PKCE） |
+| `implicit` | 隐藏式（仅用于旧系统兼容，不建议新部署启用） |
+| `password` | 密码模式（旧式兼容模式；新部署应使用授权码 + PKCE） |
 | `client_credentials` | 客户端凭证模式 |
+
+新部署只启用所需的 grant。尤其不要为了方便默认开启 `password`：它会把用户密码验证暴露在 Token 端点；旧系统确需使用时，必须显式配置用户凭据验证回调、来源限速和账户锁定策略。密码模式不会签发 OpenID Connect `id_token`。
 
 ### 使用
 
