@@ -936,12 +936,16 @@ class TokenManager
                 throw new SaTokenException('AccessToken 在绑定 RefreshToken 期间已失效');
             }
 
-            $data = SaFoxUtil::toJson([
+            $refreshData = [
                 'loginId'      => $loginIdStr,
                 'loginType'    => $loginType,
                 'accessToken'  => $accessToken,
                 'createTime'   => SaFoxUtil::getTime(),
-            ]);
+            ];
+            if ($this->getConfig()->isTokenFingerprint()) {
+                $refreshData['fingerprint'] = $this->computeFingerprint();
+            }
+            $data = SaFoxUtil::toJson($refreshData);
             $effectiveTimeout = ($timeout === -1) ? null : $timeout;
             $refreshKey = self::REFRESH_TOKEN_PREFIX . $refreshToken;
             $refreshRaw = $this->encryptValue($data);

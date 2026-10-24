@@ -582,6 +582,49 @@ class SecurityRegressionTest extends TestCase
         $this->assertFalse(StpUtil::isLogin(), '无状态 JWT 必须遵守启用的指纹绑定配置');
     }
 
+    public function testRefreshTokenCannotBeUsedFromDifferentFingerprint(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'refreshToken'     => true,
+            'tokenFingerprint' => true,
+        ])));
+        SaTokenContext::setRequest($this->makeRequestStub(['User-Agent' => 'Trusted-Refresh-Client/1.0']));
+
+        $loginResult = StpUtil::login(20015);
+        $refreshToken = $loginResult->getRefreshToken();
+        $this->assertNotSame('', $refreshToken);
+
+        SaTokenContext::setRequest($this->makeRequestStub(['User-Agent' => 'Untrusted-Refresh-Client/1.0']));
+        try {
+            StpUtil::refreshToken($refreshToken);
+            self::fail('RefreshToken 不得绕过已启用的客户端指纹绑定');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('指纹', $exception->getMessage());
+        }
+
+        self::assertTrue(StpUtil::isRefreshTokenValid($refreshToken));
+    }
+
+    public function testFingerprintBoundStatelessRefreshSurvivesAccessTokenExpiry(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'timeout'          => 1,
+            'jwtStateless'     => true,
+            'jwtSecretKey'     => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'tokenFingerprint' => true,
+        ])));
+        SaTokenContext::setRequest($this->makeRequestStub(['User-Agent' => 'Trusted-Refresh-Client/1.0']));
+        $logic = SaToken::getStpLogic('login');
+
+        $accessToken = $logic->loginStateless(20016);
+        $refreshToken = $logic->createRefreshToken($accessToken, 60);
+        sleep(2);
+
+        self::assertNull($logic->getLoginIdByToken($accessToken));
+        $result = $logic->refreshToken($refreshToken);
+        self::assertSame('20016', $logic->getLoginIdByToken($result->getAccessToken()));
+    }
+
     public function testSwitchedIdentityCannotBypassFingerprintInPermissionChecks(): void
     {
         SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [

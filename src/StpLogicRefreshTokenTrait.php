@@ -82,6 +82,16 @@ trait StpLogicRefreshTokenTrait
             // 与 disable() 共用账号锁后重查，避免被封禁前的预检查结果
             // 在等待锁期间继续签发新的 AccessToken。
             $this->checkDisableForLogin($loginId);
+            if ($config->isTokenFingerprint()) {
+                $currentRefreshData = $this->tokenManager->getRefreshTokenData($refreshToken);
+                if ($currentRefreshData !== null) {
+                    $savedFingerprint = $currentRefreshData['fingerprint'] ?? null;
+                    $currentFingerprint = $this->tokenManager->computeFingerprint();
+                    if (!is_string($savedFingerprint) || !hash_equals($savedFingerprint, $currentFingerprint)) {
+                        throw new SaTokenException('RefreshToken 客户端指纹不匹配');
+                    }
+                }
+            }
             $remainingTimeout = $this->tokenManager->getRefreshTokenTimeout($refreshToken);
 
             // 原子消费：同一 RefreshToken 并发重放时，仅第一个请求成功
