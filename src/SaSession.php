@@ -208,7 +208,11 @@ class SaSession
             if (!hash_equals($this->generation, $current['generation'])) {
                 throw new \SaToken\Exception\SaTokenException('会话已被销毁并重新创建，拒绝旧对象销毁');
             }
-            SaToken::getDao()->delete($this->id);
+            $dao = SaToken::getDao();
+            if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface
+                || !$dao->compareAndSet($this->id, $current['raw'], null)) {
+                throw new \SaToken\Exception\SaTokenException('会话已并发变更或 DAO 不支持原子条件删除，请重试');
+            }
             $this->dataMap = [];
             $this->loaded = true;
             $this->persisted = true;
@@ -252,7 +256,7 @@ class SaSession
             $this->dataMap = $fresh;
             $this->loaded = true;
             try {
-                $this->saveData();
+                $this->saveData($current['raw'] ?? null);
             } catch (\Throwable $exception) {
                 $this->dataMap = $previousDataMap;
                 $this->loaded = $previousLoaded;
@@ -266,7 +270,7 @@ class SaSession
     /**
      * 从存储层强制重读最新数据及其代际标识。
      *
-     * @return array{generation: string, data: array<string, mixed>}|null
+     * @return array{generation: string, data: array<string, mixed>, raw: string}|null
      */
     protected function readFreshSession(): ?array
     {
@@ -287,7 +291,7 @@ class SaSession
         if ($record === null) {
             throw new \SaToken\Exception\SaTokenException('会话数据格式无效');
         }
-        return $record;
+        return $record + ['raw' => $json];
     }
 
     /**
@@ -336,7 +340,11 @@ class SaSession
                         // Migrate under the session lock. update preserves storage TTL.
                         $this->dataMap = self::normalizeDataMap(SaFoxUtil::fromJson($latestData));
                         $this->generation = bin2hex(random_bytes(16));
-                        SaToken::getDao()->update($this->id, self::getEncryptor()->encrypt($this->encodeRecord()));
+                        $dao = SaToken::getDao();
+                        if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndUpdateInterface
+                            || !$dao->compareAndUpdate($this->id, $latest, self::getEncryptor()->encrypt($this->encodeRecord()))) {
+                            throw new \SaToken\Exception\SaTokenException('会话已并发变更或 DAO 不支持原子条件更新，请重试');
+                        }
                     }
                     $this->persisted = true;
                 });
@@ -353,7 +361,7 @@ class SaSession
      *
      * @return void
      */
-    protected function saveData(): void
+    protected function saveData(?string $expectedRaw = null): void
     {
         $encryptor = self::getEncryptor();
         $encrypted = $encryptor->encrypt($this->encodeRecord());
@@ -363,9 +371,12 @@ class SaSession
             // new record after expiry. Recreating with set() could turn an
             // expired session into a permanent one when a stale object is used.
             $dao = SaToken::getDao();
-            $dao->update($this->id, $encrypted);
-            if ($dao->get($this->id) === null) {
+            if ($expectedRaw === null) {
                 throw new \SaToken\Exception\SaTokenException('会话已过期或销毁，拒绝重新创建');
+            }
+            if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndUpdateInterface
+                || !$dao->compareAndUpdate($this->id, $expectedRaw, $encrypted)) {
+                throw new \SaToken\Exception\SaTokenException('会话已并发变更或 DAO 不支持原子条件更新，请重试');
             }
             return;
         }

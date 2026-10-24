@@ -12,7 +12,7 @@ use SaToken\Exception\SaTokenException;
  * PSR-16 adapter with host-local file locks for atomic DAO operations.
  * A cache shared by multiple hosts still requires a distributed atomic DAO.
  */
-class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface, SaTokenDaoCompareAndExpireInterface, SaTokenDaoCompareAndSetInterface, SaTokenDaoDeleteIfExpiredInterface
+class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface, SaTokenDaoCompareAndExpireInterface, SaTokenDaoCompareAndSetInterface, SaTokenDaoCompareAndUpdateInterface, SaTokenDaoDeleteIfExpiredInterface
 {
     protected CacheInterface $cache;
 
@@ -308,6 +308,21 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
                 return $this->deleteCache($key);
             }
             return $this->writeCache($key, $newValue, $timeout);
+        });
+    }
+
+    public function compareAndUpdate(string $key, string $expectedValue, string $newValue): bool
+    {
+        return $this->withAtomicLock($key, function () use ($key, $expectedValue, $newValue): bool {
+            if ($this->get($key) !== $expectedValue) {
+                return false;
+            }
+
+            try {
+                return $this->updateCachePreservingTtl($key, $newValue);
+            } catch (InvalidArgumentException) {
+                return false;
+            }
         });
     }
 

@@ -275,6 +275,19 @@ class RedisDaoRealIntegrationTest extends TestCase
         self::assertLessThanOrEqual(120, $this->dao->getTimeout($key));
     }
 
+    public function testCompareAndUpdatePreservesValueAndTtlAgainstRealRedis(): void
+    {
+        $key = $this->prefix . 'session-compare-update';
+        $this->dao->set($key, 'old-record', 60);
+        $ttl = $this->dao->getTimeout($key);
+        self::assertFalse($this->dao->compareAndUpdate($key, 'stale-record', 'wrong'));
+        self::assertSame('old-record', $this->dao->get($key));
+        self::assertTrue($this->dao->compareAndUpdate($key, 'old-record', 'new-record'));
+        self::assertSame('new-record', $this->dao->get($key));
+        self::assertGreaterThan(0, $this->dao->getTimeout($key));
+        self::assertLessThanOrEqual($ttl, $this->dao->getTimeout($key));
+    }
+
     public function testGetAndExpireAgainstRealRedis(): void
     {
         $this->assertInstanceOf(SaTokenDaoRedis::class, $this->dao);

@@ -219,6 +219,17 @@ class SaTokenDaoFileTest extends TestCase
         self::assertLessThanOrEqual(120, $this->dao->getTimeout('k:lock'));
     }
 
+    public function testCompareAndUpdatePreservesValueAndTtlOnMismatch(): void
+    {
+        $this->dao->set('k:session', 'old-record', 60);
+        $ttl = $this->dao->getTimeout('k:session');
+        self::assertFalse($this->dao->compareAndUpdate('k:session', 'stale-record', 'wrong'));
+        self::assertSame('old-record', $this->dao->get('k:session'));
+        self::assertTrue($this->dao->compareAndUpdate('k:session', 'old-record', 'new-record'));
+        self::assertSame('new-record', $this->dao->get('k:session'));
+        self::assertLessThanOrEqual($ttl, $this->dao->getTimeout('k:session'));
+    }
+
     public function testSetIfNotExistsUnderFlock(): void
     {
         $this->assertTrue($this->dao->setIfNotExists('k:nx', 'a', 30));

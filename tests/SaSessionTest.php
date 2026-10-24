@@ -13,6 +13,32 @@ use SaToken\SaToken;
 use SaToken\StpLogic;
 use SaToken\TokenManager;
 
+class SaSessionPausingDao extends SaTokenDaoMemory
+{
+    public ?string $pauseUpdateKey = null;
+    public ?string $pauseDeleteKey = null;
+
+    public function compareAndUpdate(string $key, string $expectedValue, string $newValue): bool
+    {
+        if ($key === $this->pauseUpdateKey) {
+            $this->pauseUpdateKey = null;
+            \Fiber::suspend();
+        }
+
+        return parent::compareAndUpdate($key, $expectedValue, $newValue);
+    }
+
+    public function compareAndSet(string $key, ?string $expectedValue, ?string $newValue, ?int $timeout = null): bool
+    {
+        if ($newValue === null && $key === $this->pauseDeleteKey) {
+            $this->pauseDeleteKey = null;
+            \Fiber::suspend();
+        }
+
+        return parent::compareAndSet($key, $expectedValue, $newValue, $timeout);
+    }
+}
+
 class SaSessionTest extends TestCase
 {
     protected function setUp(): void
@@ -228,6 +254,65 @@ class SaSessionTest extends TestCase
             self::fail('旧 Session 对象不能销毁同 ID 新建的会话');
         } catch (SaTokenException $e) {
             self::assertStringContainsString('重新创建', $e->getMessage());
+        }
+
+        self::assertSame('new', SaSession::getBySessionId($sessionId)?->get('generation'));
+    }
+
+    public function testExpiredMutationLeaseCannotOverwriteRecreatedSession(): void
+    {
+        $dao = new SaSessionPausingDao();
+        SaToken::setDao($dao);
+        $sessionId = TokenManager::buildSessionId('login', 'lease-expiry');
+        $stale = new SaSession($sessionId);
+        $stale->set('generation', 'old');
+        $dao->pauseUpdateKey = $sessionId;
+
+        $mutation = new \Fiber(static fn () => $stale->set('late', 'old-writer'));
+        $mutation->start();
+        self::assertTrue($mutation->isSuspended());
+
+        // Model the lock lease expiring while the old writer is blocked in storage.
+        $dao->delete('satoken:session:lock:' . $sessionId);
+        $current = new SaSession($sessionId);
+        $current->destroy();
+        $replacement = new SaSession($sessionId);
+        $replacement->set('generation', 'new');
+
+        try {
+            $mutation->resume();
+            self::fail('租约失效后的旧写入必须被条件更新拒绝');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('原子条件更新', $exception->getMessage());
+        }
+
+        self::assertSame('new', SaSession::getBySessionId($sessionId)?->get('generation'));
+    }
+
+    public function testExpiredDestroyLeaseCannotDeleteRecreatedSession(): void
+    {
+        $dao = new SaSessionPausingDao();
+        SaToken::setDao($dao);
+        $sessionId = TokenManager::buildSessionId('login', 'lease-expiry-destroy');
+        $stale = new SaSession($sessionId);
+        $stale->set('generation', 'old');
+        $dao->pauseDeleteKey = $sessionId;
+
+        $destroy = new \Fiber(static fn () => $stale->destroy());
+        $destroy->start();
+        self::assertTrue($destroy->isSuspended());
+
+        $dao->delete('satoken:session:lock:' . $sessionId);
+        $current = new SaSession($sessionId);
+        $current->destroy();
+        $replacement = new SaSession($sessionId);
+        $replacement->set('generation', 'new');
+
+        try {
+            $destroy->resume();
+            self::fail('旧销毁操作不能删除新代际会话');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('原子条件删除', $exception->getMessage());
         }
 
         self::assertSame('new', SaSession::getBySessionId($sessionId)?->get('generation'));

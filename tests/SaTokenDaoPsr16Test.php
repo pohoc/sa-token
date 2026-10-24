@@ -67,6 +67,17 @@ class SaTokenDaoPsr16Test extends TestCase
         self::assertLessThanOrEqual(120, $this->dao->getTimeout('lock'));
     }
 
+    public function testCompareAndUpdatePreservesValueAndTtlOnMismatch(): void
+    {
+        $this->dao->set('session', 'old-record', 60);
+        $ttl = $this->dao->getTimeout('session');
+        self::assertFalse($this->dao->compareAndUpdate('session', 'stale-record', 'wrong'));
+        self::assertSame('old-record', $this->dao->get('session'));
+        self::assertTrue($this->dao->compareAndUpdate('session', 'old-record', 'new-record'));
+        self::assertSame('new-record', $this->dao->get('session'));
+        self::assertLessThanOrEqual($ttl, $this->dao->getTimeout('session'));
+    }
+
     // ======== update ========
 
     public function testUpdateExistingKey(): void

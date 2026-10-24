@@ -953,13 +953,16 @@ return [
 
 实现 `SaTokenDaoInterface`。另外，登录、会话、OAuth2 刷新和敏感验证码状态更新使用带租约互斥锁，
 自定义 DAO 还必须实现 `SaTokenDaoCompareAndDeleteInterface`，并保证比较后删除是原子操作；
-否则这些加锁操作会在获取锁前抛出 `SaTokenException`。不要用先读取再删除来模拟原子比较删除。
+否则这些加锁操作会在获取锁前抛出 `SaTokenException`。会话变更还要求实现
+`SaTokenDaoCompareAndSetInterface` 和 `SaTokenDaoCompareAndUpdateInterface`：条件更新必须原子地比较并替换，且保留记录原 TTL；条件删除用于阻止租约过期后的旧会话对象覆盖或删除新代际。不要用先读取再删除/更新来模拟原子操作。
 
 ```php
 use SaToken\Dao\SaTokenDaoInterface;
 use SaToken\Dao\SaTokenDaoCompareAndDeleteInterface;
+use SaToken\Dao\SaTokenDaoCompareAndSetInterface;
+use SaToken\Dao\SaTokenDaoCompareAndUpdateInterface;
 
-class MyDao implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface
+class MyDao implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface, SaTokenDaoCompareAndSetInterface, SaTokenDaoCompareAndUpdateInterface
 {
     public function get(string $key): ?string { /* ... */ }
     public function set(string $key, string $value, ?int $timeout = null): void { /* ... */ }
@@ -977,6 +980,8 @@ class MyDao implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface
     public function setIfNotExists(string $key, string $value, ?int $timeout = null): bool { /* ... */ } // 仅当 key 不存在时设置（登录锁/签名防重放依赖）
     public function increment(string $key, int $amount = 1, ?int $timeout = null): int { /* ... */ } // 原子计数（防爆破/OTP 依赖）
     public function compareAndDelete(string $key, string $expectedValue): bool { /* 原子比较并删除 */ }
+    public function compareAndSet(string $key, ?string $expectedValue, ?string $newValue, ?int $timeout = null): bool { /* 原子条件设置或删除 */ }
+    public function compareAndUpdate(string $key, string $expectedValue, string $newValue): bool { /* 原子条件更新并保留原 TTL */ }
 }
 ```
 

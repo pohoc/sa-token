@@ -6,7 +6,7 @@ namespace SaToken\Dao;
 
 use SaToken\Exception\SaTokenException;
 
-class SaTokenDaoRedis implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface, SaTokenDaoCompareAndExpireInterface, SaTokenDaoCompareAndSetInterface, SaTokenDaoDeleteIfExpiredInterface
+class SaTokenDaoRedis implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface, SaTokenDaoCompareAndExpireInterface, SaTokenDaoCompareAndSetInterface, SaTokenDaoCompareAndUpdateInterface, SaTokenDaoDeleteIfExpiredInterface
 {
     protected \Redis $client;
 
@@ -306,6 +306,25 @@ LUA;
             $key, $expectedValue !== null ? '1' : '0', $expectedValue ?? '',
             $newValue !== null ? '1' : '0', $newValue ?? '', (string) ($timeout ?? 0),
         ], 1);
+        return $result === 1;
+    }
+
+    public function compareAndUpdate(string $key, string $expectedValue, string $newValue): bool
+    {
+        $script = <<<'LUA'
+local current = redis.call('GET', KEYS[1])
+if current ~= ARGV[1] then return 0 end
+local ttl = redis.call('PTTL', KEYS[1])
+if ttl == -1 then
+    redis.call('SET', KEYS[1], ARGV[2])
+elseif ttl > 0 then
+    redis.call('SET', KEYS[1], ARGV[2], 'PX', ttl)
+else
+    return 0
+end
+return 1
+LUA;
+        $result = ($this->saRedis ?? $this->client)->eval($script, [$key, $expectedValue, $newValue], 1);
         return $result === 1;
     }
 

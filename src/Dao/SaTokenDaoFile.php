@@ -24,7 +24,7 @@ use SaToken\Exception\SaTokenException;
  * 或通过配置（SaToken::init 自动装配）：
  *   'storage' => ['type' => 'file', 'path' => 'runtime/sa-token']
  */
-class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface, SaTokenDaoCompareAndExpireInterface, SaTokenDaoCompareAndSetInterface, SaTokenDaoDeleteIfExpiredInterface
+class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface, SaTokenDaoCompareAndExpireInterface, SaTokenDaoCompareAndSetInterface, SaTokenDaoCompareAndUpdateInterface, SaTokenDaoDeleteIfExpiredInterface
 {
     protected string $dataDir;
 
@@ -330,6 +330,24 @@ class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteI
             } else {
                 $this->writeRecord($key, $newValue, ($timeout !== null && $timeout > 0) ? time() + $timeout : null);
             }
+            return true;
+        });
+    }
+
+    public function compareAndUpdate(string $key, string $expectedValue, string $newValue): bool
+    {
+        return $this->withLock($key, function () use ($key, $expectedValue, $newValue): bool {
+            $record = $this->readRecord($key);
+            if ($record === null || $this->isExpired($record['e'])) {
+                return false;
+            }
+
+            $current = base64_decode($record['v'], true);
+            if ($current === false || $current !== $expectedValue) {
+                return false;
+            }
+
+            $this->writeRecord($key, $newValue, $record['e']);
             return true;
         });
     }
