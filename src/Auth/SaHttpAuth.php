@@ -71,7 +71,8 @@ class SaHttpAuth
         }
 
         SaAntiBruteUtil::clearCurrentSourceFailures($username);
-        StpUtil::login($loginId);
+        $result = StpUtil::login($loginId);
+        SaTokenContext::setTokenOverride(StpUtil::getStpLogic()->getLoginType(), $result->getAccessToken());
     }
 
     public function checkDigest(string $realm = 'Sa-Token'): void
@@ -170,7 +171,8 @@ class SaHttpAuth
         }
 
         SaAntiBruteUtil::clearCurrentSourceFailures($username);
-        StpUtil::login($username);
+        $result = StpUtil::login($username);
+        SaTokenContext::setTokenOverride(StpUtil::getStpLogic()->getLoginType(), $result->getAccessToken());
     }
 
     /** 获取实际请求目标，避免把为其他资源签发的 Digest 响应移用到当前路径。 */

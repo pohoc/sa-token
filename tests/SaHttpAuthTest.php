@@ -77,6 +77,69 @@ class SaHttpAuthTest extends TestCase
         $this->assertTrue(true);
     }
 
+    public function testBasicIdentityOverridesAnUnrelatedBearerToken(): void
+    {
+        SaToken::setConfig(SaToken::getConfig()->setIsReadHeader(true));
+        $logic = SaToken::getStpLogic();
+        $unrelatedToken = $logic->login('bearer-account')->getAccessToken();
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->willReturnCallback(static fn (string $name): array => match ($name) {
+            'Authorization' => ['Basic ' . base64_encode('basic-user:password')],
+            'satoken' => [$unrelatedToken],
+            default => [],
+        });
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '192.0.2.120']);
+        SaTokenContext::setRequest($request);
+
+        (new SaHttpAuth())->setBasicValidator(static fn (): string => 'basic-user')->checkBasic();
+
+        self::assertSame('basic-user', $logic->getLoginId());
+        self::assertSame('bearer-account', $logic->getLoginIdByToken($unrelatedToken));
+    }
+
+    public function testDigestIdentityOverridesAnUnrelatedBearerToken(): void
+    {
+        SaToken::setConfig(SaToken::getConfig()->setIsReadHeader(true));
+        $logic = SaToken::getStpLogic();
+        $unrelatedToken = $logic->login('bearer-account')->getAccessToken();
+        $auth = new SaHttpAuth();
+        $username = 'digest-user';
+        $realm = 'Sa-Token';
+        $nonce = $auth->generateNonce();
+        $uri = '/resource';
+        $nc = '00000001';
+        $cnonce = 'client-nonce';
+        $ha1 = md5($username . ':' . $realm . ':password');
+        $ha2 = md5('GET:' . $uri);
+        $responseHash = md5($ha1 . ':' . $nonce . ':' . $nc . ':' . $cnonce . ':auth:' . $ha2);
+        $authorization = sprintf(
+            'Digest username="%s", realm="%s", nonce="%s", uri="%s", response="%s", qop=auth, nc=%s, cnonce="%s"',
+            $username,
+            $realm,
+            $nonce,
+            $uri,
+            $responseHash,
+            $nc,
+            $cnonce
+        );
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->willReturnCallback(static fn (string $name): array => match ($name) {
+            'Authorization' => [$authorization],
+            'satoken' => [$unrelatedToken],
+            default => [],
+        });
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '192.0.2.121']);
+        $request->method('getMethod')->willReturn('GET');
+        $request->method('getRequestTarget')->willReturn($uri);
+        SaTokenContext::setRequest($request);
+        $auth->setDigestValidator(static fn (): string => $ha1);
+
+        $auth->checkDigest($realm);
+
+        self::assertSame($username, $logic->getLoginId());
+        self::assertSame('bearer-account', $logic->getLoginIdByToken($unrelatedToken));
+    }
+
     public function testBasicValidatorExceptionCountsAsFailureAndIsRethrown(): void
     {
         $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
