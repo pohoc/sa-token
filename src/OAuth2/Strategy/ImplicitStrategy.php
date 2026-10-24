@@ -32,7 +32,7 @@ class ImplicitStrategy
      * @param  string|null $state       状态参数
      * @return string
      */
-    public function buildAuthorizeUrl(string $clientId, string $redirectUri, string $scope = '', ?string $state = null): string
+    public function buildAuthorizeUrl(string $clientId, string $redirectUri, string $scope = '', ?string $state = null, ?string $nonce = null): string
     {
         $params = [
             'response_type' => 'token',
@@ -45,6 +45,9 @@ class ImplicitStrategy
         }
         if ($state !== null) {
             $params['state'] = $state;
+        }
+        if ($nonce !== null) {
+            $params['nonce'] = $nonce;
         }
 
         return '/oauth2/authorize?' . http_build_query($params);
@@ -64,13 +67,27 @@ class ImplicitStrategy
      * @return SaOAuth2AccessToken
      * @throws SaTokenException
      */
-    public function authorize(string $clientId, mixed $loginId, string $scope = '', string $redirectUri = ''): SaOAuth2AccessToken
+    public function authorize(string $clientId, mixed $loginId, string $scope = '', string $redirectUri = '', string $nonce = ''): SaOAuth2AccessToken
     {
         $this->handle->validateGrantTypePublic($clientId, 'implicit');
         if ($redirectUri === '') {
             throw new SaTokenException('隐式授权必须提供已注册的 redirect_uri');
         }
         $this->handle->validateRedirectUriPublic($clientId, $redirectUri);
-        return $this->handle->generateAccessToken($clientId, $loginId, $scope);
+        $scopes = preg_split('/\s+/', trim($scope)) ?: [];
+        $isOpenIdRequest = $this->handle->isOpenIdMode() && in_array('openid', $scopes, true);
+        if ($isOpenIdRequest && $nonce === '') {
+            throw new SaTokenException('OpenID Connect 隐式授权必须提供 nonce');
+        }
+
+        return $this->handle->generateAccessToken(
+            $clientId,
+            $loginId,
+            $scope,
+            '',
+            true,
+            $nonce,
+            $isOpenIdRequest
+        );
     }
 }

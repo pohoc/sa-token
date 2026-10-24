@@ -603,6 +603,11 @@ class SaOAuth2Handle
         return $this->generateAccessToken($clientId, 'client:' . $clientId, $scope, '', false);
     }
 
+    public function isOpenIdMode(): bool
+    {
+        return $this->config->isOpenIdMode();
+    }
+
     /**
      * 验证访问令牌
      *
@@ -792,12 +797,16 @@ class SaOAuth2Handle
         string $scope = '',
         string $refreshFamilyId = '',
         bool $includeRefreshToken = true,
-        string $idTokenNonce = ''
+        string $idTokenNonce = '',
+        bool $includeAtHash = false
     ): SaOAuth2AccessToken {
         $client = $this->validateClient($clientId);
         $this->validateScopeForClient($client, $scope);
         if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
             throw new SaTokenException('loginId 不能为空且必须是非布尔标量');
+        }
+        if ($includeAtHash && (!$this->config->isOpenIdMode() || !$this->scopeContainsOpenid($scope) || $idTokenNonce === '')) {
+            throw new SaTokenException('OpenID Connect 隐式授权必须包含 openid scope 和 nonce');
         }
 
         $tokenStr = SaFoxUtil::randomString(64);
@@ -828,7 +837,13 @@ class SaOAuth2Handle
         // OIDC 规范：id_token 仅在请求包含 openid scope 时签发，
         // 防止未请求身份信息的流程被附带下发 sub 等身份声明
         if ($this->config->isOpenIdMode() && $this->scopeContainsOpenid($scope)) {
-            $idTokenObj = $this->generateIdToken($clientId, $loginId, $scope, $idTokenNonce);
+            $idTokenObj = $this->generateIdToken(
+                $clientId,
+                $loginId,
+                $scope,
+                $idTokenNonce,
+                $includeAtHash ? $tokenStr : ''
+            );
             $accessToken->setIdToken($idTokenObj->getIdToken());
             $this->getDao()->set(
                 $this->buildAccessTokenKey($tokenStr),
@@ -1150,7 +1165,7 @@ class SaOAuth2Handle
      * @param  string          $scope    权限范围
      * @return SaOAuth2IdToken
      */
-    public function generateIdToken(string $clientId, mixed $loginId, string $scope = '', string $nonce = ''): SaOAuth2IdToken
+    public function generateIdToken(string $clientId, mixed $loginId, string $scope = '', string $nonce = '', string $accessToken = ''): SaOAuth2IdToken
     {
         $now = time();
         $expiresAt = $now + $this->config->getAccessTokenTimeout();
@@ -1169,6 +1184,9 @@ class SaOAuth2Handle
         ];
         if ($nonce !== '') {
             $payload['nonce'] = $nonce;
+        }
+        if ($accessToken !== '') {
+            $payload['at_hash'] = $this->base64UrlEncode(substr(hash('sha256', $accessToken, true), 0, 16));
         }
 
         $jwtStr = $this->signJwt($payload);

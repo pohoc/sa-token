@@ -13,6 +13,7 @@ use SaToken\OAuth2\Data\SaOAuth2Client;
 use SaToken\OAuth2\Data\SaOAuth2IdToken;
 use SaToken\OAuth2\SaOAuth2Config;
 use SaToken\OAuth2\SaOAuth2Handle;
+use SaToken\OAuth2\Strategy\ImplicitStrategy;
 use SaToken\SaToken;
 
 class SaOAuth2OpenIdTest extends TestCase
@@ -207,6 +208,46 @@ class SaOAuth2OpenIdTest extends TestCase
             'user',
             'password',
             'openid profile'
+        );
+    }
+
+    public function testImplicitOpenIdFlowRequiresNonceAndIncludesAccessTokenHash(): void
+    {
+        $implicitClient = new SaOAuth2Client([
+            'clientId' => 'implicit-client',
+            'clientSecret' => 'implicit-client-secret-at-least-32-bytes',
+            'redirectUris' => ['https://example.com/callback'],
+            'grantTypes' => ['implicit'],
+            'scopes' => ['openid', 'profile'],
+        ]);
+        $this->handle->registerClient($implicitClient);
+        $strategy = new ImplicitStrategy($this->handle);
+
+        try {
+            $strategy->authorize('implicit-client', 10001, 'openid profile', 'https://example.com/callback');
+            self::fail('OIDC implicit flow must reject a missing nonce');
+        } catch (SaTokenException $exception) {
+            self::assertSame('OpenID Connect 隐式授权必须提供 nonce', $exception->getMessage());
+        }
+
+        $nonce = 'implicit-client-nonce';
+        $accessToken = $strategy->authorize(
+            'implicit-client',
+            10001,
+            'openid profile',
+            'https://example.com/callback',
+            $nonce
+        );
+        $parts = explode('.', $accessToken->getIdToken());
+        self::assertCount(3, $parts);
+        $payloadJson = base64_decode(strtr($parts[1], '-_', '+/') . str_repeat('=', (4 - strlen($parts[1]) % 4) % 4), true);
+        self::assertIsString($payloadJson);
+        $payload = json_decode($payloadJson, true);
+        self::assertIsArray($payload);
+        self::assertSame($nonce, $payload['nonce'] ?? null);
+        self::assertSame(
+            rtrim(strtr(base64_encode(substr(hash('sha256', $accessToken->getAccessToken(), true), 0, 16)), '+/', '-_'), '='),
+            $payload['at_hash'] ?? null
         );
     }
 
