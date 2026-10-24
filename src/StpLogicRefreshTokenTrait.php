@@ -26,7 +26,7 @@ trait StpLogicRefreshTokenTrait
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
         try {
-            $currentLoginId = $this->tokenManager->getLoginIdByToken($accessToken);
+            $currentLoginId = $this->getLoginIdByToken($accessToken);
             if ($currentLoginId === null || $currentLoginId !== (string) $loginId
                 || $this->tokenManager->isBlacklisted($accessToken)) {
                 throw new SaTokenException('AccessToken 已失效，无法创建 RefreshToken');
@@ -106,15 +106,31 @@ trait StpLogicRefreshTokenTrait
                 : '';
 
             if ($oldAccessToken !== '') {
-                $this->tokenManager->deleteToken($oldAccessToken, $loginId, $this->loginType);
+                if ($config->isJwtStateless()) {
+                    if ($this->tokenManager->isBlacklisted($oldAccessToken)) {
+                        throw new SaTokenException('AccessToken 已撤销，无法刷新会话');
+                    }
+                    if ($this->getLoginIdByToken($oldAccessToken) === $loginId) {
+                        $this->revokeToken($oldAccessToken);
+                    }
+                } else {
+                    $this->tokenManager->deleteToken($oldAccessToken, $loginId, $this->loginType);
+                }
             }
 
-            $newAccessToken = $this->tokenManager->createTokenValue($loginId, $this->loginType);
             $timeout = $config->getTimeout();
-            $newAccessToken = $this->tokenManager->saveToken($newAccessToken, $loginId, $this->loginType, '', $timeout);
-
-            if ($config->isTokenFingerprint()) {
-                $this->tokenManager->saveFingerprint($newAccessToken, $this->tokenManager->computeFingerprint(), $timeout);
+            if ($config->isJwtStateless()) {
+                $newAccessToken = $this->getJwt()->createStatelessToken($loginId, $this->loginType, $timeout);
+                if ($config->isTokenFingerprint()) {
+                    $this->tokenManager->saveFingerprint($newAccessToken, $this->tokenManager->computeFingerprint(), $timeout);
+                }
+                $this->tokenManager->updateLastActiveToNow($newAccessToken);
+            } else {
+                $newAccessToken = $this->tokenManager->createTokenValue($loginId, $this->loginType);
+                $newAccessToken = $this->tokenManager->saveToken($newAccessToken, $loginId, $this->loginType, '', $timeout);
+                if ($config->isTokenFingerprint()) {
+                    $this->tokenManager->saveFingerprint($newAccessToken, $this->tokenManager->computeFingerprint(), $timeout);
+                }
             }
 
             $result = (new SaLoginResult())

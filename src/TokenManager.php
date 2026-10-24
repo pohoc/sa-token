@@ -28,6 +28,7 @@ class TokenManager
     public const REFRESH_TOKEN_PREFIX = 'satoken:refresh:';
     public const REFRESH_TOKEN_USED_PREFIX = 'satoken:refresh:used:';
     public const REFRESH_TOKEN_MAP_PREFIX = 'satoken:refreshMap:';
+    protected const REFRESH_TOKEN_ACCOUNT_PREFIX = 'satoken:refreshAccount:';
     public const FINGERPRINT_PREFIX = 'satoken:fingerprint:';
     public const BLACKLIST_PREFIX = 'satoken:blacklist:';
 
@@ -589,6 +590,8 @@ class TokenManager
             }
         }
 
+        $this->deleteRefreshTokensByLoginIdLocked($loginIdStr, $loginType);
+
         return $deletedTokens;
     }
 
@@ -942,11 +945,20 @@ class TokenManager
             $effectiveTimeout = ($timeout === -1) ? null : $timeout;
             $refreshKey = self::REFRESH_TOKEN_PREFIX . $refreshToken;
             $refreshRaw = $this->encryptValue($data);
+            // Register the credential before writing it. If the process stops
+            // between these writes, account revocation still knows which key to
+            // inspect; a stale index entry without a credential is harmless.
+            $this->addRefreshTokenToAccountIndex($loginIdStr, $loginType, $refreshToken, $timeout);
             if (!$this->getDao()->setIfNotExists(
                 $refreshKey,
                 $refreshRaw,
                 $effectiveTimeout
             )) {
+                $existingData = $this->getRefreshTokenData($refreshToken);
+                if (($existingData['loginId'] ?? null) !== $loginIdStr
+                    || ($existingData['loginType'] ?? null) !== $loginType) {
+                    $this->removeRefreshTokenFromAccountIndex($loginIdStr, $loginType, $refreshToken);
+                }
                 throw new SaTokenException('RefreshToken 值冲突，拒绝覆盖其他会话凭据');
             }
 
@@ -958,6 +970,7 @@ class TokenManager
                 if ($dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
                     $dao->compareAndDelete($refreshKey, $refreshRaw);
                 }
+                $this->removeRefreshTokenFromAccountIndex($loginIdStr, $loginType, $refreshToken);
                 throw new SaTokenException('RefreshToken 映射已并发变更或 DAO 不支持原子条件写入，请重试');
             }
         } finally {
@@ -1060,6 +1073,10 @@ class TokenManager
             }
         }
 
+        if ($loginId !== '' && $loginType !== '') {
+            $this->removeRefreshTokenFromAccountIndex($loginId, $loginType, $refreshToken);
+        }
+
         return $data;
     }
 
@@ -1134,6 +1151,9 @@ class TokenManager
                     $dao->compareAndSet($mapKey, $mapped, null);
                 }
             }
+            if ($loginId !== '' && $loginType !== '') {
+                $this->removeRefreshTokenFromAccountIndex($loginId, $loginType, $refreshToken);
+            }
         }
     }
 
@@ -1142,6 +1162,126 @@ class TokenManager
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
         return self::REFRESH_TOKEN_MAP_PREFIX . self::encodeKeyComponent($loginType) . ':'
             . self::encodeKeyComponent($loginIdStr) . ':' . self::encodeKeyComponent($accessToken);
+    }
+
+    protected static function buildRefreshTokenAccountKey(string $loginId, string $loginType): string
+    {
+        return self::REFRESH_TOKEN_ACCOUNT_PREFIX . self::encodeKeyComponent($loginType) . ':'
+            . self::encodeKeyComponent($loginId);
+    }
+
+    protected function addRefreshTokenToAccountIndex(string $loginId, string $loginType, string $refreshToken, int $timeout): void
+    {
+        $dao = $this->getDao();
+        if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface) {
+            throw new SaTokenException('DAO 不支持原子维护 RefreshToken 账号索引');
+        }
+
+        $key = self::buildRefreshTokenAccountKey($loginId, $loginType);
+        for ($attempt = 0; $attempt < 8; $attempt++) {
+            $currentRaw = $dao->get($key);
+            $tokens = [];
+            if ($currentRaw !== null) {
+                $decoded = SaFoxUtil::fromJson($this->decryptValue($currentRaw));
+                if (!is_array($decoded)) {
+                    throw new SaTokenException('RefreshToken 账号索引格式无效');
+                }
+                foreach ($decoded as $value) {
+                    if (is_string($value) && $value !== '') {
+                        $tokens[] = $value;
+                    }
+                }
+            }
+            $tokens = array_values(array_unique($tokens));
+            if (!in_array($refreshToken, $tokens, true)) {
+                $tokens[] = $refreshToken;
+            }
+
+            $currentTimeout = $dao->getTimeout($key);
+            $indexTimeout = $currentTimeout === -1 || $timeout === -1
+                ? null
+                : max(1, $currentTimeout, $timeout);
+            $nextRaw = $this->encryptValue(SaFoxUtil::toJson($tokens));
+            if ($dao->compareAndSet($key, $currentRaw, $nextRaw, $indexTimeout)) {
+                return;
+            }
+        }
+
+        throw new SaTokenException('RefreshToken 账号索引持续并发变更，请重试');
+    }
+
+    protected function removeRefreshTokenFromAccountIndex(string $loginId, string $loginType, string $refreshToken): void
+    {
+        $dao = $this->getDao();
+        if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface) {
+            throw new SaTokenException('DAO 不支持原子维护 RefreshToken 账号索引');
+        }
+
+        $key = self::buildRefreshTokenAccountKey($loginId, $loginType);
+        for ($attempt = 0; $attempt < 8; $attempt++) {
+            $currentRaw = $dao->get($key);
+            if ($currentRaw === null) {
+                return;
+            }
+            $decoded = SaFoxUtil::fromJson($this->decryptValue($currentRaw));
+            if (!is_array($decoded)) {
+                throw new SaTokenException('RefreshToken 账号索引格式无效');
+            }
+            $tokens = array_values(array_filter(
+                $decoded,
+                static fn (mixed $value): bool => is_string($value) && $value !== $refreshToken
+            ));
+            if (count($tokens) === count($decoded)) {
+                return;
+            }
+
+            $timeout = $dao->getTimeout($key);
+            $effectiveTimeout = $timeout === -1 ? null : max(1, $timeout);
+            $nextRaw = $tokens === [] ? null : $this->encryptValue(SaFoxUtil::toJson($tokens));
+            if ($dao->compareAndSet($key, $currentRaw, $nextRaw, $effectiveTimeout)) {
+                return;
+            }
+        }
+
+        throw new SaTokenException('RefreshToken 账号索引持续并发变更，请重试');
+    }
+
+    protected function deleteRefreshTokensByLoginIdLocked(string $loginId, string $loginType): void
+    {
+        $dao = $this->getDao();
+        $key = self::buildRefreshTokenAccountKey($loginId, $loginType);
+        $snapshot = $dao->get($key);
+        if ($snapshot === null) {
+            return;
+        }
+        $decoded = SaFoxUtil::fromJson($this->decryptValue($snapshot));
+        if (!is_array($decoded)) {
+            throw new SaTokenException('RefreshToken 账号索引格式无效');
+        }
+
+        foreach ($decoded as $refreshToken) {
+            if (!is_string($refreshToken) || $refreshToken === '') {
+                continue;
+            }
+            $data = $this->getRefreshTokenData($refreshToken);
+            if (($data['loginId'] ?? null) === $loginId && ($data['loginType'] ?? null) === $loginType) {
+                $this->getDao()->delete(self::REFRESH_TOKEN_PREFIX . $refreshToken);
+                $accessToken = is_string($data['accessToken'] ?? null) ? $data['accessToken'] : '';
+                if ($accessToken !== '') {
+                    $mapKey = self::buildRefreshTokenMapKey($loginId, $loginType, $accessToken);
+                    $mapped = $dao->get($mapKey);
+                    if ($mapped !== null && $this->decryptValue($mapped) === $refreshToken
+                        && $dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface) {
+                        $dao->compareAndSet($mapKey, $mapped, null);
+                    }
+                }
+            }
+        }
+
+        if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface
+            || !$dao->compareAndSet($key, $snapshot, null)) {
+            throw new SaTokenException('RefreshToken 账号索引已并发变更，请重试');
+        }
     }
 
     protected static function buildLegacyRefreshTokenMapKey(string $loginId, string $loginType, string $accessToken): string
@@ -1309,6 +1449,7 @@ class TokenManager
             }
             // 保留水位而不设置 TTL，避免无过期 JWT 在缓存过期后重新有效。
             $this->getDao()->set($key, sprintf('%.6F', $cutoff));
+            $this->deleteRefreshTokensByLoginIdLocked($loginId, $loginType);
         } finally {
             $this->releaseLock($lockKey);
         }

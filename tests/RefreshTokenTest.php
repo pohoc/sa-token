@@ -7,6 +7,7 @@ namespace SaToken\Tests;
 use PHPUnit\Framework\TestCase;
 use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
+use SaToken\StpLogic;
 use SaToken\StpUtil;
 use SaToken\TokenManager;
 use SaToken\Util\SaTokenContext;
@@ -205,6 +206,58 @@ class RefreshTokenTest extends TestCase
 
         $this->assertTrue(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($result->getAccessToken()));
         $this->assertFalse(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($accessToken));
+    }
+
+    public function testRefreshingStatelessJwtReturnsUsableStatelessJwt(): void
+    {
+        SaToken::reset();
+        SaToken::init([
+            'timeout'              => 7200,
+            'activityTimeout'      => -1,
+            'jwtStateless'         => true,
+            'jwtSecretKey'         => 'test-refresh-stateless-jwt-secret-32-bytes',
+            'refreshToken'         => true,
+            'refreshTokenTimeout'  => 2592000,
+            'refreshTokenRotation' => true,
+        ]);
+        $logic = new StpLogic('login');
+
+        $accessToken = $logic->loginStateless('stateless-refresh-user');
+        $refreshToken = $logic->createRefreshToken($accessToken);
+        $result = $logic->refreshToken($refreshToken);
+
+        self::assertSame('stateless-refresh-user', $logic->getLoginIdByToken($result->getAccessToken()));
+        self::assertNotSame($accessToken, $result->getAccessToken());
+        self::assertNull($logic->getLoginIdByToken($accessToken));
+        self::assertTrue($logic->isRefreshTokenValid($result->getRefreshToken()));
+    }
+
+    public function testStatelessAccountKickoutRevokesItsRefreshTokens(): void
+    {
+        SaToken::reset();
+        SaToken::init([
+            'timeout'              => 7200,
+            'activityTimeout'      => -1,
+            'jwtStateless'         => true,
+            'jwtSecretKey'         => 'test-refresh-stateless-jwt-secret-32-bytes',
+            'refreshToken'         => true,
+            'refreshTokenTimeout'  => 2592000,
+            'refreshTokenRotation' => true,
+        ]);
+        $logic = new StpLogic('login');
+
+        $accessToken = $logic->loginStateless('stateless-kickout-user');
+        $refreshToken = $logic->createRefreshToken($accessToken);
+        $logic->kickout('stateless-kickout-user');
+
+        self::assertNull($logic->getLoginIdByToken($accessToken));
+        self::assertFalse($logic->isRefreshTokenValid($refreshToken));
+        try {
+            $logic->refreshToken($refreshToken);
+            self::fail('被踢出的无状态账号不能通过 RefreshToken 重新建立会话');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('无效', $exception->getMessage());
+        }
     }
 
     public function testRefreshTokenWithoutRotation(): void

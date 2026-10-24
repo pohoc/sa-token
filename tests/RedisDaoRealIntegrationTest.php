@@ -154,6 +154,45 @@ class RedisDaoRealIntegrationTest extends TestCase
         }
     }
 
+    public function testStatelessRefreshAndAccountKickoutAgainstRealRedis(): void
+    {
+        SaToken::reset();
+        SaToken::setConfig(new SaTokenConfig([
+            'timeout'              => 3600,
+            'activityTimeout'      => -1,
+            'jwtStateless'         => true,
+            'jwtSecretKey'         => 'redis-stateless-refresh-secret-key-32-bytes',
+            'refreshToken'         => true,
+            'refreshTokenTimeout'  => 3600,
+            'refreshTokenRotation' => true,
+        ]));
+        SaToken::setDao($this->dao);
+        $loginId = 'redis-stateless-refresh-' . bin2hex(random_bytes(8));
+        $logic = new StpLogic('login');
+        $rotatedAccessToken = '';
+        $rotatedRefreshToken = '';
+
+        try {
+            $accessToken = $logic->loginStateless($loginId);
+            $refreshToken = $logic->createRefreshToken($accessToken);
+            $result = $logic->refreshToken($refreshToken);
+            $rotatedAccessToken = $result->getAccessToken();
+            $rotatedRefreshToken = $result->getRefreshToken();
+
+            self::assertSame($loginId, $logic->getLoginIdByToken($rotatedAccessToken));
+            self::assertNull($logic->getLoginIdByToken($accessToken));
+            self::assertTrue($logic->isRefreshTokenValid($rotatedRefreshToken));
+
+            $logic->kickout($loginId);
+
+            self::assertNull($logic->getLoginIdByToken($rotatedAccessToken));
+            self::assertFalse($logic->isRefreshTokenValid($rotatedRefreshToken));
+        } finally {
+            $logic->kickout($loginId);
+            SaToken::reset();
+        }
+    }
+
     public function testRefreshTokenKeepsAccountIndexAliveAgainstRealRedis(): void
     {
         SaToken::reset();
