@@ -95,9 +95,13 @@ class SaSsoTemplate
         unset($params['sign']);
         $normalized = [];
         foreach ($params as $k => $v) {
-            if (is_scalar($v)) {
-                $normalized[(string) $k] = (string) $v;
+            // Reject values that cannot be represented by the flat signing
+            // format. Silently dropping them would authenticate only a subset
+            // of the request while callers may still consume the full array.
+            if (!is_scalar($v)) {
+                return false;
             }
+            $normalized[(string) $k] = (string) $v;
         }
         ksort($normalized);
         $signStr = http_build_query($normalized) . '&key=' . $clientSecret;

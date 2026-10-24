@@ -95,6 +95,16 @@ class SaSsoTemplateTest extends TestCase
         $this->assertFalse($result);
     }
 
+    public function testVerifySignRejectsUnsignedNonScalarParameters(): void
+    {
+        $template = new SaSsoTemplate('intl');
+        $clientSecret = getenv('TEST_SSO_CLIENT_SECRET') ?: 'test-sso-secret-with-at-least-32-bytes';
+        $signed = $template->signParams(['loginId' => 'user-1'], $clientSecret);
+        $signed['extra'] = ['admin' => true];
+
+        $this->assertFalse($template->verifySign($signed, $clientSecret));
+    }
+
     public function testHttpHelperRejectsNonHttpSchemes(): void
     {
         $this->expectException(SaTokenException::class);
