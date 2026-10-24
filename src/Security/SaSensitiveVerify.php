@@ -185,6 +185,11 @@ class SaSensitiveVerify
             if (!is_string($codeHash) || !password_verify($code, $codeHash)) {
                 return false;
             }
+            if ($expiresAt <= time()) {
+                $dao->delete($key);
+                $dao->delete($key . ':verified');
+                return false;
+            }
 
             // 先用原子门闩消费成功机会，避免并发请求同时读到 verified=false 后都通过。
             if (!$dao->setIfNotExists($key . ':verified', '1', self::$validSeconds + 60)) {
@@ -414,7 +419,15 @@ class SaSensitiveVerify
             return false;
         }
         $consumedInfo = self::decodeSensitiveState($consumed, $key);
-        $consumedHash = is_array($consumedInfo) ? ($consumedInfo['tokenHash'] ?? null) : null;
+        if (!is_array($consumedInfo)
+            || ($consumedInfo['scene'] ?? null) !== $scene
+            || ($consumedInfo['loginId'] ?? null) !== $loginIdStr
+            || ($consumedInfo['loginType'] ?? null) !== $loginType
+            || !is_int($consumedInfo['expiresAt'] ?? null)
+            || $consumedInfo['expiresAt'] <= time()) {
+            return false;
+        }
+        $consumedHash = $consumedInfo['tokenHash'] ?? null;
         return is_string($consumedHash) && hash_equals($consumedHash, hash('sha256', $token));
     }
 

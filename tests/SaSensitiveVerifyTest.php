@@ -311,6 +311,36 @@ class SaSensitiveVerifyTest extends TestCase
         self::assertFalse(SaSensitiveVerify::verifySafeToken($scene, $token, 'bob'));
     }
 
+    public function testSafeTokenExpiryIsRecheckedWhenAtomicallyConsumed(): void
+    {
+        $dao = new SensitiveVerifyInterleavingDao();
+        SaToken::setDao($dao);
+        $scene = 'safe-token-expiry-race';
+        $loginId = 'alice';
+        $token = SaSensitiveVerify::createSafeToken($scene, $loginId);
+        $key = 'satoken:sensitive:login:safe-token:' . $scene . ':' . hash('sha256', $loginId) . ':' . substr($token, 0, 16);
+        $encodeState = new \ReflectionMethod(SaSensitiveVerify::class, 'encodeSensitiveState');
+        $encodeState->setAccessible(true);
+
+        $dao->afterNextGet(static function (string $readKey, ?string $ignoredValue) use ($dao, $key, $scene, $loginId, $token, $encodeState): void {
+            if ($readKey !== $key) {
+                return;
+            }
+            $expiredState = $encodeState->invoke(null, [
+                'scene' => $scene,
+                'loginId' => $loginId,
+                'loginType' => 'login',
+                'createdAt' => time() - 601,
+                'expiresAt' => time() - 1,
+                'tokenHash' => hash('sha256', $token),
+            ], $key);
+            self::assertIsString($expiredState);
+            $dao->set($key, $expiredState, 60);
+        });
+
+        self::assertFalse(SaSensitiveVerify::verifySafeToken($scene, $token, $loginId));
+    }
+
     public function testSafeTokenWithoutFullTokenHashIsRejected(): void
     {
         $scene = 'test-scene';
