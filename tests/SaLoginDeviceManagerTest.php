@@ -571,4 +571,30 @@ class SaLoginDeviceManagerTest extends TestCase
         $this->assertFalse($this->logic->getTokenManager()->isTokenValid($firstToken));
         $this->assertFalse($this->logic->getTokenManager()->isTokenValid($secondToken));
     }
+
+    public function testDeviceManagerCannotAssociateOrKickoutAnotherAccountsToken(): void
+    {
+        $victimToken = $this->logic->login('victim-account')->getAccessToken();
+        $attackerId = 'attacker-account';
+        $device = new SaLoginDevice(['deviceType' => 'pc', 'deviceName' => 'Attacker device']);
+
+        try {
+            SaLoginDeviceManager::registerDevice($attackerId, 'login', $device, $victimToken, $this->logic);
+            $this->fail('设备记录不能关联其他账号的 Token');
+        } catch (SaTokenException $exception) {
+            $this->assertStringContainsString('设备 Token 与账号不匹配', $exception->getMessage());
+        }
+
+        // 防御旧版或被外部写入的错误设备记录，踢出操作也必须重新核实 Token 属主。
+        $device->setLoginType('login')->setLoginTime(time());
+        $record = $device->toArray();
+        $record['managedTokenValues'] = [$victimToken];
+        $record['managedTokenValuesEncrypted'] = false;
+        $deviceKey = SaLoginDeviceManager::getKey($attackerId, 'login') . ':' . $device->getDeviceId();
+        $this->dao->set($deviceKey, json_encode($record, JSON_THROW_ON_ERROR), 3600);
+
+        SaLoginDeviceManager::kickoutDevice($attackerId, $device->getDeviceId(), 'login', $this->logic);
+
+        $this->assertTrue($this->logic->getTokenManager()->isTokenValid($victimToken));
+    }
 }

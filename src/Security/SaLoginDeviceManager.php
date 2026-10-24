@@ -81,6 +81,9 @@ class SaLoginDeviceManager
                 }
             }
             if ($tokenValue !== null && $tokenValue !== '') {
+                if ($logic->getLoginIdByToken($tokenValue) !== $loginIdStr) {
+                    throw new SaTokenException('设备 Token 与账号不匹配');
+                }
                 $tokenValues[] = $tokenValue;
             }
             $tokenValues = array_values(array_unique($tokenValues));
@@ -193,6 +196,9 @@ class SaLoginDeviceManager
                     }
                     $lastRenewal = hrtime(true);
                 }
+                if ($logic->getLoginIdByToken($tokenValue) !== $loginIdStr) {
+                    continue;
+                }
                 $eventLoginId = $logic->kickoutByTokenValue($tokenValue, false);
                 if ($eventLoginId !== null) {
                     $kickoutEvents[] = [$eventLoginId, $tokenValue];
@@ -249,6 +255,9 @@ class SaLoginDeviceManager
                         $renewAccountLock();
                         if ($tokenValue === $exceptToken) {
                             $remainingTokens[] = $tokenValue;
+                            continue;
+                        }
+                        if ($logic->getLoginIdByToken($tokenValue) !== $loginIdStr) {
                             continue;
                         }
                         $eventLoginId = $logic->kickoutByTokenValue($tokenValue, false);
