@@ -154,6 +154,135 @@ class RedisDaoRealIntegrationTest extends TestCase
         }
     }
 
+    public function testLogoutDuringRefreshPreReadCannotResurrectSessionAgainstRealRedis(): void
+    {
+        if (!function_exists('pcntl_fork')) {
+            self::markTestSkipped('pcntl is required for the cross-process Redis race test.');
+        }
+
+        SaToken::reset();
+        SaToken::setConfig(new SaTokenConfig([
+            'timeout'              => 3600,
+            'activityTimeout'      => -1,
+            'refreshToken'         => true,
+            'refreshTokenTimeout'  => 3600,
+            'refreshTokenRotation' => true,
+        ]));
+        SaToken::setDao($this->dao);
+
+        $loginId = 'redis-refresh-logout-race-' . bin2hex(random_bytes(8));
+        $accessToken = StpUtil::login($loginId)->getAccessToken();
+        $refreshToken = StpUtil::createRefreshToken($accessToken);
+        $refreshKey = TokenManager::REFRESH_TOKEN_PREFIX . $refreshToken;
+        $raceDir = sys_get_temp_dir() . '/sa-token-redis-refresh-race-' . bin2hex(random_bytes(8));
+        self::assertTrue(mkdir($raceDir, 0700));
+        $readyPath = $raceDir . '/ready';
+        $continuePath = $raceDir . '/continue';
+        $resultPath = $raceDir . '/result';
+        $hostValue = $_ENV['REDIS_HOST'] ?? getenv('REDIS_HOST') ?: '';
+        $portValue = $_ENV['REDIS_PORT'] ?? getenv('REDIS_PORT') ?: '';
+        if (!is_string($hostValue) || !is_numeric($portValue)) {
+            self::fail('Redis host and port must be configured for the process race test.');
+        }
+        $host = $hostValue;
+        $port = (int) $portValue;
+        $pid = pcntl_fork();
+        if ($pid === -1) {
+            rmdir($raceDir);
+            self::fail('Could not fork Redis refresh worker.');
+        }
+
+        if ($pid === 0) {
+            $childRedis = new \Redis();
+            if (@$childRedis->connect($host, $port, 1.5) !== true) {
+                file_put_contents($resultPath, 'connection-failed');
+                exit(1);
+            }
+            $childDao = new class ($childRedis, $refreshKey, $readyPath, $continuePath) extends SaTokenDaoRedis {
+                private string $triggerKey;
+                private string $readyPath;
+                private string $continuePath;
+                private bool $paused = false;
+
+                public function __construct(\Redis $redis, string $triggerKey, string $readyPath, string $continuePath)
+                {
+                    parent::__construct([], $redis);
+                    $this->triggerKey = $triggerKey;
+                    $this->readyPath = $readyPath;
+                    $this->continuePath = $continuePath;
+                }
+
+                public function get(string $key): ?string
+                {
+                    $value = parent::get($key);
+                    if (!$this->paused && $key === $this->triggerKey) {
+                        $this->paused = true;
+                        file_put_contents($this->readyPath, 'ready');
+                        $deadline = microtime(true) + 10;
+                        while (!file_exists($this->continuePath) && microtime(true) < $deadline) {
+                            usleep(10000);
+                        }
+                    }
+                    return $value;
+                }
+            };
+
+            SaToken::reset();
+            SaToken::setConfig(new SaTokenConfig([
+                'timeout'              => 3600,
+                'activityTimeout'      => -1,
+                'refreshToken'         => true,
+                'refreshTokenTimeout'  => 3600,
+                'refreshTokenRotation' => true,
+            ]));
+            SaToken::setDao($childDao);
+            try {
+                StpUtil::refreshToken($refreshToken);
+                file_put_contents($resultPath, 'accepted');
+            } catch (\Throwable $exception) {
+                file_put_contents($resultPath, 'rejected:' . $exception->getMessage());
+            }
+            $childRedis->close();
+            SaToken::reset();
+            exit(0);
+        }
+
+        $status = 0;
+        try {
+            $deadline = microtime(true) + 5;
+            while (!file_exists($readyPath) && microtime(true) < $deadline) {
+                usleep(10000);
+            }
+            self::assertFileExists($readyPath, 'refresh worker did not pause after reading the token');
+
+            StpUtil::logoutByLoginId($loginId);
+            file_put_contents($continuePath, 'continue');
+
+            self::assertSame($pid, pcntl_waitpid($pid, $status));
+            self::assertIsInt($status);
+            self::assertTrue(pcntl_wifexited($status));
+            self::assertSame(0, pcntl_wexitstatus($status));
+            $result = file_get_contents($resultPath);
+            self::assertIsString($result);
+            self::assertStringStartsWith('rejected:', $result);
+            self::assertFalse(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($accessToken));
+            self::assertFalse(StpUtil::isRefreshTokenValid($refreshToken));
+        } finally {
+            file_put_contents($continuePath, 'continue');
+            if (pcntl_waitpid($pid, $status, WNOHANG) === 0) {
+                pcntl_waitpid($pid, $status);
+            }
+            foreach ([$readyPath, $continuePath, $resultPath] as $path) {
+                if (file_exists($path)) {
+                    unlink($path);
+                }
+            }
+            rmdir($raceDir);
+            StpUtil::kickout($loginId);
+            SaToken::reset();
+        }
+    }
+
     public function testStatelessRefreshAndAccountKickoutAgainstRealRedis(): void
     {
         SaToken::reset();
