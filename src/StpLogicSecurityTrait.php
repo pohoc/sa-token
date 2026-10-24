@@ -303,7 +303,18 @@ trait StpLogicSecurityTrait
      */
     public function getAuditLog(string $id): ?array
     {
-        return SaAuditLog::getLog($id, $this->loginType);
+        $loginId = $this->getLoginId();
+        if ($loginId === null) {
+            return null;
+        }
+
+        $log = SaAuditLog::getLog($id, $this->loginType);
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        if ($log === null || ($log['loginId'] ?? null) !== $loginIdStr) {
+            return null;
+        }
+
+        return $log;
     }
 
     /**

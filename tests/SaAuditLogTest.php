@@ -10,6 +10,7 @@ use SaToken\Dao\SaTokenDaoMemory;
 use SaToken\SaToken;
 use SaToken\Security\SaAuditLog;
 use SaToken\StpLogic;
+use SaToken\Util\SaTokenContext;
 
 class SaAuditLogTest extends TestCase
 {
@@ -287,5 +288,34 @@ class SaAuditLogTest extends TestCase
 
         $this->assertNotNull($log);
         $this->assertEquals($logId, $log['id']);
+    }
+
+    public function testStpLogicAuditLogLookupRequiresCurrentAccountOwnership(): void
+    {
+        SaAuditLog::setEnabled(true);
+        SaToken::getConfig()->setIsReadHeader(true);
+        $logic = new StpLogic('login');
+        $token = $logic->login('audit-owner')->getAccessToken();
+        $ownLogId = SaAuditLog::logLogin('audit-owner');
+        $otherLogId = SaAuditLog::logLogin('other-account');
+
+        SaTokenContext::setRequest(new class ($token) {
+            public function __construct(private string $token)
+            {
+            }
+
+            public function getHeaderLine(string $name): string
+            {
+                return strtolower($name) === 'satoken' ? $this->token : '';
+            }
+        });
+
+        self::assertNotNull($ownLogId);
+        self::assertNotNull($otherLogId);
+        self::assertSame($ownLogId, $logic->getAuditLog($ownLogId)['id'] ?? null);
+        self::assertNull($logic->getAuditLog($otherLogId));
+
+        SaTokenContext::setRequest(null);
+        self::assertNull($logic->getAuditLog($ownLogId));
     }
 }
