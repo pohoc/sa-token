@@ -280,9 +280,10 @@ use SaToken\StpUtil;
 
 SaRouter::match('/user/**')->check(fn() => StpUtil::checkLogin());
 SaRouter::match('/admin/**', '/system/**')->check(fn() => StpUtil::checkRole('admin'));
-SaRouter::notMatch('/public/**')->match('**')->check(fn() => StpUtil::checkLogin());
-SaRouter::match('/api/**')->check(fn() => StpUtil::checkLogin())->stop();
+SaRouter::notMatch('/public/**')->check(fn() => StpUtil::checkLogin());
 ```
+
+`match()` 和 `notMatch()` 每次调用都会设置新的匹配条件；公开路径排除规则应直接交给 `notMatch()`，不要再链式调用 `match()` 覆盖它。
 
 通配符：`**` 匹配任意多级路径，`*` 匹配单级路径。
 
