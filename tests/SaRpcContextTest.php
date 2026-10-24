@@ -290,6 +290,9 @@ class SaRpcContextTest extends TestCase
         self::assertSame([], $cookiesByContext[$contextId] ?? []);
         self::assertSame([], $headersByContext[$contextId] ?? []);
         self::assertSame('10006', StpUtil::getLoginId(), '下游身份必须与已验证的 RPC Token 一致');
+
+        SaTokenContext::setRequest($this->mockRequestWithHeaders(['satoken' => $conflictingToken]));
+        self::assertSame('10007', StpUtil::getLoginId(), '下一请求必须清除 RPC Token 覆盖');
     }
 
     public function testRpcAutoLoginRejectsInvalidForwardedTokenInsteadOfFallingBack(): void
