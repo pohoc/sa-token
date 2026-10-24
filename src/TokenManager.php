@@ -442,9 +442,17 @@ class TokenManager
 
         try {
             $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+            // 只有 token 主记录仍属于指定账号，且账号列表确实登记了该 token，
+            // 才允许清理它及其关联状态。否则伪造 loginId/loginType 会造成跨账号注销。
+            if ($this->getLoginIdByToken($tokenValue) !== $loginIdStr) {
+                return;
+            }
             $loginIdKey = self::buildLoginIdKey($loginType, $loginIdStr);
             $expectedList = $this->getDao()->get($loginIdKey);
             $existingTokens = $this->getTokenListByLoginId($loginId, $loginType);
+            if (!in_array($tokenValue, array_column($existingTokens, 'tokenValue'), true)) {
+                return;
+            }
             $newTokens = array_values(array_filter($existingTokens, fn ($item) => $item['tokenValue'] !== $tokenValue));
 
             if ($expectedList !== null) {
@@ -896,6 +904,15 @@ class TokenManager
         }
 
         try {
+            $accessTokenOwner = $this->getLoginIdByToken($accessToken);
+            if ($accessTokenOwner !== null) {
+                $accountTokens = $this->getTokenListByLoginId($loginIdStr, $loginType);
+                if ($accessTokenOwner !== $loginIdStr
+                    || !in_array($accessToken, array_column($accountTokens, 'tokenValue'), true)) {
+                    throw new SaTokenException('AccessToken 不属于指定账号或登录类型，拒绝绑定 RefreshToken');
+                }
+            }
+
             $data = SaFoxUtil::toJson([
                 'loginId'      => $loginIdStr,
                 'loginType'    => $loginType,

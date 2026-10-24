@@ -191,6 +191,43 @@ class TokenManagerTest extends TestCase
         $this->assertNull($this->manager->getLoginIdByToken($token));
     }
 
+    public function testDeleteTokenCannotDeleteAnotherAccountsToken(): void
+    {
+        $token = $this->manager->createTokenValue('victim', 'login');
+        $this->manager->saveToken($token, 'victim', 'login', 'PC', 3600);
+
+        $this->manager->deleteToken($token, 'attacker', 'login');
+
+        self::assertSame('victim', $this->manager->getLoginIdByToken($token));
+    }
+
+    public function testDeleteTokenCannotDeleteTokenFromAnotherLoginType(): void
+    {
+        $token = $this->manager->createTokenValue('victim', 'admin');
+        $this->manager->saveToken($token, 'victim', 'admin', 'PC', 3600);
+
+        $this->manager->deleteToken($token, 'victim', 'user');
+
+        self::assertSame('victim', $this->manager->getLoginIdByToken($token));
+    }
+
+    public function testSaveRefreshTokenRejectsAccessTokenOwnedByAnotherAccount(): void
+    {
+        $accessToken = $this->manager->createTokenValue('victim', 'login');
+        $this->manager->saveToken($accessToken, 'victim', 'login', 'PC', 3600);
+        $refreshToken = $this->manager->createTokenValue('attacker', 'login', 'srt_');
+
+        try {
+            $this->manager->saveRefreshToken($refreshToken, $accessToken, 'attacker', 'login', 3600);
+            self::fail('Expected refresh-token association to be rejected');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('不属于指定账号', $exception->getMessage());
+        }
+
+        self::assertNull($this->manager->getRefreshTokenData($refreshToken));
+        self::assertSame('victim', $this->manager->getLoginIdByToken($accessToken));
+    }
+
     public function testDeleteAllTokenByLoginId(): void
     {
         $token1 = $this->manager->createTokenValue(10001, 'login');
