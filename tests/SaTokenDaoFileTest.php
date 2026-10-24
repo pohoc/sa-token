@@ -293,6 +293,7 @@ class SaTokenDaoFileTest extends TestCase
         foreach ([
             'k:corrupt-expiry' => ['key' => 'k:corrupt-expiry', 'v' => base64_encode('value'), 'e' => 'invalid'],
             'k:mismatched-key' => ['key' => 'another-key', 'v' => base64_encode('value'), 'e' => null],
+            'k:missing-expiry' => ['key' => 'k:missing-expiry', 'v' => base64_encode('value')],
         ] as $key => $record) {
             $path = $this->basePath . '/data/' . hash('sha256', $key) . '.dat';
             file_put_contents($path, json_encode($record) ?: '{}');

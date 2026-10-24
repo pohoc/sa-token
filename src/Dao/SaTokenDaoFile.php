@@ -133,6 +133,7 @@ class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteI
         $record = json_decode($raw, true);
         $expireAt = is_array($record) ? ($record['e'] ?? null) : null;
         if (!is_array($record)
+            || !array_key_exists('e', $record)
             || !is_string($record['key'] ?? null)
             || $record['key'] !== $key
             || !is_string($record['v'] ?? null)
