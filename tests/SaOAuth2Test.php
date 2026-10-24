@@ -90,6 +90,22 @@ class SaOAuth2Test extends TestCase
         $this->assertNull($this->handle->getClient('unknown'));
     }
 
+    public function testMissingClientIpDoesNotCreateSharedLockoutBucket(): void
+    {
+        SaTokenContext::setRequest(null);
+        $this->config->setClientSecretMaxFailures(1);
+
+        try {
+            $this->handle->tokenByClientCredentials('test-client', 'wrong-secret', 'read');
+            $this->fail('错误客户端密钥应被拒绝');
+        } catch (SaTokenException $e) {
+            $this->assertSame('客户端密钥错误', $e->getMessage());
+        }
+
+        $token = $this->handle->tokenByClientCredentials('test-client', $this->clientSecret, 'read');
+        $this->assertNotEmpty($token->getAccessToken());
+    }
+
     public function testClientSecretRotationIsObservedByOtherHandleInstances(): void
     {
         $otherHandle = new SaOAuth2Handle($this->config);

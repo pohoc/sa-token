@@ -1340,7 +1340,7 @@ try {
 | `isNewRefreshToken` | `false` | 是否每次生成新 Refresh Token |
 | `openIdMode` | `false` | 是否启用 OpenID Connect |
 | `issuer` | `''` | OpenID 签发者 URL |
-| `clientSecretMaxFailures` | `10` | 密钥连续失败临时锁定阈值 |
+| `clientSecretMaxFailures` | `10` | 同一客户端和来源 IP 的密钥连续失败临时锁定阈值；请求上下文无法提供来源 IP 时跳过本地锁定，需由上游限流 |
 | `clientFailureWindow` | `300` | 失败计数窗口（秒） |
 
 ## 项目结构

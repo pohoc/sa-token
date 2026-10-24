@@ -976,14 +976,17 @@ class SaOAuth2Handle
         }
     }
 
-    protected function clientFailureKey(string $clientId): string
+    protected function clientFailureKey(string $clientId): ?string
     {
         // client_id 是公开信息；仅按客户端全局锁定会让任意未认证请求者
-        // 通过提交错误密钥阻断该客户端的合法流量。将失败计数限定到来源 IP，
-        // IP 解析遵循 SaTokenContext 的可信代理配置。
+        // 通过提交错误密钥阻断该客户端的合法流量。来源 IP 遵循可信代理配置；
+        // 未能解析来源时跳过本地锁定，避免所有请求共用 unknown 桶而形成全局 DoS。
         $clientIp = SaTokenContext::getClientIp();
-        $source = $clientIp !== null && $clientIp !== '' ? $clientIp : 'unknown';
-        return 'oauth2:client:fail:' . hash('sha256', $clientId . "\0" . $source);
+        if ($clientIp === null || $clientIp === '') {
+            return null;
+        }
+
+        return 'oauth2:client:fail:' . hash('sha256', $clientId . "\0" . $clientIp);
     }
 
     protected function checkClientNotLocked(string $clientId): void
@@ -992,7 +995,11 @@ class SaOAuth2Handle
         if ($max <= 0) {
             return;
         }
-        $count = $this->getDao()->get($this->clientFailureKey($clientId));
+        $key = $this->clientFailureKey($clientId);
+        if ($key === null) {
+            return;
+        }
+        $count = $this->getDao()->get($key);
         if ($count !== null && (int) $count >= $max) {
             throw new SaTokenException('客户端认证失败次数过多，已临时锁定，请稍后重试');
         }
@@ -1005,12 +1012,18 @@ class SaOAuth2Handle
             return;
         }
         $window = $this->config->getClientFailureWindow();
-        $this->getDao()->increment($this->clientFailureKey($clientId), 1, $window > 0 ? $window : 300);
+        $key = $this->clientFailureKey($clientId);
+        if ($key !== null) {
+            $this->getDao()->increment($key, 1, $window > 0 ? $window : 300);
+        }
     }
 
     protected function clearClientFailures(string $clientId): void
     {
-        $this->getDao()->delete($this->clientFailureKey($clientId));
+        $key = $this->clientFailureKey($clientId);
+        if ($key !== null) {
+            $this->getDao()->delete($key);
+        }
     }
 
     /**
