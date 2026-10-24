@@ -12,6 +12,10 @@ use SaToken\Util\SaTokenContext;
 
 class SaHttpAuth
 {
+    protected const DIGEST_NONCE_TTL = 300;
+
+    protected const DIGEST_NONCE_SECRET_KEY = 'satoken:auth:digest:nonce-secret';
+
     /** @var callable(string, string): mixed|null */
     protected $basicValidator = null;
 
@@ -203,7 +207,6 @@ class SaHttpAuth
             $nonce
         );
         SaTokenContext::setHeader('WWW-Authenticate', $challenge);
-        $this->issueDigestNonce($nonce);
     }
 
     protected function formatChallengeRealm(string $realm): string
@@ -217,22 +220,70 @@ class SaHttpAuth
 
     public function generateNonce(): string
     {
-        return bin2hex(random_bytes(16));
+        $issuedAt = time();
+        $nonceId = bin2hex(random_bytes(16));
+        $payload = $issuedAt . ':' . $nonceId;
+        $signature = hash_hmac('sha256', $payload, $this->getDigestNonceSecret());
+
+        return $payload . ':' . $signature;
     }
 
-    protected function digestNonceKey(string $nonce): string
+    protected function getDigestNonceSecret(): string
     {
-        return 'satoken:auth:digest:nonce:' . hash('sha256', $nonce);
+        $dao = SaToken::getDao();
+        $secret = $dao->get(self::DIGEST_NONCE_SECRET_KEY);
+        if ($secret !== null) {
+            if (preg_match('/^[0-9a-f]{64}$/D', $secret) !== 1) {
+                throw new SaTokenException('Digest nonce 密钥存储数据无效');
+            }
+            return hex2bin($secret) ?: throw new SaTokenException('Digest nonce 密钥存储数据无效');
+        }
+
+        $candidate = bin2hex(random_bytes(32));
+        if (!$dao->setIfNotExists(self::DIGEST_NONCE_SECRET_KEY, $candidate, null)) {
+            $secret = $dao->get(self::DIGEST_NONCE_SECRET_KEY);
+            if ($secret === null || preg_match('/^[0-9a-f]{64}$/D', $secret) !== 1) {
+                throw new SaTokenException('Digest nonce 密钥初始化失败');
+            }
+            $candidate = $secret;
+        }
+
+        return hex2bin($candidate) ?: throw new SaTokenException('Digest nonce 密钥初始化失败');
     }
 
-    protected function issueDigestNonce(string $nonce): void
+    /** @return array{issuedAt: int, nonceId: string}|null */
+    protected function parseIssuedDigestNonce(string $nonce): ?array
     {
-        SaToken::getDao()->set($this->digestNonceKey($nonce), '1', 300);
+        $parts = explode(':', $nonce);
+        if (count($parts) !== 3
+            || preg_match('/^[0-9]{10}$/D', $parts[0]) !== 1
+            || preg_match('/^[0-9a-f]{32}$/D', $parts[1]) !== 1
+            || preg_match('/^[0-9a-f]{64}$/D', $parts[2]) !== 1) {
+            return null;
+        }
+
+        $issuedAt = (int) $parts[0];
+        if ($issuedAt > time() || time() - $issuedAt > self::DIGEST_NONCE_TTL) {
+            return null;
+        }
+
+        $payload = $parts[0] . ':' . $parts[1];
+        $expected = hash_hmac('sha256', $payload, $this->getDigestNonceSecret());
+        if (!hash_equals($expected, $parts[2])) {
+            return null;
+        }
+
+        return ['issuedAt' => $issuedAt, 'nonceId' => $parts[1]];
     }
 
     protected function isDigestNonceIssued(string $nonce): bool
     {
-        return SaToken::getDao()->get($this->digestNonceKey($nonce)) !== null;
+        $parsed = $this->parseIssuedDigestNonce($nonce);
+        if ($parsed === null) {
+            return false;
+        }
+
+        return SaToken::getDao()->get('satoken:auth:digest:nonce:used:' . $parsed['nonceId']) === null;
     }
 
     /**
@@ -241,7 +292,17 @@ class SaHttpAuth
      */
     protected function consumeDigestNonce(string $nonce): bool
     {
-        return SaToken::getDao()->getAndDelete($this->digestNonceKey($nonce)) !== null;
+        $parsed = $this->parseIssuedDigestNonce($nonce);
+        if ($parsed === null) {
+            return false;
+        }
+
+        $ttl = max(1, self::DIGEST_NONCE_TTL - (time() - $parsed['issuedAt']) + 1);
+        return SaToken::getDao()->setIfNotExists(
+            'satoken:auth:digest:nonce:used:' . $parsed['nonceId'],
+            '1',
+            $ttl
+        );
     }
 
     /**

@@ -226,7 +226,7 @@ class SaHttpAuthTest extends TestCase
         });
 
         for ($attempt = 0; $attempt < 3; $attempt++) {
-            $nonce = 'issued-nonce-' . $attempt;
+            $nonce = $auth->generateNonce();
             $header = 'Digest username="admin", realm="Test", nonce="' . $nonce
                 . '", uri="/test", qop=auth, nc=00000001, cnonce="xyz", response="invalid"';
             $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
@@ -235,7 +235,6 @@ class SaHttpAuthTest extends TestCase
             $request->method('getRequestTarget')->willReturn('/test');
             $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '192.0.2.100']);
             SaTokenContext::setRequest($request);
-            SaToken::getDao()->set('satoken:auth:digest:nonce:' . hash('sha256', $nonce), '1', 300);
 
             try {
                 $auth->checkDigest('Test');
@@ -252,7 +251,8 @@ class SaHttpAuthTest extends TestCase
 
     public function testCheckDigestTreatsFalseValidatorResultAsFailure(): void
     {
-        $nonce = 'issued-nonce';
+        $auth = new SaHttpAuth();
+        $nonce = $auth->generateNonce();
         $header = 'Digest username="admin", realm="Test", nonce="' . $nonce
             . '", uri="/test", qop=auth, nc=00000001, cnonce="xyz", response="invalid"';
         $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
@@ -263,9 +263,7 @@ class SaHttpAuthTest extends TestCase
         $request->method('getRequestTarget')->willReturn('/test');
         $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '192.0.2.100']);
         SaTokenContext::setRequest($request);
-        SaToken::getDao()->set('satoken:auth:digest:nonce:' . hash('sha256', $nonce), '1', 300);
 
-        $auth = new SaHttpAuth();
         $auth->setDigestValidator(static fn (): bool => false);
 
         $this->expectException(SaTokenException::class);
@@ -275,7 +273,8 @@ class SaHttpAuthTest extends TestCase
     public function testCheckDigestRejectsEmptyHa1FromValidator(): void
     {
         $username = 'unknown-user';
-        $nonce = 'issued-empty-ha1-nonce';
+        $auth = new SaHttpAuth();
+        $nonce = $auth->generateNonce();
         $uri = '/test';
         $ha2 = md5('GET:' . $uri);
         $response = md5(':' . $nonce . ':00000001:xyz:auth:' . $ha2);
@@ -291,9 +290,7 @@ class SaHttpAuthTest extends TestCase
         $request->method('getMethod')->willReturn('GET');
         $request->method('getRequestTarget')->willReturn($uri);
         SaTokenContext::setRequest($request);
-        SaToken::getDao()->set('satoken:auth:digest:nonce:' . hash('sha256', $nonce), '1', 300);
 
-        $auth = new SaHttpAuth();
         $auth->setDigestValidator(static fn (): string => '');
 
         $this->expectException(SaTokenException::class);
@@ -306,7 +303,8 @@ class SaHttpAuthTest extends TestCase
             ['headerRealm' => 'Other', 'challengeRealm' => 'Test', 'qop' => 'auth'],
             ['headerRealm' => 'Test', 'challengeRealm' => 'Test', 'qop' => 'auth-int'],
         ] as $case) {
-            $nonce = 'issued-invalid-digest-' . bin2hex(random_bytes(4));
+            $auth = new SaHttpAuth();
+            $nonce = $auth->generateNonce();
             $uri = '/test';
             $username = 'admin';
             $ha1 = md5($username . ':' . $case['headerRealm'] . ':secret');
@@ -326,9 +324,7 @@ class SaHttpAuthTest extends TestCase
             $request->method('getMethod')->willReturn('GET');
             $request->method('getRequestTarget')->willReturn($uri);
             SaTokenContext::setRequest($request);
-            SaToken::getDao()->set('satoken:auth:digest:nonce:' . hash('sha256', $nonce), '1', 300);
 
-            $auth = new SaHttpAuth();
             $validatorCalls = 0;
             $auth->setDigestValidator(static function () use (&$validatorCalls, $username, $case): string {
                 $validatorCalls++;
@@ -349,6 +345,19 @@ class SaHttpAuthTest extends TestCase
         $auth = new SaHttpAuth();
         $auth->sendChallenge('TestRealm');
         $this->assertEquals('Basic realm="TestRealm"', $this->responseTracker->headers['WWW-Authenticate']);
+    }
+
+    public function testRepeatedDigestChallengesDoNotAllocatePerNonceStorage(): void
+    {
+        $auth = new SaHttpAuth();
+        $auth->sendDigestChallenge('TestRealm');
+        $storageSizeAfterFirstChallenge = SaToken::getDao()->size();
+
+        for ($attempt = 0; $attempt < 100; $attempt++) {
+            $auth->sendDigestChallenge('TestRealm');
+        }
+
+        self::assertSame($storageSizeAfterFirstChallenge, SaToken::getDao()->size());
     }
 
     public function testChallengeRealmEscapesQuotedStringCharacters(): void
@@ -372,8 +381,7 @@ class SaHttpAuthTest extends TestCase
     {
         $auth = new SaHttpAuth();
         $nonce = $auth->generateNonce();
-        $this->assertEquals(32, strlen($nonce));
-        $this->assertMatchesRegularExpression('/^[0-9a-f]{32}$/', $nonce);
+        $this->assertMatchesRegularExpression('/^[0-9]{10}:[0-9a-f]{32}:[0-9a-f]{64}$/', $nonce);
     }
 
     public function testParseDigestHeader(): void
@@ -396,7 +404,8 @@ class SaHttpAuthTest extends TestCase
         $username = 'admin';
         $realm = 'Test';
         $password = '123456';
-        $nonce = 'abc123';
+        $auth = new SaHttpAuth();
+        $nonce = $auth->generateNonce();
         $uri = '/test';
         $qop = 'auth';
         $nc = '00000001';
@@ -430,10 +439,6 @@ class SaHttpAuthTest extends TestCase
         $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '192.0.2.100']);
         SaTokenContext::setRequest($request);
 
-        // 模拟服务端此前已通过 sendDigestChallenge 签发该 nonce
-        SaToken::getDao()->set('satoken:auth:digest:nonce:' . hash('sha256', $nonce), '1', 300);
-
-        $auth = new SaHttpAuth();
         $auth->setDigestValidator(function (string $user) use ($ha1): ?string {
             if ($user === 'admin') {
                 return $ha1;
@@ -474,7 +479,8 @@ class SaHttpAuthTest extends TestCase
     {
         $username = 'admin';
         $realm = 'Test';
-        $nonce = 'issued-nonce-path-binding';
+        $auth = new SaHttpAuth();
+        $nonce = $auth->generateNonce();
         $signedUri = '/public';
         $ha1 = md5($username . ':' . $realm . ':123456');
         $ha2 = md5('GET:' . $signedUri);
@@ -494,9 +500,7 @@ class SaHttpAuthTest extends TestCase
         $request->method('getRequestTarget')->willReturn('/admin');
         $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '192.0.2.100']);
         SaTokenContext::setRequest($request);
-        SaToken::getDao()->set('satoken:auth:digest:nonce:' . hash('sha256', $nonce), '1', 300);
 
-        $auth = new SaHttpAuth();
         $auth->setDigestValidator(static fn (string $user): ?string => $user === $username ? $ha1 : null);
 
         try {
@@ -507,7 +511,7 @@ class SaHttpAuthTest extends TestCase
         }
 
         $this->assertNull(\SaToken\StpUtil::getLoginId());
-        $this->assertNotNull(SaToken::getDao()->get('satoken:auth:digest:nonce:' . hash('sha256', $nonce)));
+        self::assertNull(SaToken::getDao()->get('satoken:auth:digest:nonce:used:' . explode(':', $nonce)[1]));
     }
 
     public function testCheckDigestThrowsOnMissingHeader(): void
