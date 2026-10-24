@@ -76,6 +76,39 @@ class SaTokenDaoPsr16Test extends TestCase
         $this->assertEquals('updated', $this->dao->get('key1'));
     }
 
+    public function testUpdatePreservesExactSharedExpiry(): void
+    {
+        $key = 'session';
+        $ttlKey = 'sat_ttl_' . substr(hash('sha256', $key), 0, 56);
+        $this->dao->set($key, 'before', 10);
+        $expiresAt = $this->cache->get($ttlKey);
+
+        $dao = new class ($this->cache) extends SaTokenDaoPsr16 {
+            public function getTimeout(string $key): int
+            {
+                $timeout = parent::getTimeout($key);
+                sleep(1);
+                return $timeout;
+            }
+        };
+        $dao->update($key, 'after');
+
+        self::assertSame($expiresAt, $this->cache->get($ttlKey));
+        self::assertSame('after', $dao->get($key));
+    }
+
+    public function testCorruptExpiryMetadataDoesNotMakeKeyPermanent(): void
+    {
+        $key = 'corrupt-ttl';
+        $this->dao->set($key, 'value', 60);
+        $ttlKey = 'sat_ttl_' . substr(hash('sha256', $key), 0, 56);
+        $this->cache->set($ttlKey, 'not-an-expiry');
+
+        self::assertNull($this->dao->get($key));
+        self::assertFalse($this->dao->exists($key));
+        self::assertSame(-2, $this->dao->getTimeout($key));
+    }
+
     public function testUpdateNonExistentKey(): void
     {
         // PSR-16 的 update 实现通过 getTimeout 判断 key 是否存在

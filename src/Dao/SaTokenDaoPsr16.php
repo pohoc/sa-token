@@ -80,15 +80,42 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
     public function update(string $key, string $value): void
     {
         $this->withAtomicLock($key, function () use ($key, $value): void {
-            $ttl = $this->getTimeout($key);
-            if ($ttl === -2) {
-                return;
-            }
-            $timeout = ($ttl === -1) ? null : $ttl;
-            if (!$this->writeCache($key, $value, $timeout)) {
+            if (!$this->updateCachePreservingTtl($key, $value)) {
                 throw new SaTokenException('PSR-16 缓存更新失败');
             }
         });
+    }
+
+    protected function updateCachePreservingTtl(string $key, string $value): bool
+    {
+        try {
+            $cacheKey = $this->normalizeKey($key);
+            if (!$this->cache->has($cacheKey)) {
+                return true;
+            }
+
+            $metadata = $this->cache->get($this->normalizeTtlKey($key));
+            if ($metadata === null || $metadata === 'permanent') {
+                return $this->cache->set($cacheKey, $value, null);
+            }
+            if (!is_string($metadata) || !ctype_digit($metadata)) {
+                $this->deleteCache($key);
+                return true;
+            }
+
+            $expiresAt = (int) $metadata;
+            $remaining = $expiresAt - time();
+            if ($remaining <= 0) {
+                $this->deleteCache($key);
+                return true;
+            }
+
+            // Round up the backend TTL so its physical expiry cannot precede
+            // the exact shared expiry recorded in metadata.
+            return $this->cache->set($cacheKey, $value, $remaining + 1);
+        } catch (InvalidArgumentException) {
+            return false;
+        }
     }
 
     public function delete(string $key): void
@@ -174,8 +201,11 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
     protected function getSharedExpiresAt(string $key): ?int
     {
         $value = $this->cache->get($this->normalizeTtlKey($key));
-        if (!is_string($value) || !ctype_digit($value)) {
+        if ($value === null || $value === 'permanent') {
             return null;
+        }
+        if (!is_string($value) || !ctype_digit($value)) {
+            return 0;
         }
         return (int) $value;
     }
