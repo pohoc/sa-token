@@ -210,6 +210,9 @@ class SaTokenCrypto
         if ($key === false) {
             throw new SaTokenException('RSA 私钥加载失败');
         }
+        if (!$this->isSecureRsaKey($key)) {
+            throw new SaTokenException('RSA 私钥类型无效或密钥长度不足 2048 位');
+        }
 
         $result = openssl_sign($data, $signature, $key, OPENSSL_ALGO_SHA256);
         if (!$result) {
@@ -236,6 +239,9 @@ class SaTokenCrypto
 
         $key = $this->loadRsaPublicKey($publicKey);
         if ($key === false) {
+            return false;
+        }
+        if (!$this->isSecureRsaKey($key)) {
             return false;
         }
 
@@ -370,5 +376,14 @@ class SaTokenCrypto
             $publicKey = $content;
         }
         return openssl_pkey_get_public($publicKey);
+    }
+
+    protected function isSecureRsaKey(\OpenSSLAsymmetricKey $key): bool
+    {
+        $details = openssl_pkey_get_details($key);
+        return is_array($details)
+            && ($details['type'] ?? null) === OPENSSL_KEYTYPE_RSA
+            && is_int($details['bits'] ?? null)
+            && $details['bits'] >= 2048;
     }
 }

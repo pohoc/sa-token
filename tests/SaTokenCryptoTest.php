@@ -207,6 +207,58 @@ class SaTokenCryptoTest extends TestCase
         $this->assertFalse($crypto->rsaVerify('tampered-data', $sign));
     }
 
+    public function testRsaRejectsKeysShorterThan2048Bits(): void
+    {
+        $keyPair = openssl_pkey_new([
+            'private_key_bits' => 1024,
+            'private_key_type' => OPENSSL_KEYTYPE_RSA,
+        ]);
+        $this->assertNotFalse($keyPair);
+        $this->assertTrue(openssl_pkey_export($keyPair, $privateKey));
+        $details = openssl_pkey_get_details($keyPair);
+        $this->assertIsArray($details);
+
+        $crypto = new SaTokenCrypto([
+            'rsaPrivateKey' => $privateKey,
+            'rsaPublicKey' => $details['key'],
+        ]);
+
+        try {
+            $crypto->rsaSign('data');
+            $this->fail('1024 位 RSA 密钥不应签名');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('不足 2048 位', $e->getMessage());
+        }
+
+        $this->assertFalse($crypto->rsaVerify('data', base64_encode('invalid')));
+    }
+
+    public function testRsaMethodsRejectNonRsaKeys(): void
+    {
+        $keyPair = openssl_pkey_new([
+            'private_key_type' => OPENSSL_KEYTYPE_EC,
+            'curve_name' => 'prime256v1',
+        ]);
+        $this->assertNotFalse($keyPair);
+        $this->assertTrue(openssl_pkey_export($keyPair, $privateKey));
+        $details = openssl_pkey_get_details($keyPair);
+        $this->assertIsArray($details);
+
+        $crypto = new SaTokenCrypto([
+            'rsaPrivateKey' => $privateKey,
+            'rsaPublicKey' => $details['key'],
+        ]);
+
+        try {
+            $crypto->rsaSign('data');
+            $this->fail('EC 密钥不应被 RSA 签名方法接受');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('类型无效', $e->getMessage());
+        }
+
+        $this->assertFalse($crypto->rsaVerify('data', base64_encode('invalid')));
+    }
+
     public function testRsaSignNoPrivateKey(): void
     {
         $crypto = new SaTokenCrypto([]);
