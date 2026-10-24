@@ -946,7 +946,7 @@ class SaOAuth2Handle
 
     /**
      * 校验请求 scope 是客户端注册 scopes 的子集。
-     * 客户端未注册 scopes 时视为不限制（等价 *），注册了 scopes 则严格执行白名单
+     * 未配置 scope 白名单的客户端只能请求空 scope，防止客户端自行声明权限。
      */
     protected function validateScopeForClient(SaOAuth2Client $client, string $scope): void
     {
@@ -955,7 +955,7 @@ class SaOAuth2Handle
         }
         $registered = $client->getScopes();
         if ($registered === []) {
-            return;
+            throw new SaTokenException('客户端未配置 scope 白名单，不能请求非空 scope');
         }
         $requested = preg_split('/\s+/', trim($scope)) ?: [];
         foreach ($requested as $item) {

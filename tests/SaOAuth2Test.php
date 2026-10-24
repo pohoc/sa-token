@@ -164,6 +164,25 @@ class SaOAuth2Test extends TestCase
         }
     }
 
+    public function testClientWithoutScopeAllowlistCannotSelfAssignScopes(): void
+    {
+        $client = new SaOAuth2Client([
+            'clientId' => 'scope-less-client',
+            'clientSecret' => 'scope-less-client-secret-at-least-32-bytes',
+            'grantTypes' => ['client_credentials'],
+        ]);
+        $this->handle->registerClient($client);
+
+        try {
+            $this->handle->generateAccessToken('scope-less-client', 'service', 'admin');
+            self::fail('未配置 scope 白名单的客户端不能自行声明权限');
+        } catch (SaTokenException $e) {
+            self::assertStringContainsString('scope 白名单', $e->getMessage());
+        }
+
+        self::assertNotEmpty($this->handle->generateAccessToken('scope-less-client', 'service')->getAccessToken());
+    }
+
     public function testImplicitStrategyHonorsGlobalGrantTypeAllowList(): void
     {
         $client = new SaOAuth2Client([
