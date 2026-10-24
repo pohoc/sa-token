@@ -45,6 +45,7 @@ class SecurityRegressionTest extends TestCase
             'signKey'         => 'sensitive-verify-test-sign-key-32-bytes',
         ]));
         SaToken::setDao(new SaTokenDaoMemory());
+        SaTokenContext::setRequest($this->makeRequestStub([]));
     }
 
     protected function tearDown(): void
@@ -87,6 +88,11 @@ class SecurityRegressionTest extends TestCase
             public function getMethod(): string
             {
                 return 'GET';
+            }
+
+            public function getClientIp(): string
+            {
+                return '192.0.2.102';
             }
         };
     }
@@ -2028,7 +2034,7 @@ trait PsrRequestStubTrait
     /** @return array<string, mixed> */
     public function getServerParams(): array
     {
-        return [];
+        return ['REMOTE_ADDR' => '192.0.2.102'];
     }
 
     /** @return array<string, string> */

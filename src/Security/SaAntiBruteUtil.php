@@ -123,6 +123,13 @@ class SaAntiBruteUtil
         $maxFailures = $config->getAntiBruteMaxFailures();
         $lockDuration = $config->getAntiBruteLockDuration();
 
+        $sourceIdentity = self::getSourceIdentity($loginType);
+        $sourceMax = $config->getAntiBruteIpMaxFailures();
+        $sourceProtectionEnabled = $sourceMax > 0 && $lockDuration > 0;
+        if ($sourceIdentity === null && (($maxFailures > 0 && $lockDuration > 0) || $sourceProtectionEnabled)) {
+            throw new SaTokenException('无法识别客户端 IP，拒绝处理认证失败以避免共享未知来源锁');
+        }
+
         // 限制按账号+来源 IP 计数，避免任何人仅凭已知账号名就锁死受害者。
         // 单来源仍按原子计数阻止在线爆破；分布式防护需在上游配置全局速率限制。
         $failCount = $dao->increment(self::getIpCountKey($account, $loginType), 1, 86400);
@@ -131,19 +138,16 @@ class SaAntiBruteUtil
         // for every guessed username. Bound that key growth with one counter per
         // source and login type; after the cap, reject new attempts before they
         // can allocate another account counter.
-        $sourceMax = $config->getAntiBruteIpMaxFailures();
-        $sourceIdentity = self::getSourceIdentity($loginType);
-        $sourceProtectionEnabled = $sourceMax > 0 && $lockDuration > 0 && $sourceIdentity !== null;
-        $sourceCount = $sourceProtectionEnabled
-            ? $dao->increment(self::getSourceFailureKey($sourceIdentity), 1, $lockDuration)
-            : 0;
-
-        if ($sourceProtectionEnabled && $sourceCount >= $sourceMax) {
-            $dao->set(
-                self::getSourceLockKey($sourceIdentity),
-                (string) (time() + $lockDuration),
-                $lockDuration + 60
-            );
+        $sourceProtectionEnabled = $sourceProtectionEnabled && $sourceIdentity !== null;
+        if ($sourceProtectionEnabled && $sourceIdentity !== null) {
+            $sourceCount = $dao->increment(self::getSourceFailureKey($sourceIdentity), 1, $lockDuration);
+            if ($sourceCount >= $sourceMax) {
+                $dao->set(
+                    self::getSourceLockKey($sourceIdentity),
+                    (string) (time() + $lockDuration),
+                    $lockDuration + 60
+                );
+            }
         }
 
         if ($maxFailures > 0 && $lockDuration > 0 && $failCount >= $maxFailures) {
@@ -157,7 +161,16 @@ class SaAntiBruteUtil
 
     public static function checkAndThrow(string $account, string $loginType = 'login'): void
     {
+        $config = SaToken::getConfig();
         $sourceIdentity = self::getSourceIdentity($loginType);
+        $accountProtectionEnabled = $config->getAntiBruteMaxFailures() > 0
+            && $config->getAntiBruteLockDuration() > 0;
+        $sourceProtectionEnabled = $config->getAntiBruteIpMaxFailures() > 0
+            && $config->getAntiBruteLockDuration() > 0;
+        if ($sourceIdentity === null && ($accountProtectionEnabled || $sourceProtectionEnabled)) {
+            throw new SaTokenException('无法识别客户端 IP，拒绝认证以避免暴力破解和共享未知来源锁');
+        }
+
         if ($sourceIdentity !== null) {
             $sourceLockUntil = self::getLockUntil(self::getSourceLockKey($sourceIdentity));
             if ($sourceLockUntil > time()) {

@@ -53,6 +53,7 @@ class SaApiKeyTest extends TestCase
         $request->method('getHeader')->willReturnCallback(function (string $name) use ($headers): array {
             return isset($headers[$name]) ? [$headers[$name]] : [];
         });
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '192.0.2.101']);
         return $request;
     }
 

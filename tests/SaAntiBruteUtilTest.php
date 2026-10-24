@@ -19,6 +19,7 @@ class SaAntiBruteUtilTest extends TestCase
         SaToken::reset();
         SaToken::setDao(new SaTokenDaoMemory());
         SaAntiBruteUtil::reset();
+        SaTokenContext::setRequest($this->requestFromIp('192.0.2.1'));
     }
 
     protected function tearDown(): void
@@ -121,11 +122,37 @@ class SaAntiBruteUtilTest extends TestCase
         ]));
         SaTokenContext::setRequest(null);
 
-        SaAntiBruteUtil::recordFailure('random-user-1');
-        SaAntiBruteUtil::recordFailure('random-user-2');
-        SaAntiBruteUtil::checkAndThrow('random-user-3');
+        try {
+            SaAntiBruteUtil::checkAndThrow('victim-account');
+            $this->fail('启用防暴力限制时无法识别来源 IP 必须拒绝认证');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('无法识别客户端 IP', $e->getMessage());
+        }
 
-        $this->assertSame(0, SaAntiBruteUtil::getFailCount('random-user-3'));
+        try {
+            SaAntiBruteUtil::recordFailure('victim-account');
+            $this->fail('无法识别来源 IP 时不得把失败写入共享 unknown 账号桶');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('无法识别客户端 IP', $e->getMessage());
+        }
+
+        $this->assertFalse(SaAntiBruteUtil::isAccountLocked('victim-account'));
+        $this->assertSame(0, SaAntiBruteUtil::getFailCount('victim-account'));
+    }
+
+    public function testUnknownIpIsAllowedWhenBruteProtectionIsDisabled(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'antiBruteMaxFailures' => 0,
+            'antiBruteIpMaxFailures' => 0,
+        ]));
+        SaTokenContext::setRequest(null);
+
+        SaAntiBruteUtil::checkAndThrow('account');
+        SaAntiBruteUtil::recordFailure('account');
+
+        $this->assertSame(1, SaAntiBruteUtil::getFailCount('account'));
+        $this->assertFalse(SaAntiBruteUtil::isAccountLocked('account'));
     }
 
     public function testManualLockAppliesAcrossSourceIps(): void

@@ -62,6 +62,7 @@ class SaHttpAuthTest extends TestCase
             }
             return [];
         });
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '192.0.2.100']);
         SaTokenContext::setRequest($request);
 
         $auth = new SaHttpAuth();
@@ -157,6 +158,7 @@ class SaHttpAuthTest extends TestCase
     {
         $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
         $request->method('getHeader')->willReturn(['Basic ' . base64_encode('admin:wrong')]);
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '192.0.2.100']);
         SaTokenContext::setRequest($request);
 
         $auth = new SaHttpAuth();
@@ -184,6 +186,7 @@ class SaHttpAuthTest extends TestCase
         SaToken::setConfig(SaToken::getConfig()->setAntiBruteMaxFailures(2)->setAntiBruteLockDuration(60));
         $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
         $request->method('getHeader')->willReturn(['Basic ' . base64_encode('admin:wrong')]);
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '192.0.2.100']);
         SaTokenContext::setRequest($request);
 
         $validatorCalls = 0;
@@ -229,6 +232,7 @@ class SaHttpAuthTest extends TestCase
             $request->method('getHeader')->willReturnCallback(static fn (string $name): array => $name === 'Authorization' ? [$header] : []);
             $request->method('getMethod')->willReturn('GET');
             $request->method('getRequestTarget')->willReturn('/test');
+            $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '192.0.2.100']);
             SaTokenContext::setRequest($request);
             SaToken::getDao()->set('satoken:auth:digest:nonce:' . hash('sha256', $nonce), '1', 300);
 
@@ -256,6 +260,7 @@ class SaHttpAuthTest extends TestCase
         });
         $request->method('getMethod')->willReturn('GET');
         $request->method('getRequestTarget')->willReturn('/test');
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '192.0.2.100']);
         SaTokenContext::setRequest($request);
         SaToken::getDao()->set('satoken:auth:digest:nonce:' . hash('sha256', $nonce), '1', 300);
 
@@ -404,6 +409,7 @@ class SaHttpAuthTest extends TestCase
         });
         $request->method('getMethod')->willReturn('GET');
         $request->method('getRequestTarget')->willReturn('/test');
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '192.0.2.100']);
         SaTokenContext::setRequest($request);
 
         // 模拟服务端此前已通过 sendDigestChallenge 签发该 nonce
@@ -468,6 +474,7 @@ class SaHttpAuthTest extends TestCase
         $request->method('getHeader')->willReturnCallback(static fn (string $name): array => $name === 'Authorization' ? [$header] : []);
         $request->method('getMethod')->willReturn('GET');
         $request->method('getRequestTarget')->willReturn('/admin');
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '192.0.2.100']);
         SaTokenContext::setRequest($request);
         SaToken::getDao()->set('satoken:auth:digest:nonce:' . hash('sha256', $nonce), '1', 300);
 
