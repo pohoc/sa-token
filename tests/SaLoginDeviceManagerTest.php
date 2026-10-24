@@ -9,11 +9,27 @@ use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoMemory;
 use SaToken\Dao\SaTokenDaoPsr16;
 use SaToken\Data\SaLoginDevice;
+use SaToken\Exception\SaTokenException;
 use SaToken\Listener\SaTokenListenerInterface;
 use SaToken\SaLoginParameter;
 use SaToken\SaToken;
 use SaToken\Security\SaLoginDeviceManager;
 use SaToken\StpLogic;
+
+class SaLoginDevicePausingDao extends SaTokenDaoMemory
+{
+    public ?string $pauseUpdateKey = null;
+
+    public function update(string $key, string $value): void
+    {
+        if ($key === $this->pauseUpdateKey) {
+            $this->pauseUpdateKey = null;
+            \Fiber::suspend();
+        }
+
+        parent::update($key, $value);
+    }
+}
 
 class SaLoginDeviceManagerTest extends TestCase
 {
@@ -524,5 +540,35 @@ class SaLoginDeviceManagerTest extends TestCase
         $this->assertNotNull($updatedDevice);
         $this->assertNotNull($updatedDevice->getLastActiveTime());
         $this->assertGreaterThanOrEqual(time() - 5, $updatedDevice->getLastActiveTime());
+    }
+
+    public function testUpdateLastActiveSerializesWithDeviceRegistration(): void
+    {
+        $this->dao = new SaLoginDevicePausingDao();
+        SaToken::setDao($this->dao);
+        $device = new SaLoginDevice(['deviceType' => 'pc']);
+        $firstToken = $this->logic->login(10001, (new SaLoginParameter())->setDevice($device))->getAccessToken();
+        $deviceId = $device->getDeviceId();
+        $deviceKey = SaLoginDeviceManager::getKey(10001, 'login') . ':' . $deviceId;
+        $this->dao->pauseUpdateKey = $deviceKey;
+
+        $update = new \Fiber(static fn () => SaLoginDeviceManager::updateLastActive(10001, $deviceId, 'login'));
+        $update->start();
+        $this->assertTrue($update->isSuspended());
+
+        try {
+            $this->logic->login(10001, (new SaLoginParameter())->setDevice($device)->setIsShare(false));
+            $this->fail('设备活跃时间更新持有账号锁时，同账号注册应等待并发操作完成');
+        } catch (SaTokenException $exception) {
+            $this->assertStringContainsString('同账号登录正在处理中', $exception->getMessage());
+        }
+
+        $update->resume();
+        $this->assertFalse($update->isSuspended());
+        $secondToken = $this->logic->login(10001, (new SaLoginParameter())->setDevice($device)->setIsShare(false))->getAccessToken();
+
+        $this->logic->kickoutDevice(10001, $deviceId);
+        $this->assertFalse($this->logic->getTokenManager()->isTokenValid($firstToken));
+        $this->assertFalse($this->logic->getTokenManager()->isTokenValid($secondToken));
     }
 }

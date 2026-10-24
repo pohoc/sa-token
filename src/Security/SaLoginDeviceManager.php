@@ -391,15 +391,27 @@ class SaLoginDeviceManager
 
     public static function updateLastActive(mixed $loginId, string $deviceId, string $loginType = 'login'): void
     {
-        $device = self::loadDevice($loginId, $deviceId, $loginType, true);
-        if ($device === null) {
-            return;
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $logic = SaToken::getStpLogic($loginType);
+        $tokenManager = $logic->getTokenManager();
+        $lockKey = 'login:' . $loginType . ':' . hash('sha256', $loginIdStr);
+        if (!$tokenManager->acquireLock($lockKey, 30)) {
+            throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
 
-        $device->setLastActiveTime(time());
-        $dao = SaToken::getDao();
-        $key = self::getKey($loginId, $loginType) . ':' . $deviceId;
-        $dao->update($key, self::encodeDevice($device, self::loadDeviceTokenValues($key)));
+        try {
+            $device = self::loadDevice($loginId, $deviceId, $loginType, true);
+            if ($device === null) {
+                return;
+            }
+
+            $device->setLastActiveTime(time());
+            $dao = SaToken::getDao();
+            $key = self::getKey($loginId, $loginType) . ':' . $deviceId;
+            $dao->update($key, self::encodeDevice($device, self::loadDeviceTokenValues($key)));
+        } finally {
+            $tokenManager->releaseLock($lockKey);
+        }
     }
 
     /**
