@@ -45,8 +45,21 @@ class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteI
             $path = sys_get_temp_dir() . '/sa-token';
         }
 
-        $this->dataDir = rtrim($path, '/') . '/data';
-        $this->lockDir = rtrim($path, '/') . '/locks';
+        $baseDir = rtrim($path, '/\\');
+        if ($baseDir === ''
+            || in_array(basename($baseDir), ['.', '..'], true)
+            || preg_match('/^[A-Za-z]:$/D', $baseDir) === 1
+            || $baseDir === rtrim(sys_get_temp_dir(), '/\\')) {
+            throw new SaTokenException('文件存储路径必须是专用目录，不能使用文件系统根目录或系统临时目录');
+        }
+
+        // Validate and restrict the storage root itself before creating its
+        // children. Checking only data/ and locks/ would still follow a
+        // pre-planted symlink at the configured root (for example
+        // /tmp/sa-token -> an attacker-controlled directory).
+        $this->ensureDirectory($baseDir);
+        $this->dataDir = $baseDir . '/data';
+        $this->lockDir = $baseDir . '/locks';
         $this->ensureDirectory($this->dataDir);
         $this->ensureDirectory($this->lockDir);
 

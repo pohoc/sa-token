@@ -89,6 +89,27 @@ class SaTokenDaoFileTest extends TestCase
         }
     }
 
+    public function testStorageRootSymlinkIsRejected(): void
+    {
+        $path = $this->basePath . '/linked-root';
+        $target = $this->basePath . '/external-root';
+        mkdir($target . '/data', 0700, true);
+        mkdir($target . '/locks', 0700, true);
+        symlink($target, $path);
+
+        try {
+            new SaTokenDaoFile(['path' => $path]);
+            $this->fail('存储根目录为符号链接时必须拒绝');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('不能是符号链接', $e->getMessage());
+        } finally {
+            unlink($path);
+            rmdir($target . '/data');
+            rmdir($target . '/locks');
+            rmdir($target);
+        }
+    }
+
     public function testBinarySafeValues(): void
     {
         // 加密后的值可能含任意字节，必须 base64 层保证不损坏
