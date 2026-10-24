@@ -216,6 +216,31 @@ class SaSsoTest extends TestCase
         SaTokenContext::clear();
     }
 
+    public function testPreLoginRedirectIsNotPersistedWhenAvailableKeysAreWeak(): void
+    {
+        SaTokenContext::clear();
+        SaToken::setConfig(new SaTokenConfig([
+            'hmacKey' => 'also-weak',
+        ]));
+        $handle = new SaSsoHandle(new SaSsoConfig([
+            'allowDomains' => ['app.example.com'],
+        ]));
+
+        $handle->savePreLoginUrl('https://app.example.com/profile');
+
+        $pendingCookies = new \ReflectionProperty(SaTokenContext::class, 'pendingCookiesMap');
+        $cookiesByContext = $pendingCookies->getValue();
+        self::assertIsArray($cookiesByContext);
+        $cookies = $cookiesByContext[SaTokenContext::getContextId()] ?? [];
+        self::assertIsArray($cookies);
+        self::assertCount(2, $cookies);
+        foreach ($cookies as $cookie) {
+            self::assertIsArray($cookie);
+            self::assertSame('', $cookie['value'] ?? null);
+        }
+        SaTokenContext::clear();
+    }
+
     public function testCrossDomainCallbackWithRedirectPassesState(): void
     {
         SaTokenContext::setRequest(new class () {

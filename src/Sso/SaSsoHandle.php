@@ -139,18 +139,15 @@ class SaSsoHandle
     protected function getPreLoginUrlHmacKey(): ?string
     {
         $clientSecret = $this->config->getClientSecret();
-        if ($clientSecret !== '') {
-            return $clientSecret;
-        }
-
         $globalConfig = SaToken::getConfig();
         foreach ([
+            $clientSecret,
             $globalConfig->getSignKey(),
             $globalConfig->getHmacKey(),
             $globalConfig->getTokenEncryptKey(),
             $globalConfig->getAesKey(),
         ] as $key) {
-            if ($key !== '') {
+            if (strlen($key) >= 32) {
                 return $key;
             }
         }
