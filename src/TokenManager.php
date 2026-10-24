@@ -945,6 +945,10 @@ class TokenManager
             $effectiveTimeout = ($timeout === -1) ? null : $timeout;
             $refreshKey = self::REFRESH_TOKEN_PREFIX . $refreshToken;
             $refreshRaw = $this->encryptValue($data);
+            if (!$this->renewLock($loginLockKey, 30)
+                || (new StpLogic($loginType, $this))->getLoginIdByToken($accessToken) !== $loginIdStr) {
+                throw new SaTokenException('账号会话锁或 AccessToken 已失效，拒绝绑定 RefreshToken');
+            }
             // Register the credential before writing it. If the process stops
             // between these writes, account revocation still knows which key to
             // inspect; a stale index entry without a credential is harmless.
@@ -972,6 +976,12 @@ class TokenManager
                 }
                 $this->removeRefreshTokenFromAccountIndex($loginIdStr, $loginType, $refreshToken);
                 throw new SaTokenException('RefreshToken 映射已并发变更或 DAO 不支持原子条件写入，请重试');
+            }
+
+            if (!$this->renewLock($loginLockKey, 30)
+                || (new StpLogic($loginType, $this))->getLoginIdByToken($accessToken) !== $loginIdStr) {
+                $this->deleteRefreshToken($refreshToken);
+                throw new SaTokenException('账号会话锁或 AccessToken 在绑定期间已失效');
             }
         } finally {
             $this->releaseLock($loginLockKey);

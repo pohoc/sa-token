@@ -14,6 +14,22 @@ use SaToken\TokenManager;
 use SaToken\Util\SaTokenContext;
 use SaToken\Util\SaTokenEncryptor;
 
+class SaTokenDaoPausingRefreshWrite extends SaTokenDaoMemory
+{
+    public ?\Closure $beforeRefreshWrite = null;
+
+    public function setIfNotExists(string $key, string $value, ?int $timeout = null): bool
+    {
+        if (str_starts_with($key, TokenManager::REFRESH_TOKEN_PREFIX) && $this->beforeRefreshWrite !== null) {
+            $callback = $this->beforeRefreshWrite;
+            $this->beforeRefreshWrite = null;
+            $callback();
+        }
+
+        return parent::setIfNotExists($key, $value, $timeout);
+    }
+}
+
 class TokenManagerTest extends TestCase
 {
     protected TokenManager $manager;
@@ -240,6 +256,35 @@ class TokenManagerTest extends TestCase
         self::assertNull($this->manager->getRefreshTokenData('unknown-access-refresh'));
     }
 
+    public function testSaveRefreshTokenDoesNotSurviveAccountRevocationAfterLeaseLoss(): void
+    {
+        $dao = new SaTokenDaoPausingRefreshWrite();
+        SaToken::setDao($dao);
+        $manager = new TokenManager();
+        $loginId = 'refresh-lease-revocation-user';
+        $loginType = 'login';
+        $accessToken = $manager->createTokenValue($loginId, $loginType);
+        $manager->saveToken($accessToken, $loginId, $loginType, 'PC', 3600);
+        $refreshToken = $manager->createTokenValue($loginId, $loginType, 'srt_');
+
+        $dao->beforeRefreshWrite = static function () use ($dao, $loginId, $loginType): void {
+            $accountLock = TokenManager::LOCK_PREFIX . 'login:' . $loginType . ':' . hash('sha256', $loginId);
+            $dao->delete($accountLock);
+            (new TokenManager())->deleteAllTokenByLoginId($loginId, $loginType);
+        };
+
+        try {
+            $manager->saveRefreshToken($refreshToken, $accessToken, $loginId, $loginType, 3600);
+            self::fail('失去账号锁租约后的 RefreshToken 保存必须失败');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('已失效', $exception->getMessage());
+        }
+
+        self::assertFalse($manager->isRefreshTokenValid($refreshToken));
+        self::assertNull($manager->getRefreshTokenByAccessToken($loginId, $loginType, $accessToken));
+        self::assertNull((new StpLogic($loginType, $manager))->getLoginIdByToken($accessToken));
+    }
+
     public function testSaveRefreshTokenValidatesStatelessJwtOwner(): void
     {
         SaToken::setConfig(new SaTokenConfig([
@@ -404,10 +449,16 @@ class TokenManagerTest extends TestCase
         };
 
         $refreshToken = $manager->createTokenValue($loginId, $loginType, 'srt_');
-        $manager->saveRefreshToken($refreshToken, $accessToken, $loginId, $loginType, 7200);
+        try {
+            $manager->saveRefreshToken($refreshToken, $accessToken, $loginId, $loginType, 7200);
+            self::fail('失去账号锁租约的迁移请求不得继续绑定 RefreshToken');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('锁', $exception->getMessage());
+        }
 
         self::assertIsString($freshToken);
         self::assertContains($freshToken, array_column($manager->getTokenListByLoginId($loginId, $loginType), 'tokenValue'));
+        self::assertFalse($manager->isRefreshTokenValid($refreshToken));
     }
 
     public function testTokenTimeout(): void

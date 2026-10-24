@@ -284,10 +284,16 @@ class RedisDaoRealIntegrationTest extends TestCase
                 $concurrentManager->saveToken($freshToken, $loginId, $loginType, 'mobile', 3600);
             };
 
-            $manager->saveRefreshToken($refreshToken, $accessToken, $loginId, $loginType, 7200);
+            try {
+                $manager->saveRefreshToken($refreshToken, $accessToken, $loginId, $loginType, 7200);
+                self::fail('失去账号锁租约的迁移请求不得继续绑定 RefreshToken');
+            } catch (\SaToken\Exception\SaTokenException $exception) {
+                self::assertStringContainsString('锁', $exception->getMessage());
+            }
 
             self::assertIsString($freshToken);
             self::assertContains($freshToken, array_column($manager->getTokenListByLoginId($loginId, $loginType), 'tokenValue'));
+            self::assertFalse($manager->isRefreshTokenValid($refreshToken));
         } finally {
             $manager->deleteAllTokenByLoginId($loginId, $loginType);
             $dao->delete(TokenManager::REFRESH_TOKEN_PREFIX . $refreshToken);
