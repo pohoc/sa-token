@@ -10,6 +10,7 @@ use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoMemory;
 use SaToken\Listener\SaTokenListenerInterface;
 use SaToken\SaToken;
+use SaToken\Sign\SaSign;
 
 class SaTokenCoreTest extends TestCase
 {
@@ -60,6 +61,43 @@ class SaTokenCoreTest extends TestCase
         $config = new SaTokenConfig(['tokenName' => 'test-token']);
         SaToken::setConfig($config);
         $this->assertSame($config, SaToken::getConfig());
+    }
+
+    public function testSetConfigInvalidatesCachedSigningKey(): void
+    {
+        SaToken::setDao(new SaTokenDaoMemory());
+        $oldKey = 'old-signing-key-for-rotation-test-32-bytes';
+        $newKey = 'new-signing-key-for-rotation-test-32-bytes';
+        SaToken::setConfig(new SaTokenConfig(['signKey' => $oldKey]));
+
+        $oldSignature = SaToken::getSign()->signParams(['operation' => 'transfer']);
+
+        SaToken::setConfig(new SaTokenConfig(['signKey' => $newKey]));
+
+        self::assertFalse(SaToken::getSign()->verifySign($oldSignature));
+        $newSignature = (new SaSign(['key' => $newKey]))->signParams(['operation' => 'transfer']);
+        self::assertTrue(SaToken::getSign()->verifySign($newSignature));
+    }
+
+    public function testSetConfigInvalidatesCryptoCachedByExistingLoginLogic(): void
+    {
+        SaToken::setDao(new SaTokenDaoMemory());
+        $oldKey = 'old-token-encryption-key-for-rotation-32-bytes';
+        $newKey = 'new-token-encryption-key-for-rotation-32-bytes';
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenEncrypt' => true,
+            'tokenEncryptKey' => $oldKey,
+        ]));
+        $logic = SaToken::getStpLogic();
+        $token = $logic->login('rotation-user')->getAccessToken();
+        self::assertSame('rotation-user', $logic->getLoginIdByToken($token));
+
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenEncrypt' => true,
+            'tokenEncryptKey' => $newKey,
+        ]));
+
+        self::assertNull($logic->getLoginIdByToken($token));
     }
 
     public function testGetConfigLazyInit(): void

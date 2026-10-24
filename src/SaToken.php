@@ -100,21 +100,17 @@ class SaToken
         \SaToken\Security\SaAuditLog::setMaxEntries($config->getAuditLogMaxEntries());
         \SaToken\Security\SaAuditLog::setTtlDays($config->getAuditLogTtlDays());
 
+        self::invalidateConfigDependentCaches();
         self::$stpLogicMap = [];
+        self::$apiKey = null;
+        self::$globalFilter = null;
+        self::$httpAuth = null;
 
         // storage 配置自动装配存储层：仅在未显式 setDao 时生效，
         // 保证代码内 setDao(new RedisDao(...)) 的优先级高于配置文件
         if (self::$dao === null) {
             self::$dao = self::buildDaoFromStorageConfig($config);
         }
-
-        // 配置热更新时必须同步废弃已固化的单例：
-        // getSign()/getApiKey() 等在首次调用时把当时的密钥/头名固定进实例，
-        // 不清理的话轮换 signKey 后旧密钥仍然有效（泄露的密钥无法通过 init 轮换）
-        self::$sign = null;
-        self::$apiKey = null;
-        self::$globalFilter = null;
-        self::$httpAuth = null;
 
         self::$initialized = true;
     }
@@ -229,6 +225,21 @@ class SaToken
     public static function setConfig(SaTokenConfig $config): void
     {
         self::$config = $config;
+        self::invalidateConfigDependentCaches();
+    }
+
+    /**
+     * Drop cached instances that retain configuration secrets or security
+     * settings. Reset existing token managers before replacing the logic map so
+     * callers holding a StpLogic reference also pick up rotated crypto keys.
+     */
+    protected static function invalidateConfigDependentCaches(): void
+    {
+        foreach (self::$stpLogicMap as $stpLogic) {
+            $stpLogic->getTokenManager()->resetEncryptor();
+        }
+
+        self::$sign = null;
     }
 
     /**
