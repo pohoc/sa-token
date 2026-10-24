@@ -85,14 +85,17 @@ class SaSsoHandle
 
     public function savePreLoginUrl(string $currentUrl): void
     {
+        $hmacKey = $this->getPreLoginUrlHmacKey();
+        if ($hmacKey === null) {
+            // The cookie may use a parent-domain scope. Never persist an
+            // unsigned redirect target that a sibling subdomain can replace.
+            $this->clearPreLoginCookies();
+            return;
+        }
+
         $encoded = base64_encode($currentUrl);
         $this->setSecureCookie($this->config->getParamName(), $encoded, 300);
-
-        // 预登录 URL 用于登录后跳转，必须防止子域 Cookie 注入篡改（开放重定向）
-        $clientSecret = $this->config->getClientSecret();
-        if ($clientSecret !== '') {
-            $this->setSecureCookie($this->config->getParamName() . '_sig', hash_hmac('sha256', $encoded, $clientSecret), 300);
-        }
+        $this->setSecureCookie($this->config->getParamName() . '_sig', hash_hmac('sha256', $encoded, $hmacKey), 300);
     }
 
     public function restorePreLoginUrl(): string
@@ -102,14 +105,12 @@ class SaSsoHandle
             return '';
         }
 
-        $clientSecret = $this->config->getClientSecret();
-        if ($clientSecret !== '') {
-            $sig = SaTokenContext::getCookie($this->config->getParamName() . '_sig');
-            $expectedSig = hash_hmac('sha256', $encoded, $clientSecret);
-            if ($sig === null || !hash_equals($expectedSig, $sig)) {
-                $this->clearPreLoginCookies();
-                return '';
-            }
+        $hmacKey = $this->getPreLoginUrlHmacKey();
+        $sig = SaTokenContext::getCookie($this->config->getParamName() . '_sig');
+        if ($hmacKey === null || $sig === null
+            || !hash_equals(hash_hmac('sha256', $encoded, $hmacKey), $sig)) {
+            $this->clearPreLoginCookies();
+            return '';
         }
 
         $decoded = base64_decode($encoded, true);
@@ -128,6 +129,33 @@ class SaSsoHandle
     {
         $this->setSecureCookie($this->config->getParamName(), '', -1);
         $this->setSecureCookie($this->config->getParamName() . '_sig', '', -1);
+    }
+
+    /**
+     * Resolve a secret for signing the pre-login redirect cookie.
+     *
+     * @return string|null
+     */
+    protected function getPreLoginUrlHmacKey(): ?string
+    {
+        $clientSecret = $this->config->getClientSecret();
+        if ($clientSecret !== '') {
+            return $clientSecret;
+        }
+
+        $globalConfig = SaToken::getConfig();
+        foreach ([
+            $globalConfig->getSignKey(),
+            $globalConfig->getHmacKey(),
+            $globalConfig->getTokenEncryptKey(),
+            $globalConfig->getAesKey(),
+        ] as $key) {
+            if ($key !== '') {
+                return $key;
+            }
+        }
+
+        return null;
     }
 
     /**

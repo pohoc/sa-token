@@ -172,6 +172,50 @@ class SaSsoTest extends TestCase
         SaTokenContext::clear();
     }
 
+    public function testPreLoginRedirectCookieRequiresValidHmac(): void
+    {
+        SaTokenContext::setRequest(new class () {
+            public function cookie(string $name): ?string
+            {
+                return match ($name) {
+                    'sso_params' => base64_encode('https://attacker.example.com/collect'),
+                    default => null,
+                };
+            }
+        });
+
+        $handle = new SaSsoHandle(new SaSsoConfig([
+            'allowDomains' => ['*.example.com'],
+        ]));
+
+        self::assertSame('', $handle->restorePreLoginUrl());
+    }
+
+    public function testPreLoginRedirectUsesGlobalSigningKeyWhenSsoSecretIsAbsent(): void
+    {
+        SaTokenContext::clear();
+        SaToken::setConfig(new SaTokenConfig(['signKey' => 'global-signing-key-at-least-32-bytes']));
+        $handle = new SaSsoHandle(new SaSsoConfig([
+            'allowDomains' => ['app.example.com'],
+        ]));
+
+        $handle->savePreLoginUrl('https://app.example.com/profile');
+
+        $pendingCookies = new \ReflectionProperty(SaTokenContext::class, 'pendingCookiesMap');
+        $cookiesByContext = $pendingCookies->getValue();
+        self::assertIsArray($cookiesByContext);
+        $cookies = $cookiesByContext[SaTokenContext::getContextId()] ?? [];
+        self::assertIsArray($cookies);
+        $signatures = array_values(array_filter(
+            $cookies,
+            static fn (mixed $cookie): bool =>
+            is_array($cookie) && ($cookie['name'] ?? null) === 'sso_params_sig'
+        ));
+        self::assertCount(1, $signatures);
+        self::assertSame(hash_hmac('sha256', base64_encode('https://app.example.com/profile'), 'global-signing-key-at-least-32-bytes'), $signatures[0]['value']);
+        SaTokenContext::clear();
+    }
+
     public function testCrossDomainCallbackWithRedirectPassesState(): void
     {
         SaTokenContext::setRequest(new class () {

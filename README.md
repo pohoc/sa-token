@@ -642,7 +642,7 @@ $loginId = $result['loginId'];
 $redirect = $result['redirect'];
 ```
 
-注意：`restorePreLoginUrl` 恢复登录前 URL 时会强制过 `allowDomains` 白名单（未配置 `allowDomains` 时返回空串）；配置至少 32 字节的 `clientSecret` 后，预登录 URL Cookie 附带 HMAC 签名防篡改。
+注意：`restorePreLoginUrl` 恢复登录前 URL 时会强制通过 `allowDomains` 白名单（未配置时返回空串），并要求预登录 URL Cookie 的 HMAC 签名有效。签名密钥依次使用 SSO `clientSecret`、全局 `signKey`、`hmacKey`、`tokenEncryptKey` 或 `aesKey`；未配置可用密钥时不保存或恢复预登录 URL，避免信任可被兄弟子域覆盖的 Cookie。
 
 ### 单点注销回调
 
