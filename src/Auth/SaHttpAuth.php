@@ -190,19 +190,29 @@ class SaHttpAuth
 
     public function sendChallenge(string $realm): void
     {
-        SaTokenContext::setHeader('WWW-Authenticate', 'Basic realm="' . $realm . '"');
+        SaTokenContext::setHeader('WWW-Authenticate', 'Basic realm="' . $this->formatChallengeRealm($realm) . '"');
     }
 
     public function sendDigestChallenge(string $realm): void
     {
+        $formattedRealm = $this->formatChallengeRealm($realm);
         $nonce = $this->generateNonce();
         $challenge = sprintf(
             'Digest realm="%s", nonce="%s", qop="auth"',
-            $realm,
+            $formattedRealm,
             $nonce
         );
         SaTokenContext::setHeader('WWW-Authenticate', $challenge);
         $this->issueDigestNonce($nonce);
+    }
+
+    protected function formatChallengeRealm(string $realm): string
+    {
+        if (preg_match('/[\x00-\x1F\x7F]/', $realm) === 1) {
+            throw new SaTokenException('认证 realm 不能包含控制字符');
+        }
+
+        return str_replace(['\\', '"'], ['\\\\', '\\"'], $realm);
     }
 
     public function generateNonce(): string
@@ -247,7 +257,7 @@ class SaHttpAuth
         $result = [];
         $offset = 0;
         $length = strlen($headerPart);
-        preg_match_all('/(\w+)\s*=\s*(?:"([^"]*)"|([^,\s]+))/', $headerPart, $matches, PREG_SET_ORDER | PREG_OFFSET_CAPTURE);
+        preg_match_all('/(\w+)\s*=\s*(?:"((?:\\\\.|[^"\\\\])*)"|([^,\s]+))/', $headerPart, $matches, PREG_SET_ORDER | PREG_OFFSET_CAPTURE);
 
         foreach ($matches as $match) {
             $fieldOffset = $match[0][1];
@@ -261,9 +271,18 @@ class SaHttpAuth
             if (array_key_exists($key, $result)) {
                 return [];
             }
-            $quotedValue = $match[2][0] ?? '';
-            $unquotedValue = $match[3][0] ?? '';
-            $value = $quotedValue !== '' ? $quotedValue : $unquotedValue;
+            if (($match[2][1] ?? -1) >= 0) {
+                $value = preg_replace_callback(
+                    '/\\\\(.)/s',
+                    static fn (array $escape): string => $escape[1],
+                    $match[2][0]
+                );
+                if (!is_string($value)) {
+                    return [];
+                }
+            } else {
+                $value = $match[3][0] ?? '';
+            }
             $result[$key] = $value;
             $offset = $fieldOffset + strlen($match[0][0]);
         }

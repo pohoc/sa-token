@@ -45,6 +45,7 @@ class SaHttpAuthTest extends TestCase
         self::assertSame([], $auth->parseDigestHeader('Digest username="alice", Username="mallory"'));
         self::assertSame([], $auth->parseDigestHeader('Digest username="alice" junk, nonce="n"'));
         self::assertSame(['username' => 'alice', 'nonce' => 'n'], $auth->parseDigestHeader('Digest username="alice", nonce="n"'));
+        self::assertSame(['realm' => 'tenant"\\one'], $auth->parseDigestHeader('Digest realm="tenant\\"\\\\one"'));
     }
 
     protected function tearDown(): void
@@ -348,6 +349,23 @@ class SaHttpAuthTest extends TestCase
         $auth = new SaHttpAuth();
         $auth->sendChallenge('TestRealm');
         $this->assertEquals('Basic realm="TestRealm"', $this->responseTracker->headers['WWW-Authenticate']);
+    }
+
+    public function testChallengeRealmEscapesQuotedStringCharacters(): void
+    {
+        $auth = new SaHttpAuth();
+        $auth->sendChallenge('tenant"\\one');
+
+        $this->assertSame('Basic realm="tenant\\"\\\\one"', $this->responseTracker->headers['WWW-Authenticate']);
+    }
+
+    public function testChallengeRealmRejectsHeaderControlCharacters(): void
+    {
+        $auth = new SaHttpAuth();
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('认证 realm 不能包含控制字符');
+        $auth->sendDigestChallenge("safe\r\nSet-Cookie: attacker=1");
     }
 
     public function testGenerateNonceReturnsNonEmptyString(): void
