@@ -25,7 +25,7 @@ class SaOAuth2StrategyTest extends TestCase
         // 注册测试客户端
         $this->handle->registerClient(new SaOAuth2Client([
             'clientId' => 'test-client',
-            'clientSecret' => 'test-secret',
+            'clientSecret' => 'oauth-strategy-test-secret-at-least-32-bytes',
             'redirectUris' => ['http://localhost/callback'],
             'grantTypes' => ['authorization_code', 'password', 'client_credentials', 'refresh_token'],
             'scopes' => ['read', 'write'],

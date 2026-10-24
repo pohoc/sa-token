@@ -687,7 +687,7 @@ SaToken::init([
 
 ### 使用
 
-使用前必须先注册客户端（clientId/clientSecret 强制非空，redirectUris 必须 HTTPS 且在白名单内，grantTypes/scopes 为白名单）：
+使用前必须先注册客户端（机密客户端 `clientSecret` 至少 32 字节；公开客户端可留空，但仅能使用授权码 + PKCE；redirectUris 必须 HTTPS 且在白名单内，grantTypes/scopes 为白名单）：
 
 ```php
 use SaToken\OAuth2\Data\SaOAuth2Client;
@@ -697,7 +697,7 @@ $oauth2 = SaToken::getOAuth2Manager();
 
 $oauth2->registerClient(new SaOAuth2Client([
     'clientId'     => 'your-client-id',
-    'clientSecret' => 'your-client-secret',
+    'clientSecret' => 'replace-with-a-random-secret-of-at-least-32-bytes',
     'redirectUris' => ['https://app.example.com/callback'],
     'grantTypes'   => ['authorization_code', 'refresh_token'],
     'scopes'       => ['user:read', 'user:write'],

@@ -36,8 +36,7 @@ class SaOAuth2Handle
     /**
      * 注册客户端
      *
-     * 机密客户端（使用授权码/密码/客户端凭证等模式的）必须配置非空 clientSecret，
-     * 否则任何提交空密钥的请求都能通过认证（hash_equals('', '') === true）
+     * 机密客户端必须配置至少 32 字节的 clientSecret；公开客户端仅能用空 secret 并使用授权码 + PKCE
      *
      * @param  SaOAuth2Client   $client 客户端信息
      * @return void
@@ -48,7 +47,8 @@ class SaOAuth2Handle
         if ($client->getClientId() === '') {
             throw new SaTokenException('注册客户端必须提供 clientId');
         }
-        if (trim($client->getClientSecret()) === '') {
+        $clientSecret = $client->getClientSecret();
+        if ($clientSecret === '') {
             // 公开客户端（PKCE）允许无 secret，但只能使用授权码模式且强制 PKCE；
             // 其他授权模式没有 secret 就等于没有客户端认证
             $grantTypes = $client->getGrantTypes();
@@ -56,6 +56,10 @@ class SaOAuth2Handle
             if (!$codeOnly) {
                 throw new SaTokenException("注册客户端 {$client->getClientId()} 必须提供非空的 clientSecret");
             }
+        } elseif (trim($clientSecret) === '') {
+            throw new SaTokenException("注册客户端 {$client->getClientId()} 的 clientSecret 不能只包含空白字符");
+        } elseif (strlen($clientSecret) < 32) {
+            throw new SaTokenException("注册客户端 {$client->getClientId()} 的 clientSecret 至少需要 32 字节");
         }
         $this->getDao()->set(
             self::CLIENT_PREFIX . $client->getClientId(),
@@ -928,7 +932,11 @@ class SaOAuth2Handle
     {
         $this->checkClientNotLocked($clientId);
         $client = $this->validateClient($clientId);
-        if ($client->getClientSecret() === '' || $clientSecret === '' || !hash_equals($client->getClientSecret(), $clientSecret)) {
+        $storedSecret = $client->getClientSecret();
+        if (trim($storedSecret) === '' || strlen($storedSecret) < 32) {
+            throw new SaTokenException('客户端密钥长度不足，至少需要 32 字节');
+        }
+        if ($clientSecret === '' || !hash_equals($storedSecret, $clientSecret)) {
             $this->recordClientFailure($clientId);
             throw new SaTokenException('客户端密钥错误');
         }

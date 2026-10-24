@@ -85,6 +85,31 @@ class SaOAuth2Test extends TestCase
         $this->assertEquals('Test Client', $client->getClientName());
     }
 
+    public function testRegisterClientRejectsShortConfidentialSecret(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('clientSecret 至少需要 32 字节');
+
+        $this->handle->registerClient(new SaOAuth2Client([
+            'clientId' => 'weak-secret-client',
+            'clientSecret' => 'short-secret',
+            'grantTypes' => ['client_credentials'],
+        ]));
+    }
+
+    public function testAuthenticationRejectsLegacyShortSecret(): void
+    {
+        SaToken::getDao()->set('oauth2:client:legacy-weak-client', \SaToken\Util\SaFoxUtil::toJson([
+            'clientId' => 'legacy-weak-client',
+            'clientSecret' => 'short-secret',
+            'grantTypes' => ['client_credentials'],
+        ]), null);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('客户端密钥长度不足');
+        $this->handle->tokenByClientCredentials('legacy-weak-client', 'short-secret');
+    }
+
     public function testGetUnregisteredClient(): void
     {
         $this->assertNull($this->handle->getClient('unknown'));
@@ -143,7 +168,7 @@ class SaOAuth2Test extends TestCase
     {
         $client = new SaOAuth2Client([
             'clientId' => 'implicit-default-client',
-            'clientSecret' => 'client-secret',
+            'clientSecret' => 'oauth-test-client-secret-at-least-32-bytes',
             'redirectUris' => ['https://example.com/callback'],
         ]);
         $this->handle->registerClient($client);
@@ -186,7 +211,7 @@ class SaOAuth2Test extends TestCase
         $handle = new SaOAuth2Handle($config);
         $handle->registerClient(new SaOAuth2Client([
             'clientId' => 'implicit-client',
-            'clientSecret' => 'client-secret',
+            'clientSecret' => 'oauth-test-client-secret-at-least-32-bytes',
             'redirectUris' => ['https://example.com/callback'],
         ]));
         $strategy = new ImplicitStrategy($handle);
@@ -227,7 +252,7 @@ class SaOAuth2Test extends TestCase
     {
         $this->handle->registerClient(new SaOAuth2Client([
             'clientId'     => 'password-only-client',
-            'clientSecret' => 'password-only-secret',
+            'clientSecret' => 'oauth-password-only-secret-with-32-bytes',
             'redirectUris' => ['https://example.com/callback'],
             'grantTypes'   => ['password'],
         ]));
@@ -380,14 +405,14 @@ class SaOAuth2Test extends TestCase
         // 已注册但非授权码归属的客户端，必须拒绝
         $otherClient = new SaOAuth2Client([
             'clientId'     => 'other-client',
-            'clientSecret' => 'mock-other-secret-long-enough',
+            'clientSecret' => 'oauth-other-client-secret-with-at-least-32-bytes',
             'grantTypes'   => ['authorization_code'],
             'redirectUris' => ['https://example.com/callback'],
         ]);
         $this->handle->registerClient($otherClient);
 
         try {
-            $this->handle->exchangeTokenByCode($code->getCode(), 'other-client', 'mock-other-secret-long-enough', 'https://example.com/callback');
+            $this->handle->exchangeTokenByCode($code->getCode(), 'other-client', 'oauth-other-client-secret-with-at-least-32-bytes', 'https://example.com/callback');
             $this->fail('授权码不得由其他客户端兑换');
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('客户端 ID 不匹配', $e->getMessage());
@@ -538,7 +563,7 @@ class SaOAuth2Test extends TestCase
         // 注册另一个客户端
         $otherClient = new SaOAuth2Client([
             'clientId'     => 'other-client',
-            'clientSecret' => 'mock-other-secret-long-enough',
+            'clientSecret' => 'oauth-other-client-secret-with-at-least-32-bytes',
             'grantTypes'   => ['refresh_token'],
         ]);
         $this->handle->registerClient($otherClient);
@@ -546,7 +571,7 @@ class SaOAuth2Test extends TestCase
         $refreshToken = $accessToken->getRefreshToken();
         $this->assertNotNull($refreshToken);
         try {
-            $this->handle->refreshToken($refreshToken, 'other-client', 'mock-other-secret-long-enough');
+            $this->handle->refreshToken($refreshToken, 'other-client', 'oauth-other-client-secret-with-at-least-32-bytes');
             $this->fail('刷新令牌不得由其他客户端使用');
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('客户端 ID 不匹配', $e->getMessage());

@@ -726,7 +726,7 @@ class SecurityRegressionTest extends TestCase
         $handle = new SaOAuth2Handle(new SaOAuth2Config());
         $handle->registerClient(new SaOAuth2Client([
             'clientId'     => 'client-no-uris',
-            'clientSecret' => 'secret-with-proper-length',
+            'clientSecret' => 'oauth-test-secret-with-at-least-32-bytes',
         ]));
 
         $this->expectException(SaTokenException::class);
@@ -741,14 +741,14 @@ class SecurityRegressionTest extends TestCase
         ]));
         $handle->registerClient(new SaOAuth2Client([
             'clientId'     => 'scoping',
-            'clientSecret' => 'secret-with-proper-length',
+            'clientSecret' => 'oauth-test-secret-with-at-least-32-bytes',
             'grantTypes'   => ['client_credentials'],
             'scopes'       => ['read'],
         ]));
 
         $this->expectException(SaTokenException::class);
         $this->expectExceptionMessage('未授予的 scope');
-        $handle->tokenByClientCredentials('scoping', 'secret-with-proper-length', 'admin');
+        $handle->tokenByClientCredentials('scoping', 'oauth-test-secret-with-at-least-32-bytes', 'admin');
     }
 
     public function testOAuth2GrantTypeNotAuthorizedForClientRejected(): void
@@ -758,13 +758,13 @@ class SecurityRegressionTest extends TestCase
         ]));
         $handle->registerClient(new SaOAuth2Client([
             'clientId'     => 'code-only',
-            'clientSecret' => 'secret-with-proper-length',
+            'clientSecret' => 'oauth-test-secret-with-at-least-32-bytes',
             'grantTypes'   => ['authorization_code'],
         ]));
 
         $this->expectException(SaTokenException::class);
         $this->expectExceptionMessage('授权模式');
-        $handle->tokenByClientCredentials('code-only', 'secret-with-proper-length');
+        $handle->tokenByClientCredentials('code-only', 'oauth-test-secret-with-at-least-32-bytes');
     }
 
     public function testOAuth2RefreshTokenReuseRevokesFamily(): void
@@ -775,22 +775,22 @@ class SecurityRegressionTest extends TestCase
         ]));
         $handle->registerClient(new SaOAuth2Client([
             'clientId'     => 'rt-client',
-            'clientSecret' => 'secret-with-proper-length',
+            'clientSecret' => 'oauth-test-secret-with-at-least-32-bytes',
             'grantTypes'   => ['authorization_code', 'refresh_token'],
             'redirectUris' => ['https://app.example.com/cb'],
         ]));
 
         $code = $handle->generateAuthorizationCode('rt-client', 30001, 'https://app.example.com/cb');
-        $at = $handle->exchangeTokenByCode($code->getCode(), 'rt-client', 'secret-with-proper-length', 'https://app.example.com/cb');
+        $at = $handle->exchangeTokenByCode($code->getCode(), 'rt-client', 'oauth-test-secret-with-at-least-32-bytes', 'https://app.example.com/cb');
         $rt = $at->getRefreshToken();
         $this->assertNotNull($rt);
 
         // 正常刷新一次
-        $at2 = $handle->refreshToken($rt, 'rt-client', 'secret-with-proper-length');
+        $at2 = $handle->refreshToken($rt, 'rt-client', 'oauth-test-secret-with-at-least-32-bytes');
 
         // 重用已消费的 RT：必须拒绝，且家族令牌被撤销
         try {
-            $handle->refreshToken($rt, 'rt-client', 'secret-with-proper-length');
+            $handle->refreshToken($rt, 'rt-client', 'oauth-test-secret-with-at-least-32-bytes');
             $this->fail('RT 重用应被检测并拒绝');
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('撤销', $e->getMessage());
@@ -807,7 +807,7 @@ class SecurityRegressionTest extends TestCase
         ]));
         $handle->registerClient(new SaOAuth2Client([
             'clientId'     => 'pkce-client',
-            'clientSecret' => 'secret-with-proper-length',
+            'clientSecret' => 'oauth-test-secret-with-at-least-32-bytes',
             'grantTypes'   => ['authorization_code'],
             'redirectUris' => ['https://app.example.com/cb'],
         ]));
@@ -818,27 +818,27 @@ class SecurityRegressionTest extends TestCase
         // 错误绑定请求必须拒绝，但不能烧毁合法授权码
         $codeMissing = $handle->generateAuthorizationCode('pkce-client', 30002, 'https://app.example.com/cb', '', $challenge, 'S256');
         try {
-            $handle->exchangeTokenByCode($codeMissing->getCode(), 'pkce-client', 'secret-with-proper-length', 'https://app.example.com/cb');
+            $handle->exchangeTokenByCode($codeMissing->getCode(), 'pkce-client', 'oauth-test-secret-with-at-least-32-bytes', 'https://app.example.com/cb');
             $this->fail('绑定 PKCE 的授权码必须要求 code_verifier');
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('code_verifier', $e->getMessage());
         }
-        $atMissing = $handle->exchangeTokenByCode($codeMissing->getCode(), 'pkce-client', 'secret-with-proper-length', 'https://app.example.com/cb', $verifier);
+        $atMissing = $handle->exchangeTokenByCode($codeMissing->getCode(), 'pkce-client', 'oauth-test-secret-with-at-least-32-bytes', 'https://app.example.com/cb', $verifier);
         $this->assertNotEmpty($atMissing->getAccessToken(), '缺少 verifier 的尝试不得烧毁合法授权码');
 
         $codeWrong = $handle->generateAuthorizationCode('pkce-client', 30003, 'https://app.example.com/cb', '', $challenge, 'S256');
         try {
-            $handle->exchangeTokenByCode($codeWrong->getCode(), 'pkce-client', 'secret-with-proper-length', 'https://app.example.com/cb', str_repeat('w', 56));
+            $handle->exchangeTokenByCode($codeWrong->getCode(), 'pkce-client', 'oauth-test-secret-with-at-least-32-bytes', 'https://app.example.com/cb', str_repeat('w', 56));
             $this->fail('错误的 code_verifier 必须被拒绝');
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('code_verifier', $e->getMessage());
         }
-        $atWrong = $handle->exchangeTokenByCode($codeWrong->getCode(), 'pkce-client', 'secret-with-proper-length', 'https://app.example.com/cb', $verifier);
+        $atWrong = $handle->exchangeTokenByCode($codeWrong->getCode(), 'pkce-client', 'oauth-test-secret-with-at-least-32-bytes', 'https://app.example.com/cb', $verifier);
         $this->assertNotEmpty($atWrong->getAccessToken(), '错误 verifier 的尝试不得烧毁合法授权码');
 
         // 正确 verifier 成功
         $code = $handle->generateAuthorizationCode('pkce-client', 30004, 'https://app.example.com/cb', '', $challenge, 'S256');
-        $at = $handle->exchangeTokenByCode($code->getCode(), 'pkce-client', 'secret-with-proper-length', 'https://app.example.com/cb', $verifier);
+        $at = $handle->exchangeTokenByCode($code->getCode(), 'pkce-client', 'oauth-test-secret-with-at-least-32-bytes', 'https://app.example.com/cb', $verifier);
         $this->assertNotEmpty($at->getAccessToken());
     }
 
@@ -1182,29 +1182,29 @@ class SecurityRegressionTest extends TestCase
         ]));
         $handle->registerClient(new SaOAuth2Client([
             'clientId'     => 'gen-client',
-            'clientSecret' => 'secret-with-proper-length',
+            'clientSecret' => 'oauth-test-secret-with-at-least-32-bytes',
             'grantTypes'   => ['authorization_code', 'refresh_token'],
             'redirectUris' => ['https://app.example.com/cb'],
         ]));
 
         $code = $handle->generateAuthorizationCode('gen-client', 60001, 'https://app.example.com/cb');
-        $at1 = $handle->exchangeTokenByCode($code->getCode(), 'gen-client', 'secret-with-proper-length', 'https://app.example.com/cb');
+        $at1 = $handle->exchangeTokenByCode($code->getCode(), 'gen-client', 'oauth-test-secret-with-at-least-32-bytes', 'https://app.example.com/cb');
         $rt1 = $at1->getRefreshToken();
         $this->assertNotNull($rt1);
 
         // 第二代
-        $at2 = $handle->refreshToken($rt1, 'gen-client', 'secret-with-proper-length');
+        $at2 = $handle->refreshToken($rt1, 'gen-client', 'oauth-test-secret-with-at-least-32-bytes');
         $rt2 = $at2->getRefreshToken();
         $this->assertNotNull($rt2);
 
         // 第三代
-        $at3 = $handle->refreshToken($rt2, 'gen-client', 'secret-with-proper-length');
+        $at3 = $handle->refreshToken($rt2, 'gen-client', 'oauth-test-secret-with-at-least-32-bytes');
         $rt3 = $at3->getRefreshToken();
         $this->assertNotNull($rt3);
 
         // 重放第一代 RT：跨代撤销整条链
         try {
-            $handle->refreshToken($rt1, 'gen-client', 'secret-with-proper-length');
+            $handle->refreshToken($rt1, 'gen-client', 'oauth-test-secret-with-at-least-32-bytes');
             $this->fail('第一代 RT 重放应被检测');
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('撤销', $e->getMessage());
@@ -1214,7 +1214,7 @@ class SecurityRegressionTest extends TestCase
         $this->assertNull($handle->validateAccessToken($at3->getAccessToken()));
         $this->assertNull($handle->validateAccessToken($at2->getAccessToken()));
         try {
-            $handle->refreshToken($rt3, 'gen-client', 'secret-with-proper-length');
+            $handle->refreshToken($rt3, 'gen-client', 'oauth-test-secret-with-at-least-32-bytes');
             $this->fail('家族撤销后第三代 RT 也应失效');
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('无效的刷新令牌', $e->getMessage());
@@ -1660,14 +1660,14 @@ class SecurityRegressionTest extends TestCase
         ]));
         $handle->registerClient(new SaOAuth2Client([
             'clientId'     => 'pwd-client',
-            'clientSecret' => 'secret-with-proper-length',
+            'clientSecret' => 'oauth-test-secret-with-at-least-32-bytes',
             'grantTypes'   => ['password'],
         ]));
         $handle->setUserCredentialsValidator(fn (string $u, string $p): ?int => null);
 
         for ($i = 0; $i < 5; $i++) {
             try {
-                $handle->tokenByPassword('pwd-client', 'secret-with-proper-length', 'victim', 'wrong');
+                $handle->tokenByPassword('pwd-client', 'oauth-test-secret-with-at-least-32-bytes', 'victim', 'wrong');
                 $this->fail('错误凭据应被拒绝');
             } catch (SaTokenException $e) {
                 $this->assertStringContainsString('用户名或密码错误', $e->getMessage());
@@ -1677,7 +1677,7 @@ class SecurityRegressionTest extends TestCase
         // 达到锁定阈值后，即使密码正确也被锁定拦截（不再暴露验证端点给爆破）
         $handle->setUserCredentialsValidator(fn (string $u, string $p): int => 70001);
         try {
-            $handle->tokenByPassword('pwd-client', 'secret-with-proper-length', 'victim', 'right-password');
+            $handle->tokenByPassword('pwd-client', 'oauth-test-secret-with-at-least-32-bytes', 'victim', 'right-password');
             $this->fail('爆破达到阈值后应锁定该用户名');
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('锁定', $e->getMessage());
@@ -1800,14 +1800,14 @@ class SecurityRegressionTest extends TestCase
         ])));
         $handle->registerClient(new SaOAuth2Client([
             'clientId'     => 'oidc-nonce',
-            'clientSecret' => 'secret-with-proper-length',
+            'clientSecret' => 'oauth-test-secret-with-at-least-32-bytes',
             'grantTypes'   => ['authorization_code'],
             'redirectUris' => ['https://app.example.com/cb'],
             'scopes'       => ['openid'],
         ]));
 
         $code = $handle->generateAuthorizationCode('oidc-nonce', 62003, 'https://app.example.com/cb', 'openid', '', '', 'nonce-abc-123');
-        $at = $handle->exchangeTokenByCode($code->getCode(), 'oidc-nonce', 'secret-with-proper-length', 'https://app.example.com/cb');
+        $at = $handle->exchangeTokenByCode($code->getCode(), 'oidc-nonce', 'oauth-test-secret-with-at-least-32-bytes', 'https://app.example.com/cb');
 
         $this->assertNotEmpty($at->getIdToken());
         $parts = explode('.', $at->getIdToken());
