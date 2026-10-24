@@ -296,6 +296,12 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
             }
 
             $currentTimeout = $this->getTimeout($key);
+            if ($currentTimeout === -2) {
+                // The cache value may have expired after the value comparison
+                // but before this TTL read. Never turn that stale snapshot into
+                // a fresh cache entry.
+                return false;
+            }
             if ($currentTimeout === -1) {
                 return true;
             }

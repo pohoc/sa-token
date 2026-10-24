@@ -77,6 +77,27 @@ class SaTokenDaoPsr16Test extends TestCase
         self::assertSame(-1, $this->dao->getTimeout('session-index'));
     }
 
+    public function testCompareAndExpireDoesNotReviveKeyThatExpiresDuringTtlRead(): void
+    {
+        $cache = new ArrayPsr16Cache();
+        $dao = new class ($cache) extends SaTokenDaoPsr16 {
+            public bool $reportExpired = false;
+
+            public function getTimeout(string $key): int
+            {
+                return $this->reportExpired ? -2 : parent::getTimeout($key);
+            }
+        };
+        $dao->set('expiring-session-index', 'value', 60);
+        $dao->reportExpired = true;
+
+        self::assertFalse($dao->compareAndExpire('expiring-session-index', 'value', 120));
+
+        $dao->reportExpired = false;
+        self::assertSame('value', $dao->get('expiring-session-index'));
+        self::assertLessThanOrEqual(60, $dao->getTimeout('expiring-session-index'));
+    }
+
     public function testCompareAndUpdatePreservesValueAndTtlOnMismatch(): void
     {
         $this->dao->set('session', 'old-record', 60);
