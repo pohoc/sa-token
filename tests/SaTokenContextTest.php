@@ -198,6 +198,30 @@ class SaTokenContextTest extends TestCase
         $this->assertNull(SaTokenContext::getHeader('satoken'));
     }
 
+    public function testDetectsRepeatedHeaderValuesFromFrameworkHeaderBag(): void
+    {
+        $headerBag = new class {
+            /** @return array<int, string> */
+            public function all(?string $name = null): array
+            {
+                return $name === 'satoken' ? ['token-one', 'token-two'] : [];
+            }
+        };
+        $request = new class ($headerBag) {
+            public function __construct(public object $headers)
+            {
+            }
+
+            public function header(string $name): string
+            {
+                return 'token-one';
+            }
+        };
+        SaTokenContext::setRequest($request);
+
+        self::assertTrue(SaTokenContext::hasMultipleHeaderValues('satoken'));
+    }
+
     // ---- Cookie with PSR-7 ----
 
     public function testGetCookieFromPsr7Request(): void

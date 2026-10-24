@@ -299,11 +299,49 @@ class SaTokenContext
     public static function hasMultipleHeaderValues(string $name): bool
     {
         $request = self::getRequest();
-        if (!$request instanceof \Psr\Http\Message\ServerRequestInterface) {
+        if ($request instanceof \Psr\Http\Message\ServerRequestInterface) {
+            return count($request->getHeader($name)) > 1;
+        }
+
+        if (!is_object($request)) {
             return false;
         }
 
-        return count($request->getHeader($name)) > 1;
+        // Laravel/Symfony expose the raw header values through a HeaderBag,
+        // while their convenience header() methods typically return only the
+        // first value. Inspect the bag before authenticating a credential.
+        $properties = get_object_vars($request);
+        $headerBag = $properties['headers'] ?? null;
+        if (is_object($headerBag) && method_exists($headerBag, 'all')) {
+            try {
+                $values = $headerBag->all($name);
+            } catch (\Throwable) {
+                // If a header bag is present but cannot be inspected reliably,
+                // fail closed for credentials rather than trusting header().
+                return true;
+            }
+
+            if (is_array($values)) {
+                if (array_is_list($values)) {
+                    return count($values) > 1;
+                }
+                foreach ($values as $headerName => $headerValues) {
+                    if (is_string($headerName) && strcasecmp($headerName, $name) === 0) {
+                        return is_array($headerValues) && count($headerValues) > 1;
+                    }
+                }
+                return false;
+            }
+
+            return true;
+        }
+
+        if (method_exists($request, 'header')) {
+            $values = $request->header($name);
+            return is_array($values) && count($values) > 1;
+        }
+
+        return false;
     }
 
     /**

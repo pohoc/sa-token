@@ -78,6 +78,29 @@ class StpLogicSecurityTest extends TestCase
         $this->stp->checkAntiBrute('random-user-3');
     }
 
+    public function testGetTokenValueRejectsRepeatedFrameworkCredentialHeaders(): void
+    {
+        $headerBag = new class {
+            /** @return array<int, string> */
+            public function all(?string $name = null): array
+            {
+                return $name === 'satoken' ? ['valid-token', 'attacker-token'] : [];
+            }
+        };
+        SaTokenContext::setRequest(new class ($headerBag) {
+            public function __construct(public object $headers)
+            {
+            }
+
+            public function header(string $name): string
+            {
+                return 'valid-token';
+            }
+        });
+
+        self::assertNull($this->stp->getTokenValue());
+    }
+
     // ===== Token 指纹相关测试 =====
 
     public function testComputeFingerprint(): void
