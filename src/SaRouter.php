@@ -151,6 +151,10 @@ class SaRouter
         // encoded separators cannot make a protected route look like another
         // path. Do not decode repeatedly: %252F must remain %2F here.
         $path = rawurldecode($path);
+        // Some HTTP servers and routers treat backslashes as path separators.
+        // Canonicalize them here so those downstream interpretations cannot
+        // route around a protected path pattern.
+        $path = str_replace('\\', '/', $path);
 
         // Resolve dot segments before applying authorization patterns. A proxy
         // or downstream router may canonicalize /public/../admin to /admin;

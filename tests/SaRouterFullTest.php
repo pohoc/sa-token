@@ -279,6 +279,21 @@ class SaRouterFullTest extends TestCase
         }
     }
 
+    public function testBackslashPathSeparatorsCannotBypassProtectedRouteMatch(): void
+    {
+        foreach ([
+            '/public\\..\\admin',
+            '/public/%5c..%5cadmin',
+        ] as $path) {
+            SaRouter::setCurrentPath($path);
+            $matched = false;
+            SaRouter::match('/admin/**')->check(function () use (&$matched) {
+                $matched = true;
+            });
+            self::assertTrue($matched, "Backslash path {$path} must match the canonical protected route");
+        }
+    }
+
     public function testPathWithNumbers(): void
     {
         SaRouter::setCurrentPath('/api/v2/users');
