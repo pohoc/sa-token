@@ -24,7 +24,7 @@ use SaToken\Exception\SaTokenException;
  * 或通过配置（SaToken::init 自动装配）：
  *   'storage' => ['type' => 'file', 'path' => 'runtime/sa-token']
  */
-class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface, SaTokenDaoCompareAndExpireInterface, SaTokenDaoDeleteIfExpiredInterface
+class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface, SaTokenDaoCompareAndExpireInterface, SaTokenDaoCompareAndSetInterface, SaTokenDaoDeleteIfExpiredInterface
 {
     protected string $dataDir;
 
@@ -305,6 +305,21 @@ class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteI
             }
 
             $this->writeRecord($key, $expectedValue, time() + $timeout);
+            return true;
+        });
+    }
+
+    public function compareAndSet(string $key, ?string $expectedValue, ?string $newValue, ?int $timeout = null): bool
+    {
+        return $this->withLock($key, function () use ($key, $expectedValue, $newValue, $timeout): bool {
+            if ($this->readValue($key) !== $expectedValue) {
+                return false;
+            }
+            if ($newValue === null) {
+                @unlink($this->dataFile($key));
+            } else {
+                $this->writeRecord($key, $newValue, ($timeout !== null && $timeout > 0) ? time() + $timeout : null);
+            }
             return true;
         });
     }

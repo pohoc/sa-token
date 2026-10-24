@@ -6,7 +6,7 @@ namespace SaToken\Dao;
 
 use SaToken\Exception\SaTokenException;
 
-class SaTokenDaoRedis implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface, SaTokenDaoCompareAndExpireInterface, SaTokenDaoDeleteIfExpiredInterface
+class SaTokenDaoRedis implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface, SaTokenDaoCompareAndExpireInterface, SaTokenDaoCompareAndSetInterface, SaTokenDaoDeleteIfExpiredInterface
 {
     protected \Redis $client;
 
@@ -279,6 +279,33 @@ end
 return 0
 LUA;
         $result = ($this->saRedis ?? $this->client)->eval($script, [$key, $expectedValue, (string) $timeout], 1);
+        return $result === 1;
+    }
+
+    public function compareAndSet(string $key, ?string $expectedValue, ?string $newValue, ?int $timeout = null): bool
+    {
+        $script = <<<'LUA'
+local current = redis.call('GET', KEYS[1])
+if ARGV[1] == '1' then
+    if current ~= ARGV[2] then return 0 end
+else
+    if current then return 0 end
+end
+if ARGV[3] == '1' then
+    if tonumber(ARGV[5]) and tonumber(ARGV[5]) > 0 then
+        redis.call('SET', KEYS[1], ARGV[4], 'EX', ARGV[5])
+    else
+        redis.call('SET', KEYS[1], ARGV[4])
+    end
+else
+    redis.call('DEL', KEYS[1])
+end
+return 1
+LUA;
+        $result = ($this->saRedis ?? $this->client)->eval($script, [
+            $key, $expectedValue !== null ? '1' : '0', $expectedValue ?? '',
+            $newValue !== null ? '1' : '0', $newValue ?? '', (string) ($timeout ?? 0),
+        ], 1);
         return $result === 1;
     }
 

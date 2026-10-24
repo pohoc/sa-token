@@ -219,6 +219,7 @@ class TokenManager
     {
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
         $loginIdKey = self::buildLoginIdKey($loginType, $loginIdStr);
+        $expectedList = $this->getDao()->get($loginIdKey);
         $existingTokens = $this->getTokenListByLoginId($loginId, $loginType);
         $tokenData = [
             'tokenValue' => $tokenValue,
@@ -283,11 +284,16 @@ class TokenManager
             }
         }
 
-        $this->getDao()->set(
-            $loginIdKey,
-            $this->encryptValue(SaFoxUtil::toJson($existingTokens)),
-            $listTimeout
-        );
+        $dao = $this->getDao();
+        if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface
+            || !$dao->compareAndSet(
+                $loginIdKey,
+                $expectedList,
+                $this->encryptValue(SaFoxUtil::toJson($existingTokens)),
+                $listTimeout
+            )) {
+            throw new SaTokenException('账号会话列表已并发变更或 DAO 不支持原子条件写入，请重试');
+        }
 
         // mixed 模式下实际存储的是 JWT，必须返回真实值供调用方下发给客户端
         return $tokenValue;
@@ -422,16 +428,18 @@ class TokenManager
         try {
             $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
             $loginIdKey = self::buildLoginIdKey($loginType, $loginIdStr);
+            $expectedList = $this->getDao()->get($loginIdKey);
             $existingTokens = $this->getTokenListByLoginId($loginId, $loginType);
             $newTokens = array_values(array_filter($existingTokens, fn ($item) => $item['tokenValue'] !== $tokenValue));
 
-            if (empty($newTokens)) {
-                $this->getDao()->delete($loginIdKey);
-            } else {
-                $timeout = $this->getDao()->getTimeout($loginIdKey);
-                if ($timeout !== -2) {
-                    $effectiveTimeout = ($timeout === -1) ? null : $timeout;
-                    $this->getDao()->set($loginIdKey, $this->encryptValue(SaFoxUtil::toJson($newTokens)), $effectiveTimeout);
+            if ($expectedList !== null) {
+                $dao = $this->getDao();
+                $timeout = $dao->getTimeout($loginIdKey);
+                $effectiveTimeout = ($timeout === -1) ? null : max(1, $timeout);
+                $newList = $newTokens === [] ? null : $this->encryptValue(SaFoxUtil::toJson($newTokens));
+                if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface
+                    || !$dao->compareAndSet($loginIdKey, $expectedList, $newList, $effectiveTimeout)) {
+                    throw new SaTokenException('账号会话列表已并发变更或 DAO 不支持原子条件写入，请重试');
                 }
             }
 
@@ -467,6 +475,8 @@ class TokenManager
     {
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
         $loginLockKey = 'login:' . $loginType . ':' . hash('sha256', $loginIdStr);
+        $loginIdKey = self::buildLoginIdKey($loginType, $loginIdStr);
+        $expectedList = $this->getDao()->get($loginIdKey);
         $tokens = $this->getTokenListByLoginId($loginId, $loginType);
         $deletedTokens = [];
 
@@ -523,8 +533,6 @@ class TokenManager
                 $keysToDelete[] = self::TOKEN_SESSION_PREFIX . $tokenValue;
                 $keysToDelete[] = self::FINGERPRINT_PREFIX . $tokenValue;
                 $keysToDelete[] = self::BLACKLIST_PREFIX . $tokenValue;
-                $this->clearTokenBoundState($tokenValue, $loginType);
-
                 $refreshToken = $this->getRefreshTokenByAccessToken($loginId, $loginType, $tokenValue);
                 if ($refreshToken !== null) {
                     $keysToDelete[] = self::REFRESH_TOKEN_PREFIX . $refreshToken;
@@ -534,12 +542,20 @@ class TokenManager
                 $deletedTokens[] = $tokenValue;
             }
 
-            $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-            $keysToDelete[] = self::buildLoginIdKey($loginType, $loginIdStr);
+            $dao = $this->getDao();
+            if ($expectedList !== null) {
+                if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface
+                    || !$dao->compareAndSet($loginIdKey, $expectedList, null)) {
+                    throw new SaTokenException('账号会话列表已并发变更或 DAO 不支持原子条件写入，请重试');
+                }
+            }
             $keysToDelete[] = self::buildSessionId($loginType, $loginIdStr);
 
             if (count($keysToDelete) > 0) {
-                $this->getDao()->deleteMultiple($keysToDelete);
+                $dao->deleteMultiple($keysToDelete);
+            }
+            foreach ($deletedTokens as $tokenValue) {
+                $this->clearTokenBoundState($tokenValue, $loginType);
             }
         } finally {
             foreach ($acquiredLocks as $acquiredLock) {
