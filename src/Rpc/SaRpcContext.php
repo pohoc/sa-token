@@ -17,6 +17,12 @@ class SaRpcContext
 
     public static function setTokenHeaderName(string $name): void
     {
+        if (preg_match('/^[!#$%&\'*+.^_`|~0-9A-Za-z-]+$/D', $name) !== 1
+            || strcasecmp($name, self::$loginIdHeaderName) === 0
+            || strcasecmp($name, self::$loginTypeHeaderName) === 0) {
+            throw new SaTokenException('RPC Token Header 名称无效或与保留身份头冲突');
+        }
+
         self::$tokenHeaderName = $name;
     }
 

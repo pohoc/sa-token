@@ -256,6 +256,20 @@ class SaRpcContextTest extends TestCase
         $this->assertEquals('my-token', SaRpcContext::getForwardedToken());
     }
 
+    public function testCustomTokenHeaderNameRejectsInvalidAndReservedNames(): void
+    {
+        foreach (['', 'Bad Header', 'Bad:Header', "Bad\rName", 'X-Sa-Login-Id', 'x-sa-login-type'] as $name) {
+            try {
+                SaRpcContext::setTokenHeaderName($name);
+                self::fail('无效或冲突的 Token Header 名称必须拒绝');
+            } catch (SaTokenException $exception) {
+                self::assertSame('RPC Token Header 名称无效或与保留身份头冲突', $exception->getMessage());
+            }
+        }
+
+        self::assertSame('X-Sa-Token', SaRpcContext::getTokenHeaderName());
+    }
+
     public function testRpcInterceptorIncoming(): void
     {
         $loginResult = StpUtil::login(10001);
