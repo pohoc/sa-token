@@ -15,6 +15,7 @@ class SaTokenContextTest extends TestCase
     {
         SaTokenContext::setContextId('default');
         SaTokenContext::clear();
+        SaTokenContext::setTrustedProxies([]);
     }
 
     // ---- Context ID ----
@@ -60,6 +61,21 @@ class SaTokenContextTest extends TestCase
         SaTokenContext::setRequest($request);
 
         $this->assertSame('203.0.113.10', SaTokenContext::getClientIp());
+    }
+
+    public function testGetClientIpCombinesRepeatedForwardedForHeaders(): void
+    {
+        SaTokenContext::setTrustedProxies(['198.51.100.1']);
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '198.51.100.1']);
+        $request->method('getHeader')->willReturnCallback(static function (string $name): array {
+            return strcasecmp($name, 'X-Forwarded-For') === 0
+                ? ['192.0.2.123', '203.0.113.88']
+                : [];
+        });
+        SaTokenContext::setRequest($request);
+
+        $this->assertSame('203.0.113.88', SaTokenContext::getClientIp());
     }
 
     public function testSetAndGetResponse(): void

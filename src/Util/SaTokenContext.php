@@ -218,11 +218,14 @@ class SaTokenContext
             return $remoteAddr;
         }
 
-        $forwarded = self::getHeader('X-Forwarded-For');
+        $forwarded = self::getForwardedHeader('X-Forwarded-For');
         if ($forwarded !== null && $forwarded !== '') {
             $ips = array_map('trim', explode(',', $forwarded));
             for ($i = count($ips) - 1; $i >= 0; $i--) {
                 $ip = $ips[$i];
+                if (filter_var($ip, FILTER_VALIDATE_IP) === false) {
+                    return $remoteAddr;
+                }
                 if (!in_array($ip, self::$trustedProxies, true)) {
                     return $ip;
                 }
@@ -232,12 +235,28 @@ class SaTokenContext
             return $remoteAddr;
         }
 
-        $realIp = self::getHeader('X-Real-IP');
-        if ($realIp !== null && $realIp !== '') {
+        $realIp = self::getForwardedHeader('X-Real-IP');
+        if ($realIp !== null && filter_var($realIp, FILTER_VALIDATE_IP) !== false) {
             return $realIp;
         }
 
         return $remoteAddr;
+    }
+
+    protected static function getForwardedHeader(string $name): ?string
+    {
+        $request = self::getRequest();
+        if ($request instanceof \Psr\Http\Message\ServerRequestInterface) {
+            $values = $request->getHeader($name);
+            return $values !== [] ? implode(', ', $values) : null;
+        }
+
+        if (is_object($request) && method_exists($request, 'getHeaderLine')) {
+            $value = $request->getHeaderLine($name);
+            return is_string($value) && $value !== '' ? $value : null;
+        }
+
+        return self::getHeader($name);
     }
 
     /**
