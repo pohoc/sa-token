@@ -54,6 +54,28 @@ class SaTokenJwtSmTest extends TestCase
         $this->assertEquals('SM3', is_array($header) ? ($header['alg'] ?? null) : null);
     }
 
+    public function testSm3RejectsShortSigningKeyWhenCreatingOrParsing(): void
+    {
+        $jwt = new SaTokenJwt([
+            'jwtSecretKey' => 'short',
+            'cryptoType' => 'sm',
+        ]);
+
+        try {
+            $jwt->createToken(10001, 'login');
+            $this->fail('SM3 JWT 不应接受短密钥签发');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('至少需要 32 字节', $e->getMessage());
+        }
+
+        try {
+            $jwt->parseToken('eyJhbGciOiJTTTMiLCJ0eXAiOiJKV1QifQ.e30.AA');
+            $this->fail('SM3 JWT 不应接受短密钥验签');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('至少需要 32 字节', $e->getMessage());
+        }
+    }
+
     public function testParseTokenWithSm3SignedJwt(): void
     {
         $this->skipIfSmUnavailable();

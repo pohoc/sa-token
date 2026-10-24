@@ -41,6 +41,9 @@ class SaTokenJwt
         if ($this->secretKey === '') {
             throw new SaTokenException('JWT 密钥未配置');
         }
+        if (strlen($this->secretKey) < 32) {
+            throw new SaTokenException('JWT 密钥长度不足，至少需要 32 字节');
+        }
 
         $now = time();
         // Fractional NumericDate lets account-wide revocation distinguish a
@@ -78,9 +81,6 @@ class SaTokenJwt
         if ($this->cryptoType === 'sm') {
             $signature = HmacSm3::hmac($this->secretKey, $signingInput);
         } else {
-            if (strlen($this->secretKey) < 32) {
-                throw new SaTokenException('JWT 密钥长度不足，HS256 至少需要 32 字节');
-            }
             $signature = hash_hmac('sha256', $signingInput, $this->secretKey);
         }
 
@@ -139,6 +139,9 @@ class SaTokenJwt
         if ($alg !== $expectedAlg) {
             throw new SaTokenException('JWT 算法与当前 cryptoType 配置不匹配');
         }
+        if (strlen($this->secretKey) < 32) {
+            throw new SaTokenException('JWT 密钥长度不足，至少需要 32 字节');
+        }
 
         $signingInput = $headerB64 . '.' . $payloadB64;
         $signatureBin = $this->base64UrlDecode($signatureB64);
@@ -147,9 +150,6 @@ class SaTokenJwt
         if ($alg === 'SM3') {
             $expected = HmacSm3::hmac($this->secretKey, $signingInput);
         } else {
-            if (strlen($this->secretKey) < 32) {
-                throw new SaTokenException('JWT 密钥长度不足，HS256 至少需要 32 字节');
-            }
             $expected = hash_hmac('sha256', $signingInput, $this->secretKey);
         }
 
