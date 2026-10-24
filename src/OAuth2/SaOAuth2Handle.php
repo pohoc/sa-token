@@ -1232,19 +1232,14 @@ class SaOAuth2Handle
     /**
      * 获取存储层
      */
-    protected ?SaTokenEncryptor $encryptor = null;
-
     protected function getEncryptor(): SaTokenEncryptor
     {
-        if ($this->encryptor === null) {
-            $config = SaToken::getConfig();
-            $key = $config->getTokenEncryptKey() ?: $config->getAesKey();
-            if ($config->getCryptoType() === 'sm') {
-                $key = $config->getTokenEncryptKey() ?: $config->getSm4Key();
-            }
-            $this->encryptor = new SaTokenEncryptor($config->isTokenEncrypt(), $key, $config->getCryptoType());
+        $config = SaToken::getConfig();
+        $key = $config->getTokenEncryptKey() ?: $config->getAesKey();
+        if ($config->getCryptoType() === 'sm') {
+            $key = $config->getTokenEncryptKey() ?: $config->getSm4Key();
         }
-        return $this->encryptor;
+        return new SaTokenEncryptor($config->isTokenEncrypt(), $key, $config->getCryptoType());
     }
 
     protected function encryptValue(string $value): string

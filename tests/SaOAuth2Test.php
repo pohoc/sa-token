@@ -691,6 +691,32 @@ class SaOAuth2Test extends TestCase
         $this->assertEquals('test-client', $validated->getClientId());
     }
 
+    public function testOAuth2HandleUsesRotatedStorageEncryptionKey(): void
+    {
+        $oldKey = 'old-oauth2-storage-encryption-key-32-bytes';
+        $newKey = 'new-oauth2-storage-encryption-key-32-bytes';
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenEncrypt' => true,
+            'tokenEncryptKey' => $oldKey,
+        ]));
+        $handle = new SaOAuth2Handle($this->config);
+        $handle->registerClient($this->testClient);
+        $accessToken = $handle->tokenByClientCredentials('test-client', $this->clientSecret, 'read');
+        self::assertNotNull($handle->validateAccessToken($accessToken->getAccessToken()));
+
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenEncrypt' => true,
+            'tokenEncryptKey' => $newKey,
+        ]));
+
+        try {
+            $handle->validateAccessToken($accessToken->getAccessToken());
+            self::fail('OAuth2 存储密钥轮换后，旧密文访问令牌必须失效');
+        } catch (SaTokenException $e) {
+            self::assertStringContainsString('完整性校验失败', $e->getMessage());
+        }
+    }
+
     public function testValidateInvalidAccessToken(): void
     {
         $this->assertNull($this->handle->validateAccessToken('mock-invalid-token'));
