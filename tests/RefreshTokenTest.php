@@ -584,12 +584,18 @@ class RefreshTokenTest extends TestCase
             self::assertSame('simulated bulk-delete failure', $exception->getMessage());
         }
 
+        // A later login recreates the account index; the old credential must
+        // still be rejected because its own AccessToken is not in that index.
+        $newAccessToken = StpUtil::login($loginId)->getAccessToken();
+        self::assertNotSame($accessToken, $newAccessToken);
+
         try {
             StpUtil::refreshToken($refreshToken);
-            self::fail('账号会话索引已删除后，遗留 RefreshToken 不得恢复登录');
+            self::fail('重新登录建立新索引后，旧 RefreshToken 不得恢复会话');
         } catch (SaTokenException $exception) {
             self::assertStringContainsString('无法刷新', $exception->getMessage());
         }
+        self::assertTrue(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($newAccessToken));
     }
 
     public function testLoginAutoCreatesRefreshTokenWhenEnabled(): void
