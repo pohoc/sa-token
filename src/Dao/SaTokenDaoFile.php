@@ -304,7 +304,7 @@ class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteI
 
     public function compareAndExpire(string $key, string $expectedValue, int $timeout): bool
     {
-        if ($timeout <= 0) {
+        if ($timeout !== -1 && $timeout <= 0) {
             return false;
         }
 
@@ -314,7 +314,13 @@ class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteI
                 return false;
             }
 
-            $this->writeRecord($key, $expectedValue, time() + $timeout);
+            if ($record['e'] === null || ($timeout !== -1 && $record['e'] >= time() + $timeout)) {
+                return true;
+            }
+
+            $expireAt = $timeout === -1 ? null : time() + $timeout;
+            $this->writeRecordRaw($key, $record['v'], $expireAt);
+
             return true;
         });
     }

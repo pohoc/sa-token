@@ -286,7 +286,7 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
 
     public function compareAndExpire(string $key, string $expectedValue, int $timeout): bool
     {
-        if ($timeout <= 0) {
+        if ($timeout !== -1 && $timeout <= 0) {
             return false;
         }
 
@@ -294,6 +294,18 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
             if ($this->get($key) !== $expectedValue) {
                 return false;
             }
+
+            $currentTimeout = $this->getTimeout($key);
+            if ($currentTimeout === -1) {
+                return true;
+            }
+            if ($timeout === -1) {
+                return $this->writeCache($key, $expectedValue, null);
+            }
+            if ($currentTimeout >= $timeout) {
+                return true;
+            }
+
             return $this->writeCache($key, $expectedValue, $timeout);
         });
     }

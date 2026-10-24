@@ -219,6 +219,16 @@ class SaTokenDaoFileTest extends TestCase
         self::assertLessThanOrEqual(120, $this->dao->getTimeout('k:lock'));
     }
 
+    public function testCompareAndExpireNeverShortensAndCanMakeAKeyPermanent(): void
+    {
+        $this->dao->set('k:session-index', 'value', 120);
+
+        self::assertTrue($this->dao->compareAndExpire('k:session-index', 'value', 30));
+        self::assertGreaterThan(30, $this->dao->getTimeout('k:session-index'));
+        self::assertTrue($this->dao->compareAndExpire('k:session-index', 'value', -1));
+        self::assertSame(-1, $this->dao->getTimeout('k:session-index'));
+    }
+
     public function testCompareAndUpdatePreservesValueAndTtlOnMismatch(): void
     {
         $this->dao->set('k:session', 'old-record', 60);

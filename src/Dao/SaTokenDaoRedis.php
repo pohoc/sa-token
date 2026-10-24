@@ -269,14 +269,25 @@ LUA;
 
     public function compareAndExpire(string $key, string $expectedValue, int $timeout): bool
     {
-        if ($timeout <= 0) {
+        if ($timeout !== -1 && $timeout <= 0) {
             return false;
         }
         $script = <<<'LUA'
-if redis.call('GET', KEYS[1]) == ARGV[1] then
-    return redis.call('EXPIRE', KEYS[1], ARGV[2])
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then
+    return 0
 end
-return 0
+local ttl = redis.call('TTL', KEYS[1])
+if ttl == -1 then
+    return 1
+end
+local timeout = tonumber(ARGV[2])
+if timeout == -1 then
+    return redis.call('PERSIST', KEYS[1])
+end
+if ttl < timeout then
+    return redis.call('EXPIRE', KEYS[1], timeout)
+end
+return 1
 LUA;
         $result = ($this->saRedis ?? $this->client)->eval($script, [$key, $expectedValue, (string) $timeout], 1);
         return $result === 1;

@@ -142,6 +142,79 @@ class RedisDaoRealIntegrationTest extends TestCase
         }
     }
 
+    public function testLegacyRefreshMigrationPreservesConcurrentLoginAgainstRealRedis(): void
+    {
+        SaToken::reset();
+        SaToken::setConfig(new SaTokenConfig([
+            'timeout'         => 3600,
+            'activityTimeout' => -1,
+            'concurrent'      => true,
+            'isShare'         => true,
+            'maxLoginCount'   => 12,
+        ]));
+        $redis = $this->redis;
+        $dao = new class ($redis) extends SaTokenDaoRedis {
+            public ?string $triggerKey = null;
+            public ?\Closure $duringRead = null;
+
+            public function __construct(\Redis $redis)
+            {
+                parent::__construct([], $redis);
+            }
+
+            public function getTimeout(string $key): int
+            {
+                $timeout = parent::getTimeout($key);
+                if ($key === $this->triggerKey && $this->duringRead !== null) {
+                    $callback = $this->duringRead;
+                    $this->duringRead = null;
+                    $callback();
+                }
+
+                return $timeout;
+            }
+        };
+        SaToken::setDao($dao);
+        $manager = new TokenManager();
+        $loginId = 'redis-legacy-race-' . bin2hex(random_bytes(6));
+        $loginType = 'redis-legacy-race';
+        $accessToken = $manager->createTokenValue($loginId, $loginType);
+        $refreshToken = $manager->createTokenValue($loginId, $loginType, 'srt_');
+        $loginIdKey = TokenManager::buildLoginIdKey($loginType, $loginId);
+        $legacyKey = TokenManager::LOGIN_ID_PREFIX . $loginType . ':' . $loginId;
+        $freshToken = null;
+
+        try {
+            $manager->saveToken($accessToken, $loginId, $loginType, 'PC', 3600);
+            $legacyList = $manager->getTokenListByLoginId($loginId, $loginType);
+            $encrypt = new \ReflectionMethod(TokenManager::class, 'encryptValue');
+            $legacyValue = $encrypt->invoke($manager, json_encode($legacyList));
+            self::assertIsString($legacyValue);
+            $dao->delete($loginIdKey);
+            $dao->set($legacyKey, $legacyValue);
+
+            $dao->triggerKey = TokenManager::TOKEN_PREFIX . $accessToken;
+            $dao->duringRead = function () use ($dao, $loginId, $loginType, &$freshToken): void {
+                // Expire the first request's account lease while it scans the
+                // legacy index, then let another request commit a new session.
+                $dao->delete(TokenManager::LOCK_PREFIX . 'login:' . $loginType . ':' . hash('sha256', $loginId));
+                $concurrentManager = new TokenManager();
+                $freshToken = $concurrentManager->createTokenValue($loginId, $loginType);
+                $concurrentManager->saveToken($freshToken, $loginId, $loginType, 'mobile', 3600);
+            };
+
+            $manager->saveRefreshToken($refreshToken, $accessToken, $loginId, $loginType, 7200);
+
+            self::assertIsString($freshToken);
+            self::assertContains($freshToken, array_column($manager->getTokenListByLoginId($loginId, $loginType), 'tokenValue'));
+        } finally {
+            $manager->deleteAllTokenByLoginId($loginId, $loginType);
+            $dao->delete(TokenManager::REFRESH_TOKEN_PREFIX . $refreshToken);
+            $dao->delete($legacyKey);
+            SaToken::reset();
+        }
+    }
+
     public function testPercentEscapeLegacyIndexCannotAuthenticateAcrossTypesAgainstRealRedis(): void
     {
         SaToken::reset();
@@ -273,6 +346,17 @@ class RedisDaoRealIntegrationTest extends TestCase
         self::assertTrue($this->dao->compareAndExpire($key, 'new-owner', 120));
         self::assertGreaterThan(0, $this->dao->getTimeout($key));
         self::assertLessThanOrEqual(120, $this->dao->getTimeout($key));
+    }
+
+    public function testCompareAndExpireNeverShortensRedisTtlAndCanMakeAKeyPermanent(): void
+    {
+        $key = $this->prefix . 'extend-only-ttl';
+        $this->dao->set($key, 'value', 120);
+
+        self::assertTrue($this->dao->compareAndExpire($key, 'value', 30));
+        self::assertGreaterThan(30, $this->dao->getTimeout($key));
+        self::assertTrue($this->dao->compareAndExpire($key, 'value', -1));
+        self::assertSame(-1, $this->dao->getTimeout($key));
     }
 
     public function testCompareAndUpdatePreservesValueAndTtlAgainstRealRedis(): void

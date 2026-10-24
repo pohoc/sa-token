@@ -915,6 +915,15 @@ class TokenManager
                 }
             }
 
+            // Extend or migrate the account index before persisting the refresh
+            // record. If a concurrent logout/login changes the index while a
+            // stale account-lock lease is being recovered, fail closed without
+            // leaving a refresh credential that outlives its session index.
+            $this->extendLoginIdListTimeout($loginIdStr, $loginType, $timeout);
+            if ((new StpLogic($loginType, $this))->getLoginIdByToken($accessToken) !== $loginIdStr) {
+                throw new SaTokenException('AccessToken 在绑定 RefreshToken 期间已失效');
+            }
+
             $data = SaFoxUtil::toJson([
                 'loginId'      => $loginIdStr,
                 'loginType'    => $loginType,
@@ -942,7 +951,6 @@ class TokenManager
                 }
                 throw new SaTokenException('RefreshToken 映射已并发变更或 DAO 不支持原子条件写入，请重试');
             }
-            $this->extendLoginIdListTimeout($loginIdStr, $loginType, $timeout);
         } finally {
             $this->releaseLock($loginLockKey);
         }
@@ -1105,16 +1113,58 @@ class TokenManager
                 }
             }
             $json = SaFoxUtil::toJson($tokens);
-            $this->getDao()->set($key, $this->encryptValue($json), $listTimeout);
+            $dao = $this->getDao();
+            if ($dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface
+                && $dao->compareAndSet($key, null, $this->encryptValue($json), $listTimeout)) {
+                return;
+            }
+
+            // A newer login may have installed the V2 list after the legacy
+            // read. Never replace it with the stale migration snapshot.
+            $this->extendExistingLoginIdListTimeout($key, $listTimeout);
             return;
         }
 
-        if ($currentTimeout === -1 || $refreshTimeout === -1) {
-            $this->getDao()->expire($key, -1);
-            return;
+        $targetTimeout = $currentTimeout === -1 || $refreshTimeout === -1
+            ? null
+            : max($currentTimeout, $refreshTimeout);
+        $this->extendExistingLoginIdListTimeout($key, $targetTimeout);
+    }
+
+    protected function extendExistingLoginIdListTimeout(string $key, ?int $targetTimeout): void
+    {
+        $dao = $this->getDao();
+        if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface) {
+            throw new SaTokenException('DAO 不支持安全延长账号会话索引有效期');
         }
 
-        $this->getDao()->expire($key, max($currentTimeout, $refreshTimeout));
+        for ($attempt = 0; $attempt < 8; $attempt++) {
+            $currentValue = $dao->get($key);
+            if ($currentValue === null) {
+                throw new SaTokenException('账号会话列表在延长有效期期间已变更，请重试');
+            }
+
+            if ($targetTimeout === null) {
+                if ($dao->compareAndSet($key, $currentValue, $currentValue, null)) {
+                    return;
+                }
+                continue;
+            }
+
+            if ($dao instanceof \SaToken\Dao\SaTokenDaoCompareAndExpireInterface
+                && $dao->compareAndExpire($key, $currentValue, $targetTimeout)) {
+                return;
+            }
+
+            // If the value changed, retry against its latest encoding. If only
+            // the TTL changed, compareAndExpire is defined to preserve the
+            // longer lifetime and succeeds without shortening it.
+            if ($dao->get($key) === $currentValue) {
+                throw new SaTokenException('DAO 不支持安全延长账号会话索引有效期');
+            }
+        }
+
+        throw new SaTokenException('账号会话列表持续并发变更，请重试');
     }
 
     public function deleteRefreshTokenByAccessToken(mixed $loginId, string $loginType, string $accessToken): void

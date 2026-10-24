@@ -141,11 +141,21 @@ class SaTokenDaoMemory implements SaTokenDaoInterface, SaTokenDaoCompareAndDelet
 
     public function compareAndExpire(string $key, string $expectedValue, int $timeout): bool
     {
+        if ($this->get($key) !== $expectedValue) {
+            return false;
+        }
+
+        if ($timeout === -1) {
+            $this->dataMap[$key]['expire_at'] = null;
+            return true;
+        }
         if ($timeout <= 0) {
             return false;
         }
-        if ($this->get($key) !== $expectedValue) {
-            return false;
+
+        $currentExpireAt = $this->dataMap[$key]['expire_at'];
+        if ($currentExpireAt === null || $currentExpireAt >= time() + $timeout) {
+            return true;
         }
 
         $this->dataMap[$key]['expire_at'] = time() + $timeout;

@@ -356,6 +356,60 @@ class TokenManagerTest extends TestCase
         self::assertFalse($this->manager->isRefreshTokenValid($refreshToken));
     }
 
+    public function testLegacyRefreshIndexMigrationCannotOverwriteConcurrentLogin(): void
+    {
+        $dao = new class () extends SaTokenDaoMemory {
+            public ?string $triggerKey = null;
+            public ?\Closure $duringRead = null;
+
+            public function getTimeout(string $key): int
+            {
+                $timeout = parent::getTimeout($key);
+                if ($key === $this->triggerKey && $this->duringRead !== null) {
+                    $callback = $this->duringRead;
+                    $this->duringRead = null;
+                    $callback();
+                }
+
+                return $timeout;
+            }
+        };
+        SaToken::setDao($dao);
+        $manager = new TokenManager();
+        $loginId = 'legacy-refresh-race-user';
+        $loginType = 'user';
+        $accessToken = $manager->createTokenValue($loginId, $loginType);
+        $manager->saveToken($accessToken, $loginId, $loginType, 'PC', 3600);
+
+        $loginIdKey = TokenManager::buildLoginIdKey($loginType, $loginId);
+        $legacyList = $manager->getTokenListByLoginId($loginId, $loginType);
+        $encrypt = new \ReflectionMethod(TokenManager::class, 'encryptValue');
+        $legacyValue = $encrypt->invoke($manager, json_encode($legacyList));
+        self::assertIsString($legacyValue);
+        $dao->delete($loginIdKey);
+        $dao->set(TokenManager::LOGIN_ID_PREFIX . $loginType . ':' . $loginId, $legacyValue);
+
+        $freshToken = null;
+        $dao->triggerKey = TokenManager::TOKEN_PREFIX . $accessToken;
+        $dao->duringRead = function () use ($dao, $loginId, $loginType, &$freshToken): void {
+            // Simulate the old request's 30-second account-lock lease expiring
+            // while it scans a large legacy index. A new login then commits its
+            // V2 list before the old migration attempts to write.
+            $accountLock = TokenManager::LOCK_PREFIX . 'login:' . $loginType . ':' . hash('sha256', $loginId);
+            $dao->delete($accountLock);
+
+            $concurrentManager = new TokenManager();
+            $freshToken = $concurrentManager->createTokenValue($loginId, $loginType);
+            $concurrentManager->saveToken($freshToken, $loginId, $loginType, 'mobile', 3600);
+        };
+
+        $refreshToken = $manager->createTokenValue($loginId, $loginType, 'srt_');
+        $manager->saveRefreshToken($refreshToken, $accessToken, $loginId, $loginType, 7200);
+
+        self::assertIsString($freshToken);
+        self::assertContains($freshToken, array_column($manager->getTokenListByLoginId($loginId, $loginType), 'tokenValue'));
+    }
+
     public function testTokenTimeout(): void
     {
         $token = $this->manager->createTokenValue(10001, 'login');
