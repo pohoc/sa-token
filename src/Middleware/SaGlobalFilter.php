@@ -70,7 +70,7 @@ class SaGlobalFilter
             SaTokenContext::setHeader('Access-Control-Allow-Origin', is_string($allowOrigin) ? $allowOrigin : '');
             // Origin 值参与缓存决策：缺少 Vary 时共享缓存可能把 A 站的许可头
             // 缓存命中给 B 站的请求（缓存投毒）
-            SaTokenContext::setHeader('Vary', 'Origin');
+            SaTokenContext::addHeaderToken('Vary', 'Origin');
         }
         if (isset($this->corsConfig['allowMethods'])) {
             $allowMethods = $this->corsConfig['allowMethods'];

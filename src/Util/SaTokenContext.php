@@ -528,6 +528,82 @@ class SaTokenContext
         self::$responseMap[self::getContextId()] = self::applyHeaderToResponse($response, $name, $value);
     }
 
+    /** Add one token to a comma-separated response header without discarding existing tokens. */
+    public static function addHeaderToken(string $name, string $token): void
+    {
+        $id = self::getContextId();
+        $existing = self::getResponseHeader($name);
+        foreach (array_reverse(self::$pendingHeadersMap[$id] ?? []) as $pending) {
+            if (strcasecmp($pending['name'], $name) === 0) {
+                $existing = $pending['value'];
+                break;
+            }
+        }
+
+        $tokens = [];
+        $normalizedTokens = [];
+        foreach (explode(',', $existing ?? '') as $existingToken) {
+            $existingToken = trim($existingToken);
+            if ($existingToken === '*') {
+                self::setHeader($name, '*');
+                return;
+            }
+            $normalized = strtolower($existingToken);
+            if ($existingToken !== '' && !isset($normalizedTokens[$normalized])) {
+                $tokens[] = $existingToken;
+                $normalizedTokens[$normalized] = true;
+            }
+        }
+        $normalized = strtolower($token);
+        if (!isset($normalizedTokens[$normalized])) {
+            $tokens[] = $token;
+        }
+
+        self::setHeader($name, implode(', ', $tokens));
+    }
+
+    protected static function getResponseHeader(string $name): ?string
+    {
+        $response = self::getResponse();
+        if ($response === null) {
+            return null;
+        }
+        if ($response instanceof \Psr\Http\Message\ResponseInterface) {
+            $value = $response->getHeaderLine($name);
+            return $value !== '' ? $value : null;
+        }
+        if (is_object($response) && isset($response->headers)) {
+            if (is_object($response->headers) && method_exists($response->headers, 'get')) {
+                $value = $response->headers->get($name);
+                return is_string($value) ? $value : null;
+            }
+            if (is_array($response->headers)) {
+                foreach ($response->headers as $headerName => $value) {
+                    if (is_string($headerName) && strcasecmp($headerName, $name) === 0) {
+                        if (is_string($value)) {
+                            return $value;
+                        }
+                        if (is_array($value)) {
+                            $values = [];
+                            foreach ($value as $item) {
+                                if (is_scalar($item)) {
+                                    $values[] = (string) $item;
+                                }
+                            }
+                            return implode(', ', $values);
+                        }
+                        return null;
+                    }
+                }
+            }
+        }
+        if (is_object($response) && method_exists($response, 'getHeaderLine')) {
+            $value = $response->getHeaderLine($name);
+            return is_string($value) && $value !== '' ? $value : null;
+        }
+        return null;
+    }
+
     /**
      * 将 Token 值写入 Cookie
      *
