@@ -116,6 +116,21 @@ class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteI
     }
 
     /**
+     * Run a local operation while holding an OS file lock for the full callback.
+     * The lock is released by the operating system if the worker exits, so long
+     * cache operations cannot outlive a time-based lease and overlap another
+     * process using the same lock directory.
+     *
+     * @template T
+     * @param  callable(): T $operation
+     * @return T
+     */
+    public function executeAtomically(string $key, callable $operation): mixed
+    {
+        return $this->withLock($key, $operation);
+    }
+
+    /**
      * @return array{key: string, v: string, e: int|null}|null
      */
     protected function readRecord(string $key): ?array

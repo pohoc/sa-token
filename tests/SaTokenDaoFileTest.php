@@ -154,6 +154,49 @@ class SaTokenDaoFileTest extends TestCase
         $this->assertNull($this->dao->getAndDelete('k:gd'));
     }
 
+    public function testExecuteAtomicallyHoldsLockUntilCallbackReturns(): void
+    {
+        if (!function_exists('pcntl_fork')) {
+            $this->markTestSkipped('pcntl is required for the multi-process lock test');
+        }
+
+        $signalPath = $this->basePath . '/lock-held';
+        $eventsPath = $this->basePath . '/lock-events';
+        $key = 'psr16-atomic:long-operation';
+        $path = $this->basePath;
+        $pid = pcntl_fork();
+        if ($pid === -1) {
+            $this->fail('Could not fork worker process');
+        }
+
+        if ($pid === 0) {
+            while (!is_file($signalPath)) {
+                usleep(1000);
+            }
+            $childDao = new SaTokenDaoFile(['path' => $path]);
+            $childDao->executeAtomically($key, static function () use ($eventsPath): void {
+                file_put_contents($eventsPath, "child-entered\n", FILE_APPEND | LOCK_EX);
+            });
+            exit(0);
+        }
+
+        $this->dao->executeAtomically($key, static function () use ($signalPath, $eventsPath): void {
+            file_put_contents($eventsPath, "parent-entered\n", FILE_APPEND | LOCK_EX);
+            touch($signalPath);
+            usleep(250_000);
+            file_put_contents($eventsPath, "parent-leaving\n", FILE_APPEND | LOCK_EX);
+        });
+
+        $status = 0;
+        $this->assertSame($pid, pcntl_waitpid($pid, $status));
+        if (!is_int($status)) {
+            throw new \RuntimeException('Child process returned an invalid status');
+        }
+        $this->assertTrue(pcntl_wifexited($status));
+        $this->assertSame(0, pcntl_wexitstatus($status));
+        $this->assertSame("parent-entered\nparent-leaving\nchild-entered\n", file_get_contents($eventsPath));
+    }
+
     public function testSetWaitsForAtomicReadModifyWriteLock(): void
     {
         if (!function_exists('pcntl_fork')) {

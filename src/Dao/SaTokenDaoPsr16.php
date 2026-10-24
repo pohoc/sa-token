@@ -374,23 +374,6 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
     {
         $stripe = hexdec(substr(hash('sha256', $key), 0, 2)) % 64;
         $lockKey = 'psr16-atomic:' . str_pad((string) $stripe, 2, '0', STR_PAD_LEFT);
-        $lockValue = bin2hex(random_bytes(16));
-        $acquired = false;
-        for ($attempt = 0; $attempt < 100; $attempt++) {
-            if ($this->atomicLockDao->setIfNotExists($lockKey, $lockValue, 60)) {
-                $acquired = true;
-                break;
-            }
-            usleep(10000);
-        }
-        if (!$acquired) {
-            throw new SaTokenException('PSR-16 缓存原子操作锁获取失败，请稍后重试');
-        }
-
-        try {
-            return $operation();
-        } finally {
-            $this->atomicLockDao->compareAndDelete($lockKey, $lockValue);
-        }
+        return $this->atomicLockDao->executeAtomically($lockKey, $operation);
     }
 }
