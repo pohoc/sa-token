@@ -597,4 +597,36 @@ class SaLoginDeviceManagerTest extends TestCase
 
         $this->assertTrue($this->logic->getTokenManager()->isTokenValid($victimToken));
     }
+
+    public function testDeviceManagerRejectsLogicInstanceForAnotherLoginType(): void
+    {
+        $loginId = 'same-id-across-login-types';
+        $adminLogic = new StpLogic('admin');
+        $adminToken = $adminLogic->login($loginId)->getAccessToken();
+        $device = new SaLoginDevice(['deviceType' => 'pc', 'deviceName' => 'Mismatched logic']);
+
+        try {
+            SaLoginDeviceManager::registerDevice($loginId, 'user', $device, $adminToken, $adminLogic);
+            $this->fail('设备注册不得用 admin 逻辑操作 user 类型的记录');
+        } catch (SaTokenException $exception) {
+            $this->assertStringContainsString('loginType 与 StpLogic 实例不匹配', $exception->getMessage());
+        }
+
+        $device->setLoginType('user')->setLoginTime(time());
+        $record = $device->toArray();
+        $record['managedTokenValues'] = [$adminToken];
+        $record['managedTokenValuesEncrypted'] = false;
+        $deviceKey = SaLoginDeviceManager::getKey($loginId, 'user') . ':' . $device->getDeviceId();
+        $this->dao->set($deviceKey, json_encode($record, JSON_THROW_ON_ERROR), 3600);
+
+        try {
+            SaLoginDeviceManager::kickoutDevice($loginId, $device->getDeviceId(), 'user', $adminLogic);
+            $this->fail('踢出操作不得用 admin 逻辑解析 user 类型的设备凭据');
+        } catch (SaTokenException $exception) {
+            $this->assertStringContainsString('loginType 与 StpLogic 实例不匹配', $exception->getMessage());
+        }
+
+        $this->assertTrue($adminLogic->getTokenManager()->isTokenValid($adminToken));
+        $this->assertNotNull($this->dao->get($deviceKey));
+    }
 }

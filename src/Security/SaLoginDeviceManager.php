@@ -66,6 +66,9 @@ class SaLoginDeviceManager
 
         $loginIdStr = (string) $loginId;
         $logic = $logicInstance ?? SaToken::getStpLogic($loginType);
+        if ($logic->getLoginType() !== $loginType) {
+            throw new SaTokenException('设备管理 loginType 与 StpLogic 实例不匹配');
+        }
         $tokenManager = $logic->getTokenManager();
         $lockKey = 'login:' . $loginType . ':' . hash('sha256', $loginIdStr);
         if (!$tokenManager->acquireLock($lockKey, 30)) {
@@ -171,6 +174,9 @@ class SaLoginDeviceManager
 
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
         $logic = $logicInstance ?? SaToken::getStpLogic($loginType);
+        if ($logic->getLoginType() !== $loginType) {
+            throw new SaTokenException('设备管理 loginType 与 StpLogic 实例不匹配');
+        }
         $tokenManager = $logic->getTokenManager();
         $lockKey = 'login:' . $loginType . ':' . hash('sha256', $loginIdStr);
         if (!$tokenManager->acquireLock($lockKey, 30)) {
