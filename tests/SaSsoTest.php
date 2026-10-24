@@ -488,6 +488,97 @@ class SaSsoTest extends TestCase
         $handle->doLoginCallback('');
     }
 
+    public function testDoLoginCallbackBindsNewIdentityInsteadOfIncomingToken(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenName'       => 'satoken',
+            'timeout'         => 86400,
+            'activityTimeout' => -1,
+            'isReadHeader'    => true,
+            'isReadCookie'    => false,
+            'isReadBody'      => false,
+            'isWriteCookie'   => false,
+            'isWriteHeader'   => false,
+        ]));
+
+        $oldToken = StpUtil::login('old-user')->getAccessToken();
+        SaTokenContext::setRequest(new class ($oldToken) {
+            public function __construct(private string $token)
+            {
+            }
+
+            public function getHeaderLine(string $name): string
+            {
+                return $name === 'satoken' ? $this->token : '';
+            }
+        });
+
+        $handle = new class (new SaSsoConfig(['checkState' => false])) extends SaSsoHandle {
+            protected function checkTicket(string $ticket): string
+            {
+                return 'sso-user';
+            }
+        };
+
+        $this->assertSame('sso-user', $handle->doLoginCallback('valid-ticket'));
+        $this->assertSame('sso-user', StpUtil::getLoginId());
+        $this->assertNotSame($oldToken, StpUtil::getTokenValue());
+    }
+
+    public function testCrossRedisManagerRejectsEmptyTicketBeforeRequest(): void
+    {
+        $manager = new SaSsoManager(new SaSsoConfig([
+            'crossRedis' => true,
+            'checkState' => false,
+        ]));
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('SSO ticket 不能为空');
+        $manager->doLoginCallback('');
+    }
+
+    public function testCrossRedisManagerBindsTicketIdentityInsteadOfIncomingToken(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenName'       => 'satoken',
+            'timeout'         => 86400,
+            'activityTimeout' => -1,
+            'isReadHeader'    => true,
+            'isReadCookie'    => false,
+            'isReadBody'      => false,
+            'isWriteCookie'   => false,
+            'isWriteHeader'   => false,
+        ]));
+
+        $oldToken = StpUtil::login('old-user')->getAccessToken();
+        SaTokenContext::setRequest(new class ($oldToken) {
+            public function __construct(private string $token)
+            {
+            }
+
+            public function getHeaderLine(string $name): string
+            {
+                return $name === 'satoken' ? $this->token : '';
+            }
+        });
+
+        $manager = new SaSsoManager(new SaSsoConfig([
+            'crossRedis' => true,
+            'checkState' => false,
+        ]));
+        $handle = new class ($manager->getConfig()) extends SaSsoHandle {
+            public function checkTicketCrossRedis(string $ticket): string
+            {
+                return 'sso-user';
+            }
+        };
+        (new \ReflectionProperty(SaSsoManager::class, 'handle'))->setValue($manager, $handle);
+
+        $this->assertSame('sso-user', $manager->doLoginCallback('valid-ticket'));
+        $this->assertSame('sso-user', StpUtil::getLoginId());
+        $this->assertNotSame($oldToken, StpUtil::getTokenValue());
+    }
+
     public function testDoLoginCallbackWithMissingCheckTicketUrl(): void
     {
         $config = new SaSsoConfig();

@@ -197,7 +197,8 @@ class SaSsoHandle
         }
 
         // 在当前系统完成登录
-        StpUtil::login($loginId);
+        $loginResult = StpUtil::login($loginId);
+        SaTokenContext::setTokenOverride(StpUtil::getStpLogic()->getLoginType(), $loginResult->getAccessToken());
 
         return $loginId;
     }
