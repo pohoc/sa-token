@@ -736,6 +736,10 @@ class SaOAuth2Handle
 
     public function checkScope(string $accessToken, string $requiredScope): bool
     {
+        if ($requiredScope === '' || trim($requiredScope) !== $requiredScope || preg_match('/\s/', $requiredScope) === 1) {
+            return false;
+        }
+
         $tokenData = $this->validateAccessToken($accessToken);
         if ($tokenData === null) {
             return false;
@@ -952,6 +956,9 @@ class SaOAuth2Handle
     {
         if ($scope === '') {
             return;
+        }
+        if (trim($scope) === '') {
+            throw new SaTokenException('scope 不能只包含空白字符');
         }
         $registered = $client->getScopes();
         if ($registered === []) {

@@ -178,6 +178,20 @@ class SaOAuth2OpenIdTest extends TestCase
         $this->assertTrue($this->handle->checkScope($accessToken->getAccessToken(), 'read'));
         $this->assertTrue($this->handle->checkScope($accessToken->getAccessToken(), 'write'));
         $this->assertFalse($this->handle->checkScope($accessToken->getAccessToken(), 'admin'));
+        $this->assertFalse($this->handle->checkScope($accessToken->getAccessToken(), ''));
+        $this->assertFalse($this->handle->checkScope($accessToken->getAccessToken(), ' '));
+    }
+
+    public function testWhitespaceOnlyScopeIsRejected(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('scope 不能只包含空白字符');
+        $this->handle->generateAuthorizationCode(
+            'test-client',
+            10001,
+            'https://example.com/callback',
+            '   '
+        );
     }
 
     public function testCheckScopeAndThrowThrowsOnMissingScope(): void
