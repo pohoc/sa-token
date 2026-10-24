@@ -38,6 +38,15 @@ class SaHttpAuthTest extends TestCase
         SaTokenContext::setResponse($this->responseTracker);
     }
 
+    public function testDigestParserRejectsDuplicateAndMalformedFields(): void
+    {
+        $auth = new SaHttpAuth();
+
+        self::assertSame([], $auth->parseDigestHeader('Digest username="alice", Username="mallory"'));
+        self::assertSame([], $auth->parseDigestHeader('Digest username="alice" junk, nonce="n"'));
+        self::assertSame(['username' => 'alice', 'nonce' => 'n'], $auth->parseDigestHeader('Digest username="alice", nonce="n"'));
+    }
+
     protected function tearDown(): void
     {
         SaToken::reset();

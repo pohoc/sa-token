@@ -235,15 +235,33 @@ class SaHttpAuth
         }
 
         $result = [];
-
-        preg_match_all('/(\w+)\s*=\s*(?:"([^"]*)"|([^,\s]+))/', $headerPart, $matches, PREG_SET_ORDER);
+        $offset = 0;
+        $length = strlen($headerPart);
+        preg_match_all('/(\w+)\s*=\s*(?:"([^"]*)"|([^,\s]+))/', $headerPart, $matches, PREG_SET_ORDER | PREG_OFFSET_CAPTURE);
 
         foreach ($matches as $match) {
-            $key = $match[1];
-            $value = ($match[2] ?? '') !== '' ? $match[2] : ($match[3] ?? '');
+            $fieldOffset = $match[0][1];
+            $separator = substr($headerPart, $offset, $fieldOffset - $offset);
+            if (($offset === 0 && trim($separator) !== '')
+                || ($offset > 0 && preg_match('/^\s*,\s*$/D', $separator) !== 1)) {
+                return [];
+            }
+
+            $key = strtolower($match[1][0]);
+            if (array_key_exists($key, $result)) {
+                return [];
+            }
+            $quotedValue = $match[2][0] ?? '';
+            $unquotedValue = $match[3][0] ?? '';
+            $value = $quotedValue !== '' ? $quotedValue : $unquotedValue;
             $result[$key] = $value;
+            $offset = $fieldOffset + strlen($match[0][0]);
         }
 
+        $trailing = substr($headerPart, $offset, $length - $offset);
+        if ($matches === [] || trim($trailing) !== '') {
+            return [];
+        }
         return $result;
     }
 }
