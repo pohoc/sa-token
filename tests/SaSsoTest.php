@@ -437,6 +437,42 @@ class SaSsoTest extends TestCase
         (new SaSsoHandle($config))->buildLoginUrl('http://app.example.com/callback');
     }
 
+    public function testBuildLoginUrlRequiresAllowlistedPortForNonDefaultPort(): void
+    {
+        $config = new SaSsoConfig([
+            'loginUrl'     => 'https://auth.example.com/login',
+            'allowDomains' => ['app.example.com'],
+        ]);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('SSO 回调域名不在允许列表中');
+        (new SaSsoHandle($config))->buildLoginUrl('https://app.example.com:8443/callback');
+    }
+
+    public function testBuildLoginUrlAllowsExplicitWildcardDomainPort(): void
+    {
+        $config = new SaSsoConfig([
+            'loginUrl'     => 'https://auth.example.com/login',
+            'allowDomains' => ['*.example.com:8443'],
+        ]);
+
+        $url = (new SaSsoHandle($config))->buildLoginUrl('https://app.example.com:8443/callback');
+
+        $this->assertStringContainsString(rawurlencode('https://app.example.com:8443/callback'), $url);
+    }
+
+    public function testBuildLoginUrlAcceptsExplicitDefaultPortForHostAllowlist(): void
+    {
+        $config = new SaSsoConfig([
+            'loginUrl'     => 'https://auth.example.com/login',
+            'allowDomains' => ['app.example.com'],
+        ]);
+
+        $url = (new SaSsoHandle($config))->buildLoginUrl('https://app.example.com:443/callback');
+
+        $this->assertStringContainsString(rawurlencode('https://app.example.com:443/callback'), $url);
+    }
+
     public function testBuildLoginUrlRejectsInsecureLoginEndpoint(): void
     {
         $config = new SaSsoConfig([

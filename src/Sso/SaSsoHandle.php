@@ -568,20 +568,62 @@ class SaSsoHandle
             return false;
         }
 
+        $defaultPort = $scheme === 'https' ? 443 : 80;
+        $port = isset($parsed['port']) ? (int) $parsed['port'] : $defaultPort;
+        if ($port < 1 || $port > 65535) {
+            return false;
+        }
+
         foreach ($allowDomains as $pattern) {
             if (!is_string($pattern) || $pattern === '') {
                 continue;
             }
-            $pattern = strtolower(rtrim($pattern, '.'));
-            if ($pattern === $host) {
+            if ($this->matchesAllowedDomain($host, $port, $defaultPort, $isLocal, $pattern)) {
                 return true;
             }
-            if (str_starts_with($pattern, '*.')) {
-                $suffix = substr($pattern, 2);
-                if (str_ends_with($host, '.' . $suffix)) {
-                    return true;
-                }
+        }
+
+        return false;
+    }
+
+    protected function matchesAllowedDomain(string $host, int $port, int $defaultPort, bool $isLocal, string $pattern): bool
+    {
+        $pattern = strtolower($pattern);
+        $patternPort = null;
+        if (str_starts_with($pattern, '[')) {
+            $closingBracket = strpos($pattern, ']');
+            if ($closingBracket === false) {
+                return false;
             }
+            $portSuffix = substr($pattern, $closingBracket + 1);
+            if ($portSuffix !== '') {
+                if (preg_match('/^:([0-9]{1,5})$/D', $portSuffix, $matches) !== 1) {
+                    return false;
+                }
+                $patternPort = (int) $matches[1];
+            }
+            $patternHost = substr($pattern, 0, $closingBracket + 1);
+        } elseif (preg_match('/^([^:]+):([0-9]{1,5})$/D', $pattern, $matches) === 1) {
+            $patternHost = $matches[1];
+            $patternPort = (int) $matches[2];
+        } else {
+            $patternHost = $pattern;
+        }
+
+        if ($patternPort !== null && ($patternPort < 1 || $patternPort > 65535 || $patternPort !== $port)) {
+            return false;
+        }
+        if ($patternPort === null && !$isLocal && $port !== $defaultPort) {
+            return false;
+        }
+
+        $patternHost = rtrim($patternHost, '.');
+        if ($patternHost === $host) {
+            return true;
+        }
+        if (str_starts_with($patternHost, '*.')) {
+            $suffix = substr($patternHost, 2);
+            return $suffix !== '' && str_ends_with($host, '.' . $suffix);
         }
 
         return false;
