@@ -15,7 +15,7 @@ namespace SaToken\Dao;
  *   $dao->set('key', 'value', 3600);
  *   echo $dao->get('key'); // 'value'
  */
-class SaTokenDaoMemory implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface, SaTokenDaoDeleteIfExpiredInterface
+class SaTokenDaoMemory implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface, SaTokenDaoCompareAndExpireInterface, SaTokenDaoDeleteIfExpiredInterface
 {
     /**
      * 存储数据 [key => ['value' => string, 'expire_at' => int|null]]
@@ -137,6 +137,19 @@ class SaTokenDaoMemory implements SaTokenDaoInterface, SaTokenDaoCompareAndDelet
     public function compareAndDelete(string $key, string $expectedValue): bool
     {
         return $this->get($key) === $expectedValue && $this->getAndDelete($key) !== null;
+    }
+
+    public function compareAndExpire(string $key, string $expectedValue, int $timeout): bool
+    {
+        if ($timeout <= 0) {
+            return false;
+        }
+        if ($this->get($key) !== $expectedValue) {
+            return false;
+        }
+
+        $this->dataMap[$key]['expire_at'] = time() + $timeout;
+        return true;
     }
 
     public function deleteIfExpired(string $key): bool

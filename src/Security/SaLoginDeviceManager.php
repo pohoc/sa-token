@@ -68,7 +68,7 @@ class SaLoginDeviceManager
         $logic = $logicInstance ?? SaToken::getStpLogic($loginType);
         $tokenManager = $logic->getTokenManager();
         $lockKey = 'login:' . $loginType . ':' . hash('sha256', $loginIdStr);
-        if (!$tokenManager->acquireLock($lockKey, 5)) {
+        if (!$tokenManager->acquireLock($lockKey, 30)) {
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
 
@@ -161,11 +161,12 @@ class SaLoginDeviceManager
         $logic = $logicInstance ?? SaToken::getStpLogic($loginType);
         $tokenManager = $logic->getTokenManager();
         $lockKey = 'login:' . $loginType . ':' . hash('sha256', $loginIdStr);
-        if (!$tokenManager->acquireLock($lockKey, 5)) {
+        if (!$tokenManager->acquireLock($lockKey, 30)) {
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
 
         $kickoutEvents = [];
+        $lastRenewal = hrtime(true);
         try {
             // A caller-supplied device ID can contain delimiters and address a
             // nested login type's key. Verify the stored owner before revoking
@@ -177,6 +178,12 @@ class SaLoginDeviceManager
             // 同一设备标识可能在 isShare=false 时关联多个有效登录 Token。
             // 全部撤销后再删除记录，避免只踢掉最近一次登录而留下旧会话。
             foreach (self::loadDeviceTokenValues($key) as $tokenValue) {
+                if (hrtime(true) - $lastRenewal >= 10_000_000_000) {
+                    if (!$tokenManager->renewLock($lockKey, 30)) {
+                        throw new SaTokenException('账号会话锁租约已失效，请重试');
+                    }
+                    $lastRenewal = hrtime(true);
+                }
                 $eventLoginId = $logic->kickoutByTokenValue($tokenValue, false);
                 if ($eventLoginId !== null) {
                     $kickoutEvents[] = [$eventLoginId, $tokenValue];
@@ -197,11 +204,22 @@ class SaLoginDeviceManager
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
         $logic = SaToken::getStpLogic($loginType);
         $lockKey = 'login:' . $loginType . ':' . hash('sha256', $loginIdStr);
-        if (!$logic->getTokenManager()->acquireLock($lockKey, 5)) {
+        $tokenManager = $logic->getTokenManager();
+        if (!$tokenManager->acquireLock($lockKey, 30)) {
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
 
         $kickoutEvents = [];
+        $lastRenewal = hrtime(true);
+        $renewAccountLock = static function () use ($tokenManager, $lockKey, &$lastRenewal): void {
+            if (hrtime(true) - $lastRenewal < 10_000_000_000) {
+                return;
+            }
+            if (!$tokenManager->renewLock($lockKey, 30)) {
+                throw new SaTokenException('账号会话锁租约已失效，请重试');
+            }
+            $lastRenewal = hrtime(true);
+        };
         try {
             if (SaToken::getConfig()->isJwtStateless()) {
                 if ($exceptToken === null) {
@@ -213,10 +231,12 @@ class SaLoginDeviceManager
                 $devices = self::loadDeviceList($loginId, $loginType, true);
                 $count = 0;
                 foreach ($devices as $device) {
+                    $renewAccountLock();
                     $deviceKey = self::getKey($loginId, $loginType) . ':' . $device->getDeviceId();
                     $remainingTokens = [];
                     $revokedToken = false;
                     foreach (self::loadDeviceTokenValues($deviceKey) as $tokenValue) {
+                        $renewAccountLock();
                         if ($tokenValue === $exceptToken) {
                             $remainingTokens[] = $tokenValue;
                             continue;
@@ -249,6 +269,7 @@ class SaLoginDeviceManager
             $sessions = $tokenManager->getTokenListByLoginId($loginId, $loginType);
             $count = 0;
             foreach ($sessions as $session) {
+                $renewAccountLock();
                 $tokenValue = is_string($session['tokenValue'] ?? null) ? $session['tokenValue'] : '';
                 if ($tokenValue === '' || ($exceptToken !== null && $tokenValue === $exceptToken)
                     || !$tokenManager->isTokenValid($tokenValue)) {
@@ -268,6 +289,7 @@ class SaLoginDeviceManager
             $devicePrefix = self::getKey($loginId, $loginType) . ':';
             $deviceCount = 0;
             foreach ($devices as $device) {
+                $renewAccountLock();
                 if ($exceptToken !== null && $device->getTokenValue() === $exceptToken) {
                     continue;
                 }

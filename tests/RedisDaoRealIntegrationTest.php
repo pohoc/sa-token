@@ -263,6 +263,18 @@ class RedisDaoRealIntegrationTest extends TestCase
         $this->assertNull($this->dao->get($key));
     }
 
+    public function testCompareAndExpireOnlyRenewsTheCurrentRedisLockOwner(): void
+    {
+        $key = $this->prefix . 'renew-lock';
+        $this->dao->set($key, 'new-owner', 5);
+
+        self::assertFalse($this->dao->compareAndExpire($key, 'old-owner', 120));
+        self::assertLessThanOrEqual(5, $this->dao->getTimeout($key));
+        self::assertTrue($this->dao->compareAndExpire($key, 'new-owner', 120));
+        self::assertGreaterThan(0, $this->dao->getTimeout($key));
+        self::assertLessThanOrEqual(120, $this->dao->getTimeout($key));
+    }
+
     public function testGetAndExpireAgainstRealRedis(): void
     {
         $this->assertInstanceOf(SaTokenDaoRedis::class, $this->dao);

@@ -115,7 +115,7 @@ class StpLogic
         // 并发登录互斥锁：获取失败说明同账号正在处理登录，直接拒绝以保证 maxLoginCount 等控制的一致性
         $loginIdStr = (string) $loginId;
         $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', $loginIdStr);
-        if (!$this->tokenManager->acquireLock($lockKey, 5)) {
+        if (!$this->tokenManager->acquireLock($lockKey, 30)) {
             throw new SaTokenException('同账号登录正在处理中，请勿重复提交');
         }
 
@@ -343,7 +343,7 @@ class StpLogic
     {
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
         $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', $loginIdStr);
-        if (!$this->tokenManager->acquireLock($lockKey, 5)) {
+        if (!$this->tokenManager->acquireLock($lockKey, 30)) {
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
         try {
@@ -712,7 +712,7 @@ class StpLogic
 
         $loginIdStr = (string) $loginId;
         $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', $loginIdStr);
-        if (!$this->tokenManager->acquireLock($lockKey, 5)) {
+        if (!$this->tokenManager->acquireLock($lockKey, 30)) {
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
 
@@ -972,7 +972,7 @@ class StpLogic
         if ($loginId !== null) {
             $loginIdStr = $loginId;
             $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', $loginIdStr);
-            if (!$this->tokenManager->acquireLock($lockKey, 5)) {
+            if (!$this->tokenManager->acquireLock($lockKey, 30)) {
                 throw new SaTokenException('同账号会话正在处理中，请稍后重试');
             }
             try {

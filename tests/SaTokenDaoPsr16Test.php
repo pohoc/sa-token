@@ -57,6 +57,16 @@ class SaTokenDaoPsr16Test extends TestCase
         $this->assertNull($this->dao->get('nonexistent'));
     }
 
+    public function testCompareAndExpireOnlyRenewsMatchingValue(): void
+    {
+        $this->dao->set('lock', 'owner-a', 60);
+
+        self::assertFalse($this->dao->compareAndExpire('lock', 'owner-b', 120));
+        self::assertLessThanOrEqual(60, $this->dao->getTimeout('lock'));
+        self::assertTrue($this->dao->compareAndExpire('lock', 'owner-a', 120));
+        self::assertLessThanOrEqual(120, $this->dao->getTimeout('lock'));
+    }
+
     // ======== update ========
 
     public function testUpdateExistingKey(): void

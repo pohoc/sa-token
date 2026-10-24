@@ -60,6 +60,17 @@ class SaTokenDaoMemoryTest extends TestCase
         $this->assertNull($this->dao->get('lock'));
     }
 
+    public function testCompareAndExpireOnlyRenewsMatchingValue(): void
+    {
+        $this->dao->set('lock', 'owner-a', 1);
+
+        self::assertFalse($this->dao->compareAndExpire('lock', 'owner-b', 60));
+        self::assertLessThanOrEqual(1, $this->dao->getTimeout('lock'));
+        self::assertTrue($this->dao->compareAndExpire('lock', 'owner-a', 60));
+        self::assertGreaterThan(0, $this->dao->getTimeout('lock'));
+        self::assertLessThanOrEqual(60, $this->dao->getTimeout('lock'));
+    }
+
     public function testUpdate(): void
     {
         $this->dao->set('key1', 'value1');

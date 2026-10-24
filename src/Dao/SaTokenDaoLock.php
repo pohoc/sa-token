@@ -29,4 +29,13 @@ final class SaTokenDaoLock
             $dao->compareAndDelete($key, $owner);
         }
     }
+
+    public static function renew(SaTokenDaoInterface $dao, string $key, string $owner, int $ttl): bool
+    {
+        if ($ttl <= 0 || !$dao instanceof SaTokenDaoCompareAndExpireInterface) {
+            return false;
+        }
+
+        return $dao->compareAndExpire($key, $owner, $ttl);
+    }
 }

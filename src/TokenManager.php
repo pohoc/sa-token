@@ -162,7 +162,7 @@ class TokenManager
 
         $loginIdStr = (string) $loginId;
         $loginLockKey = 'login:' . $loginType . ':' . hash('sha256', $loginIdStr);
-        if (!$this->acquireLock($loginLockKey, 5)) {
+        if (!$this->acquireLock($loginLockKey, 30)) {
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
 
@@ -189,7 +189,7 @@ class TokenManager
         for ($attempt = 0; $attempt < $maxTries; $attempt++) {
             $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
             $tokenLockKey = $this->tokenValueLockKey($tokenValue);
-            if ($this->acquireLock($tokenLockKey, 5)) {
+            if ($this->acquireLock($tokenLockKey, 30)) {
                 try {
                     // 吊销黑名单必须阻止同一 bearer 值在 TTL 内被重新签发。
                     if (!$this->isBlacklisted($tokenValue)
@@ -402,7 +402,7 @@ class TokenManager
         // acquireLock 可重入，login 持锁路径不会被自阻塞
         $loginIdStr0 = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
         $lockKey = 'login:' . $loginType . ':' . hash('sha256', $loginIdStr0);
-        if (!$this->acquireLock($lockKey, 5)) {
+        if (!$this->acquireLock($lockKey, 30)) {
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
         try {
@@ -415,7 +415,7 @@ class TokenManager
     protected function deleteTokenLocked(string $tokenValue, mixed $loginId, string $loginType): void
     {
         $tokenLockKey = $this->tokenValueLockKey($tokenValue);
-        if (!$this->acquireLock($tokenLockKey, 5)) {
+        if (!$this->acquireLock($tokenLockKey, 30)) {
             throw new SaTokenException('Token 正在签发或注销，请稍后重试');
         }
 
@@ -450,7 +450,7 @@ class TokenManager
     {
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
         $lockKey = 'login:' . $loginType . ':' . hash('sha256', $loginIdStr);
-        if (!$this->acquireLock($lockKey, 5)) {
+        if (!$this->acquireLock($lockKey, 30)) {
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
         try {
@@ -465,6 +465,8 @@ class TokenManager
      */
     protected function deleteAllTokenByLoginIdLocked(mixed $loginId, string $loginType): array
     {
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $loginLockKey = 'login:' . $loginType . ':' . hash('sha256', $loginIdStr);
         $tokens = $this->getTokenListByLoginId($loginId, $loginType);
         $deletedTokens = [];
 
@@ -478,19 +480,40 @@ class TokenManager
         $tokenLockKeys = array_values(array_unique($tokenLockKeys));
         sort($tokenLockKeys, SORT_STRING);
         $acquiredLocks = [];
-        foreach ($tokenLockKeys as $tokenLockKey) {
-            if (!$this->acquireLock($tokenLockKey, 5)) {
-                foreach ($acquiredLocks as $acquiredLock) {
-                    $this->releaseLock($acquiredLock);
-                }
-                throw new SaTokenException('Token 正在签发或注销，请稍后重试');
+        $lastRenewal = hrtime(true);
+        $renewLocks = function () use (&$acquiredLocks, $loginLockKey, &$lastRenewal): void {
+            if (hrtime(true) - $lastRenewal < 10_000_000_000) {
+                return;
             }
-            $acquiredLocks[] = $tokenLockKey;
+            if (!$this->renewLock($loginLockKey, 30)) {
+                throw new SaTokenException('账号会话锁租约已失效，请重试');
+            }
+            array_walk($acquiredLocks, function (string $acquiredLock): void {
+                if (!$this->renewLock($acquiredLock, 30)) {
+                    throw new SaTokenException('Token 锁租约已失效，请重试');
+                }
+            });
+            $lastRenewal = hrtime(true);
+        };
+        try {
+            foreach ($tokenLockKeys as $tokenLockKey) {
+                $renewLocks();
+                if (!$this->acquireLock($tokenLockKey, 30)) {
+                    throw new SaTokenException('Token 正在签发或注销，请稍后重试');
+                }
+                $acquiredLocks[] = $tokenLockKey;
+            }
+        } catch (\Throwable $exception) {
+            foreach ($acquiredLocks as $acquiredLock) {
+                $this->releaseLock($acquiredLock);
+            }
+            throw $exception;
         }
 
         $keysToDelete = [];
         try {
             foreach ($tokens as $item) {
+                $renewLocks();
                 $tokenValue = is_string($item['tokenValue'] ?? null) ? $item['tokenValue'] : '';
                 if ($tokenValue === '') {
                     continue;
@@ -635,7 +658,7 @@ class TokenManager
     public function openSafe(string $tokenValue, string $service, int $safeTime, string $loginType): void
     {
         $tokenLockKey = $this->tokenValueLockKey($tokenValue);
-        if (!$this->acquireLock($tokenLockKey, 5)) {
+        if (!$this->acquireLock($tokenLockKey, 30)) {
             throw new SaTokenException('Token 正在签发或注销，请稍后重试');
         }
 
@@ -683,7 +706,7 @@ class TokenManager
     public function closeSafe(string $tokenValue, string $service, string $loginType): void
     {
         $tokenLockKey = $this->tokenValueLockKey($tokenValue);
-        if (!$this->acquireLock($tokenLockKey, 5)) {
+        if (!$this->acquireLock($tokenLockKey, 30)) {
             throw new SaTokenException('Token 正在签发或注销，请稍后重试');
         }
 
@@ -828,7 +851,7 @@ class TokenManager
 
         $loginIdStr = (string) $loginId;
         $loginLockKey = 'login:' . $loginType . ':' . hash('sha256', $loginIdStr);
-        if (!$this->acquireLock($loginLockKey, 5)) {
+        if (!$this->acquireLock($loginLockKey, 30)) {
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
 
@@ -1066,7 +1089,7 @@ class TokenManager
     public function revokeStatelessTokensByLoginId(string $loginId, string $loginType): void
     {
         $lockKey = 'login:' . $loginType . ':' . hash('sha256', $loginId);
-        if (!$this->acquireLock($lockKey, 5)) {
+        if (!$this->acquireLock($lockKey, 30)) {
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
         try {
@@ -1158,5 +1181,27 @@ class TokenManager
 
         unset($this->lockValues[$stateKey]);
         unset($this->lockDepths[$stateKey]);
+    }
+
+    /** 仅在当前请求上下文仍持有同一租约时续期。 */
+    public function renewLock(string $key, int $ttl = 30): bool
+    {
+        if ($ttl <= 0) {
+            return false;
+        }
+
+        $lockKey = self::LOCK_PREFIX . $key;
+        $stateKey = SaTokenContext::getContextId() . "\0" . $lockKey;
+        $lockValue = $this->lockValues[$stateKey] ?? null;
+        if ($lockValue === null) {
+            return false;
+        }
+
+        if (!\SaToken\Dao\SaTokenDaoLock::renew($this->getDao(), $lockKey, $lockValue, $ttl)) {
+            unset($this->lockValues[$stateKey], $this->lockDepths[$stateKey]);
+            return false;
+        }
+
+        return true;
     }
 }

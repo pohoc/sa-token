@@ -534,6 +534,22 @@ class TokenManagerTest extends TestCase
         $this->assertNull($this->dao->get($lockKey));
     }
 
+    public function testRenewLockExtendsOnlyTheCurrentOwnerLease(): void
+    {
+        $key = 'login:renew-user';
+        $lockKey = TokenManager::LOCK_PREFIX . $key;
+
+        self::assertTrue($this->manager->acquireLock($key, 1));
+        self::assertTrue($this->manager->renewLock($key, 120));
+        self::assertGreaterThan(0, $this->dao->getTimeout($lockKey));
+        self::assertLessThanOrEqual(120, $this->dao->getTimeout($lockKey));
+
+        $this->dao->set($lockKey, 'replacement-owner', 60);
+        self::assertFalse($this->manager->renewLock($key, 120));
+        self::assertSame('replacement-owner', $this->dao->get($lockKey));
+        self::assertFalse($this->manager->renewLock($key, 120), '丢失租约后不得继续使用本地重入状态');
+    }
+
     public function testReentrantLockRemainsHeldUntilEveryAcquireIsReleased(): void
     {
         $key = 'login:nested-user';

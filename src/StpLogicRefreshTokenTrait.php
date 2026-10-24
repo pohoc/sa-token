@@ -22,7 +22,7 @@ trait StpLogicRefreshTokenTrait
 
         // 与刷新、登出和踢出使用同一账号锁；一个 AccessToken 只保留一个有效 RefreshToken。
         $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', (string) $loginId);
-        if (!$this->tokenManager->acquireLock($lockKey, 5)) {
+        if (!$this->tokenManager->acquireLock($lockKey, 30)) {
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
         try {
@@ -71,7 +71,7 @@ trait StpLogicRefreshTokenTrait
 
         // 与登录共用同一把账号级互斥锁，避免并发刷新/登录互相覆盖 Token 列表
         $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', $loginId);
-        if (!$this->tokenManager->acquireLock($lockKey, 5)) {
+        if (!$this->tokenManager->acquireLock($lockKey, 30)) {
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
 
@@ -145,7 +145,7 @@ trait StpLogicRefreshTokenTrait
         }
 
         $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', $loginId);
-        if (!$this->tokenManager->acquireLock($lockKey, 5)) {
+        if (!$this->tokenManager->acquireLock($lockKey, 30)) {
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
         try {
@@ -172,7 +172,7 @@ trait StpLogicRefreshTokenTrait
         }
 
         $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', (string) $loginId);
-        if (!$this->tokenManager->acquireLock($lockKey, 5)) {
+        if (!$this->tokenManager->acquireLock($lockKey, 30)) {
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
         try {
