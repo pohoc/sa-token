@@ -722,6 +722,9 @@ class SaTokenConfig
 
     public function setSignKey(string $signKey): static
     {
+        if ($signKey !== '' && strlen($signKey) < 32) {
+            throw new SaTokenException('签名密钥长度不足，至少需要 32 字节');
+        }
         $this->signKey = $signKey;
         return $this;
     }

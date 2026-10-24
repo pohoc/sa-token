@@ -773,7 +773,7 @@ Basic 和 Digest 凭据失败会接入 `antiBruteMaxFailures` / `antiBruteLockDu
 
 ## 参数签名校验（SaSign）
 
-跨系统 API 调用签名，防参数篡改、防请求重放。使用前需先在配置中设置 `signKey`：
+跨系统 API 调用签名，防参数篡改、防请求重放。使用前需配置至少 32 字节的高熵 `signKey`：
 
 ```php
 use SaToken\SaToken;
@@ -1286,7 +1286,7 @@ try {
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
-| `signKey` | string | `''` | 参数签名密钥 |
+| `signKey` | string | `''` | 参数签名密钥，至少 32 字节；空值表示未启用 |
 | `signTimestampGap` | int | `600` | 签名时间戳容差（秒） |
 | `signAlg` | string | `'sha256'` | 签名算法：仅支持 `sha256`（MD5 因碰撞风险已移除） |
 

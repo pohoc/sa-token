@@ -40,6 +40,9 @@ class SaSign
         if ($this->key === '') {
             throw new SaTokenException('签名密钥未配置');
         }
+        if (strlen($this->key) < 32) {
+            throw new SaTokenException('签名密钥长度不足，至少需要 32 字节');
+        }
         $timestampGap = $config['timestampGap'] ?? 600;
         $this->timestampGap = is_int($timestampGap) ? $timestampGap : 600;
         $signAlg = $config['signAlg'] ?? 'sha256';

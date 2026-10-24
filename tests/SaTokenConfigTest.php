@@ -134,6 +134,14 @@ class SaTokenConfigTest extends TestCase
         $this->assertSame(1, $config->getAntiBruteLockDuration());
     }
 
+    public function testShortSigningKeyIsRejected(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('签名密钥长度不足');
+
+        new SaTokenConfig(['signKey' => 'weak-key']);
+    }
+
     public function testToArray(): void
     {
         $config = new SaTokenConfig(['tokenName' => 'test']);

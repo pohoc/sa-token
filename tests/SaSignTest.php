@@ -128,6 +128,14 @@ class SaSignTest extends TestCase
         new SaSign(['key' => '']);
     }
 
+    public function testShortSignKeyRejected(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('签名密钥长度不足');
+
+        new SaSign(['key' => 'key-a']);
+    }
+
     public function testUnsupportedAlgorithmRejected(): void
     {
         $this->expectException(SaTokenException::class);
@@ -145,8 +153,8 @@ class SaSignTest extends TestCase
 
     public function testKeyUsedInSign(): void
     {
-        $sign1 = new SaSign(['key' => 'key-a']);
-        $sign2 = new SaSign(['key' => 'key-b']);
+        $sign1 = new SaSign(['key' => 'key-a-with-at-least-32-bytes-long']);
+        $sign2 = new SaSign(['key' => 'key-b-with-at-least-32-bytes-long']);
 
         $params1 = $sign1->signParams(['foo' => 'bar']);
         $params2 = $sign2->signParams(['foo' => 'bar', 'timestamp' => $params1['timestamp'], 'nonce' => $params1['nonce']]);
