@@ -114,6 +114,22 @@ class SaSessionTest extends TestCase
         SaSession::getBySessionId($tokenKey);
     }
 
+    public function testSessionCannotDeleteInternalSessionLockKey(): void
+    {
+        $sessionId = TokenManager::buildSessionId('login', 'victim');
+        $lockKey = 'satoken:session:lock:' . $sessionId;
+        SaToken::getDao()->set($lockKey, 'active-lock-owner', 5);
+
+        try {
+            (new SaSession($lockKey))->destroy();
+            $this->fail('SaSession 不应允许删除内部会话锁键');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('保留存储命名空间', $e->getMessage());
+        }
+
+        $this->assertSame('active-lock-owner', SaToken::getDao()->get($lockKey));
+    }
+
     public function testDestroyWaitsForConcurrentSessionMutationLock(): void
     {
         $sessionId = 'test-session-destroy-lock';

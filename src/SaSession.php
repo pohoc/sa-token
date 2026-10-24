@@ -89,6 +89,10 @@ class SaSession
      */
     protected static function assertSafeSessionId(string $sessionId): void
     {
+        if (str_starts_with($sessionId, 'satoken:session:lock:')) {
+            throw new \SaToken\Exception\SaTokenException('Session ID 不能使用 Sa-Token 保留存储命名空间');
+        }
+
         if (!str_starts_with($sessionId, 'satoken:')) {
             return;
         }
