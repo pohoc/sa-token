@@ -912,6 +912,50 @@ class SecurityRegressionTest extends TestCase
         $this->assertNull($handle->validateAccessToken($at2->getAccessToken()));
     }
 
+    public function testOAuth2RefreshTokenReplayFromAnotherClientCannotRevokeFamily(): void
+    {
+        $handle = new SaOAuth2Handle(new SaOAuth2Config([
+            'grantTypes'          => ['authorization_code', 'refresh_token'],
+            'refreshTokenTimeout' => 86400,
+        ]));
+        $clientSecret = 'oauth-test-secret-with-at-least-32-bytes';
+        $handle->registerClient(new SaOAuth2Client([
+            'clientId'     => 'owner-client',
+            'clientSecret' => $clientSecret,
+            'grantTypes'   => ['authorization_code', 'refresh_token'],
+            'redirectUris' => ['https://owner.example.com/cb'],
+        ]));
+        $handle->registerClient(new SaOAuth2Client([
+            'clientId'     => 'other-client',
+            'clientSecret' => 'another-oauth-secret-with-at-least-32-bytes',
+            'grantTypes'   => ['authorization_code', 'refresh_token'],
+            'redirectUris' => ['https://other.example.com/cb'],
+        ]));
+
+        $code = $handle->generateAuthorizationCode('owner-client', 30002, 'https://owner.example.com/cb');
+        $at = $handle->exchangeTokenByCode($code->getCode(), 'owner-client', $clientSecret, 'https://owner.example.com/cb');
+        $refreshToken = $at->getRefreshToken();
+        self::assertNotNull($refreshToken);
+        $rotated = $handle->refreshToken($refreshToken, 'owner-client', $clientSecret);
+
+        try {
+            $handle->refreshToken($refreshToken, 'other-client', 'another-oauth-secret-with-at-least-32-bytes');
+            self::fail('其他客户端不能通过重放令牌撤销令牌家族');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('客户端 ID 不匹配', $exception->getMessage());
+        }
+
+        self::assertNotNull($handle->validateAccessToken($rotated->getAccessToken()));
+
+        try {
+            $handle->refreshToken($refreshToken, 'owner-client', $clientSecret);
+            self::fail('令牌所属客户端的重放仍应撤销令牌家族');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('撤销', $exception->getMessage());
+        }
+        self::assertNull($handle->validateAccessToken($rotated->getAccessToken()));
+    }
+
     public function testOAuth2PkceRoundTrip(): void
     {
         $handle = new SaOAuth2Handle(new SaOAuth2Config([

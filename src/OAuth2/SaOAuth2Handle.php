@@ -374,7 +374,19 @@ class SaOAuth2Handle
         $consumedFamily = $this->getDao()->get($consumedKey);
         if (is_string($consumedFamily) && $consumedFamily !== '') {
             $familyMarkerKey = $familyMarkerPrefix . hash('sha256', $consumedFamily);
-            if ($this->getDao()->get($familyMarkerKey) !== null) {
+            $familyMarkerJson = $this->getDao()->get($familyMarkerKey);
+            $familyMarker = $familyMarkerJson !== null
+                ? SaFoxUtil::fromJson($this->decryptValue($familyMarkerJson))
+                : null;
+            if (!is_array($familyMarker)
+                || !is_string($familyMarker['clientId'] ?? null)
+                || $familyMarker['clientId'] === '') {
+                throw new SaTokenException('刷新令牌客户端绑定无效');
+            }
+            if ($familyMarker['clientId'] !== $clientId) {
+                throw new SaTokenException('客户端 ID 不匹配');
+            }
+            if ($familyMarkerJson !== null) {
                 $this->revokeTokenFamily($familyMarkerKey);
             }
             $this->getDao()->delete($consumedKey);
@@ -418,6 +430,7 @@ class SaOAuth2Handle
                 $this->getDao()->set($familyMarkerKey, $this->encryptValue(SaFoxUtil::toJson([
                     'tokens'    => [],
                     'childRts'  => [],
+                    'clientId'  => $rtData->getClientId(),
                     'revokedAt' => time(),
                 ])), $markerTimeout);
             }
@@ -552,6 +565,7 @@ class SaOAuth2Handle
         $this->getDao()->set($familyMarkerKey, $this->encryptValue(SaFoxUtil::toJson([
             'tokens'    => $tokens,
             'childRts'  => $childRts,
+            'clientId'  => is_string($marker['clientId'] ?? null) ? $marker['clientId'] : '',
             'revokedAt' => $marker['revokedAt'] ?? time(),
         ])), $markerTimeout);
     }
