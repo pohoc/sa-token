@@ -190,6 +190,28 @@ class SaSsoTest extends TestCase
         }
     }
 
+    public function testSsoStateCanOnlyBeConsumedOnceAcrossCallbackRequests(): void
+    {
+        $state = 'one-time-state';
+        SaTokenContext::setRequest(new class ($state) {
+            public function __construct(private string $state)
+            {
+            }
+
+            public function cookie(string $name): ?string
+            {
+                return $name === '__Host-sso_params_state' ? $this->state : null;
+            }
+        });
+
+        $handle = new SaSsoHandle(new SaSsoConfig());
+        $handle->validateCallbackRequest(null, $state);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('state 已使用');
+        $handle->validateCallbackRequest(null, $state);
+    }
+
     public function testSameDomainSsoEnforcesTokenFingerprint(): void
     {
         SaToken::setConfig((new SaTokenConfig([

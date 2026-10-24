@@ -229,6 +229,10 @@ class SaSsoHandle
         if ($savedState === null || $savedState === '' || !hash_equals($savedState, $state)) {
             throw new SaTokenException('SSO state 参数校验失败，可能遭受 CSRF 攻击');
         }
+        $stateKey = 'satoken:sso:state:used:' . hash('sha256', $state);
+        if (!SaToken::getDao()->setIfNotExists($stateKey, '1', 300)) {
+            throw new SaTokenException('SSO state 已使用，拒绝重放回调');
+        }
         $this->setStateCookie('', -1);
     }
 

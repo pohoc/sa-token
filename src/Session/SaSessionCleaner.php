@@ -45,6 +45,7 @@ class SaSessionCleaner
         'satoken:disable:',
         'satoken:sign:nonce:',
         'satoken:auth:digest:nonce:',
+        'satoken:sso:state:used:',
         'satoken:security:brute:',
         'satoken:security:device:',
         'satoken:sensitive:',
