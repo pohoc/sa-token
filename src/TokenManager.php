@@ -703,6 +703,11 @@ class TokenManager
 
     public function openSafe(string $tokenValue, string $service, int $safeTime, string $loginType): void
     {
+        if ($safeTime <= 0) {
+            throw new SaTokenException('安全窗口必须是正整数秒数');
+        }
+        SaTokenTimeout::validate($safeTime, '安全窗口');
+
         $tokenLockKey = $this->tokenValueLockKey($tokenValue);
         if (!$this->acquireLock($tokenLockKey, 30)) {
             throw new SaTokenException('Token 正在签发或注销，请稍后重试');
@@ -714,7 +719,7 @@ class TokenManager
                 throw new SaTokenException('Token 不存在或已撤销，无法开启安全状态');
             }
             $effectiveSafeTime = $safeTime;
-            if ($safeTime > 0 && $tokenTimeout >= 0) {
+            if ($tokenTimeout >= 0) {
                 $effectiveSafeTime = min($safeTime, max(1, $tokenTimeout));
             }
 

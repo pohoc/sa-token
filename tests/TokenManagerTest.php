@@ -497,6 +497,33 @@ class TokenManagerTest extends TestCase
         $this->assertFalse($this->manager->isSafe($token, 'transfer', 'login'));
     }
 
+    public function testOpenSafeRejectsNonPositiveWindow(): void
+    {
+        $token = $this->manager->createTokenValue(10001, 'login');
+        $this->manager->saveToken($token, 10001, 'login', 'PC', -1);
+
+        try {
+            $this->manager->openSafe($token, 'transfer', 0, 'login');
+            self::fail('安全窗口不能为零');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('正整数', $exception->getMessage());
+        }
+    }
+
+    public function testOpenSafeRejectsDurationThatWouldOverflowExpiry(): void
+    {
+        SaToken::getConfig()->setTimeout(-1);
+        $token = $this->manager->createTokenValue(10001, 'login');
+        $this->manager->saveToken($token, 10001, 'login', 'PC', -1);
+
+        try {
+            $this->manager->openSafe($token, 'transfer', PHP_INT_MAX, 'login');
+            self::fail('安全窗口超出可表示时间时必须拒绝');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('可表示', $exception->getMessage());
+        }
+    }
+
     public function testSwitchTo(): void
     {
         $token = $this->manager->createTokenValue(10001, 'login');
