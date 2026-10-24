@@ -237,6 +237,12 @@ class SaTokenDaoPsr16Test extends TestCase
         $this->assertGreaterThan(0, $secondDao->getTimeout('expired-counter'));
     }
 
+    public function testIncrementWithZeroTimeoutCreatesPermanentCounter(): void
+    {
+        self::assertSame(1, $this->dao->increment('permanent-counter', 1, 0));
+        self::assertSame(-1, $this->dao->getTimeout('permanent-counter'));
+    }
+
     // ======== expire ========
 
     public function testExpireExistingKey(): void

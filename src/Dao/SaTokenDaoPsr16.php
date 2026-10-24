@@ -354,8 +354,8 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
                 $this->deleteCache($key);
                 $effectiveTimeout = $timeout;
             }
-            $writeTimeout = $effectiveTimeout !== null && $effectiveTimeout >= 0
-                ? max(1, $effectiveTimeout)
+            $writeTimeout = $effectiveTimeout !== null && $effectiveTimeout > 0
+                ? $effectiveTimeout
                 : null;
             if (!$this->writeCache($key, (string) $newValue, $writeTimeout)) {
                 throw new SaTokenException('PSR-16 计数器更新失败');
