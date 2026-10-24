@@ -174,6 +174,27 @@ class SaOAuth2OpenIdTest extends TestCase
         self::assertSame($nonce, $payload['nonce'] ?? null);
     }
 
+    public function testClientCredentialsCannotMintOpenIdOrRefreshTokens(): void
+    {
+        $clientId = 'machine-client';
+        $secret = 'machine-client-secret-with-at-least-32-bytes';
+        $client = new SaOAuth2Client([
+            'clientId' => $clientId,
+            'clientSecret' => $secret,
+            'grantTypes' => ['client_credentials'],
+            'scopes' => ['read', 'openid'],
+        ]);
+        $this->handle->registerClient($client);
+
+        $accessToken = $this->handle->tokenByClientCredentials($clientId, $secret, 'read');
+        self::assertSame('', $accessToken->getIdToken());
+        self::assertNull($accessToken->getRefreshToken());
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('client_credentials 不允许请求 openid scope');
+        $this->handle->tokenByClientCredentials($clientId, $secret, 'openid');
+    }
+
     public function testScopeContainsOpenid(): void
     {
         $handle = new class ($this->config) extends SaOAuth2Handle {

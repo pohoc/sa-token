@@ -586,8 +586,14 @@ class SaOAuth2Handle
 
         $client = $this->validateClientWithSecret($clientId, $clientSecret);
         $this->validateGrantTypeForClient($client, 'client_credentials');
+        $this->validateScopeForClient($client, $scope);
+        if ($this->scopeContainsOpenid($scope)) {
+            throw new SaTokenException('client_credentials 不允许请求 openid scope');
+        }
 
-        return $this->generateAccessToken($clientId, 'client:' . $clientId, $scope);
+        // Client credentials authenticate the client, not a resource owner;
+        // they therefore cannot issue refresh credentials for later delegation.
+        return $this->generateAccessToken($clientId, 'client:' . $clientId, $scope, '', false);
     }
 
     /**
