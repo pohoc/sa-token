@@ -140,6 +140,9 @@ class SaTokenConfig
     // 登录失败锁定时长（秒）
     protected int $antiBruteLockDuration = 600;
 
+    // 单来源累计失败最大次数，限制通过随机账号名制造无界计数键；0 表示关闭
+    protected int $antiBruteIpMaxFailures = 100;
+
     protected bool $deviceManagement = false;
 
     // 是否开启 IP 异常检测
@@ -297,6 +300,7 @@ class SaTokenConfig
             'signAlg'                => $this->signAlg,
             'antiBruteMaxFailures'   => $this->antiBruteMaxFailures,
             'antiBruteLockDuration'   => $this->antiBruteLockDuration,
+            'antiBruteIpMaxFailures'  => $this->antiBruteIpMaxFailures,
             'ipAnomalyDetection'      => $this->ipAnomalyDetection,
             'ipAnomalySensitivity'    => $this->ipAnomalySensitivity,
             'auditLog'                => $this->auditLog,
@@ -874,6 +878,20 @@ class SaTokenConfig
         }
         SaTokenTimeout::validate($antiBruteLockDuration, '防暴力破解锁定时长');
         $this->antiBruteLockDuration = $antiBruteLockDuration;
+        return $this;
+    }
+
+    public function getAntiBruteIpMaxFailures(): int
+    {
+        return $this->antiBruteIpMaxFailures;
+    }
+
+    public function setAntiBruteIpMaxFailures(int $antiBruteIpMaxFailures): static
+    {
+        if ($antiBruteIpMaxFailures < 0) {
+            throw new SaTokenException('单来源防暴力破解失败阈值必须是非负整数，0 表示关闭');
+        }
+        $this->antiBruteIpMaxFailures = $antiBruteIpMaxFailures;
         return $this;
     }
 

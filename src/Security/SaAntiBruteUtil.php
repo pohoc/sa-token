@@ -49,6 +49,28 @@ class SaAntiBruteUtil
         return hash('sha256', $ip !== null && $ip !== '' ? $ip : 'unknown');
     }
 
+    protected static function getSourceIdentity(string $loginType): ?string
+    {
+        $ip = SaTokenContext::getClientIp();
+        if ($ip === null || $ip === '') {
+            // A shared "unknown" bucket would let an unauthenticated caller
+            // lock out every request whose adapter cannot resolve a source IP.
+            return null;
+        }
+
+        return hash('sha256', $loginType . "\0" . $ip);
+    }
+
+    protected static function getSourceFailureKey(string $identity): string
+    {
+        return self::$keyPrefix . 'source-fail:' . $identity;
+    }
+
+    protected static function getSourceLockKey(string $identity): string
+    {
+        return self::$keyPrefix . 'source-lock:' . $identity;
+    }
+
     protected static function getIpCountPrefix(string $account, string $loginType = 'login'): string
     {
         return self::getKey($account, $loginType) . ':ip-count:';
@@ -105,6 +127,25 @@ class SaAntiBruteUtil
         // 单来源仍按原子计数阻止在线爆破；分布式防护需在上游配置全局速率限制。
         $failCount = $dao->increment(self::getIpCountKey($account, $loginType), 1, 86400);
 
+        // Account+IP counters alone let an attacker create a fresh persistent key
+        // for every guessed username. Bound that key growth with one counter per
+        // source and login type; after the cap, reject new attempts before they
+        // can allocate another account counter.
+        $sourceMax = $config->getAntiBruteIpMaxFailures();
+        $sourceIdentity = self::getSourceIdentity($loginType);
+        $sourceProtectionEnabled = $sourceMax > 0 && $lockDuration > 0 && $sourceIdentity !== null;
+        $sourceCount = $sourceProtectionEnabled
+            ? $dao->increment(self::getSourceFailureKey($sourceIdentity), 1, $lockDuration)
+            : 0;
+
+        if ($sourceProtectionEnabled && $sourceCount >= $sourceMax) {
+            $dao->set(
+                self::getSourceLockKey($sourceIdentity),
+                (string) (time() + $lockDuration),
+                $lockDuration + 60
+            );
+        }
+
         if ($maxFailures > 0 && $lockDuration > 0 && $failCount >= $maxFailures) {
             $dao->set(
                 self::getIpLockKey($account, $loginType),
@@ -116,6 +157,15 @@ class SaAntiBruteUtil
 
     public static function checkAndThrow(string $account, string $loginType = 'login'): void
     {
+        $sourceIdentity = self::getSourceIdentity($loginType);
+        if ($sourceIdentity !== null) {
+            $sourceLockUntil = self::getLockUntil(self::getSourceLockKey($sourceIdentity));
+            if ($sourceLockUntil > time()) {
+                $remaining = $sourceLockUntil - time();
+                throw new SaTokenException('当前来源失败次数过多，请 ' . $remaining . ' 秒后重试', -10);
+            }
+        }
+
         if (self::isAccountLocked($account, $loginType)) {
             $remaining = self::getRemainingLockTime($account, $loginType);
             throw new SaTokenException(

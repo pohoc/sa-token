@@ -769,7 +769,7 @@ $auth->checkDigest('My Realm');
 
 Digest 流程：服务端先返回 `401` + `WWW-Authenticate` 响应头（含服务端签发的一次性 nonce，TTL 300 秒），客户端携带该 nonce 完成认证；nonce 在认证成功后立即作废，重放直接拒绝。手搓 Digest 头调试时，必须先触发 challenge 获取服务端签发的 nonce。
 
-Basic 和 Digest 凭据失败会接入 `antiBruteMaxFailures` / `antiBruteLockDuration`，按账号和可信来源 IP 进行限流；认证成功会清除当前来源的失败计数。
+Basic 和 Digest 凭据失败会接入 `antiBruteMaxFailures` / `antiBruteLockDuration`，按账号和可信来源 IP 进行限流；认证成功会清除该账号当前来源的失败计数。
 
 ## 参数签名校验（SaSign）
 
@@ -815,7 +815,7 @@ $apiKey->registerKey('ak-789012', 'sk-ghijkl', 10002);
 $apiKey->checkApiKey();
 ```
 
-API Key/Secret 验证失败也会使用 `antiBruteMaxFailures` / `antiBruteLockDuration`，按 API Key 和可信来源 IP 限制连续错误的 Secret 尝试；验证成功会清除当前来源的失败计数。
+API Key/Secret 验证失败也会使用 `antiBruteMaxFailures` / `antiBruteLockDuration`，按 API Key 和可信来源 IP 限制连续错误的 Secret 尝试；验证成功会清除该 API Key 当前来源的失败计数。
 
 自定义验证器：
 
@@ -1004,7 +1004,7 @@ Token 存储加密器 `SaTokenEncryptor::decrypt()` 同样默认拒绝旧版无�
 
 ## 防暴力破解
 
-登录失败次数按账号和来源 IP 分别记录；单一来源达到阈值后只会锁定该来源，避免匿名请求通过猜测用户名锁住其他用户。显式调用 `lock()` / `unlockAccount()` 仍按账号全局生效。部署在代理后时，应正确配置可信代理与客户端 IP 解析；若请求上下文无法解析来源 IP，失败记录会共享 `unknown` 来源。分布式来源的全局限流应由网关或应用层补充。
+登录失败次数按账号和来源 IP 分别记录；单一账号达到阈值后只锁定该账号在当前来源的尝试，避免匿名请求锁住其他用户。另有来源级累计上限，防止攻击者不断更换账号名制造无界计数键；达到上限后，该来源在锁定时长内不能继续尝试该登录类型。显式调用 `lock()` / `unlockAccount()` 仍按账号全局生效。部署在代理后时，应正确配置可信代理与客户端 IP 解析；来源 IP 无法解析时不会启用来源级上限，以免所有未知来源共享锁定状态。分布式来源的全局限流仍应由网关或应用层补充。
 
 ```php
 StpUtil::checkAntiBrute('user@example.com');
@@ -1026,13 +1026,15 @@ $info = StpUtil::getAntiBruteInfo('user@example.com');
 SaToken::init([
     'antiBruteMaxFailures'  => 5,
     'antiBruteLockDuration' => 600,
+    'antiBruteIpMaxFailures' => 100,
 ]);
 ```
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
-| `antiBruteMaxFailures` | int | `5` | 单一来源的最大失败次数，`0` 不限制 |
+| `antiBruteMaxFailures` | int | `5` | 单一账号、单一来源的最大失败次数，`0` 不限制 |
 | `antiBruteLockDuration` | int | `600` | 锁定时长（秒） |
+| `antiBruteIpMaxFailures` | int | `100` | 同一来源、同一登录类型累计失败上限，限制随机账号名造成的存储增长；需 `antiBruteLockDuration` 大于 `0`，`0` 关闭此上限 |
 
 ## IP 异常检测
 

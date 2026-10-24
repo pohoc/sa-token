@@ -78,6 +78,56 @@ class SaAntiBruteUtilTest extends TestCase
         $this->assertSame(0, SaAntiBruteUtil::getFailCount('known-account'));
     }
 
+    public function testSourceFailureLimitBoundsCountersAcrossRandomAccounts(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'antiBruteMaxFailures' => 0,
+            'antiBruteIpMaxFailures' => 2,
+            'antiBruteLockDuration' => 600,
+        ]));
+        SaTokenContext::setRequest($this->requestFromIp('192.0.2.50'));
+
+        SaAntiBruteUtil::recordFailure('random-user-1');
+        SaAntiBruteUtil::recordFailure('random-user-2');
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('当前来源失败次数过多');
+        SaAntiBruteUtil::checkAndThrow('random-user-3');
+    }
+
+    public function testSourceFailureLimitIsIsolatedByIpAndLoginType(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'antiBruteIpMaxFailures' => 1,
+            'antiBruteLockDuration' => 600,
+        ]));
+        SaTokenContext::setRequest($this->requestFromIp('192.0.2.50'));
+        SaAntiBruteUtil::recordFailure('random-user', 'login');
+
+        SaTokenContext::setRequest($this->requestFromIp('192.0.2.51'));
+        SaAntiBruteUtil::checkAndThrow('random-user', 'login');
+        $this->assertSame(0, SaAntiBruteUtil::getFailCount('random-user', 'login'));
+
+        SaTokenContext::setRequest($this->requestFromIp('192.0.2.50'));
+        SaAntiBruteUtil::checkAndThrow('random-user', 'admin');
+        $this->assertSame(0, SaAntiBruteUtil::getFailCount('random-user', 'admin'));
+    }
+
+    public function testUnknownIpDoesNotCreateSharedSourceLockout(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'antiBruteIpMaxFailures' => 1,
+            'antiBruteLockDuration' => 600,
+        ]));
+        SaTokenContext::setRequest(null);
+
+        SaAntiBruteUtil::recordFailure('random-user-1');
+        SaAntiBruteUtil::recordFailure('random-user-2');
+        SaAntiBruteUtil::checkAndThrow('random-user-3');
+
+        $this->assertSame(0, SaAntiBruteUtil::getFailCount('random-user-3'));
+    }
+
     public function testManualLockAppliesAcrossSourceIps(): void
     {
         SaTokenContext::setRequest($this->requestFromIp('192.0.2.10'));
