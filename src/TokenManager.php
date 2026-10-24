@@ -879,9 +879,11 @@ class TokenManager
                 'createTime'   => SaFoxUtil::getTime(),
             ]);
             $effectiveTimeout = ($timeout === -1) ? null : $timeout;
+            $refreshKey = self::REFRESH_TOKEN_PREFIX . $refreshToken;
+            $refreshRaw = $this->encryptValue($data);
             if (!$this->getDao()->setIfNotExists(
-                self::REFRESH_TOKEN_PREFIX . $refreshToken,
-                $this->encryptValue($data),
+                $refreshKey,
+                $refreshRaw,
                 $effectiveTimeout
             )) {
                 throw new SaTokenException('RefreshToken 值冲突，拒绝覆盖其他会话凭据');
@@ -892,7 +894,9 @@ class TokenManager
             $previousMapValue = $dao->get($mapKey);
             if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface
                 || !$dao->compareAndSet($mapKey, $previousMapValue, $this->encryptValue($refreshToken), $effectiveTimeout)) {
-                $dao->delete(self::REFRESH_TOKEN_PREFIX . $refreshToken);
+                if ($dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
+                    $dao->compareAndDelete($refreshKey, $refreshRaw);
+                }
                 throw new SaTokenException('RefreshToken 映射已并发变更或 DAO 不支持原子条件写入，请重试');
             }
             $this->extendLoginIdListTimeout($loginIdStr, $loginType, $timeout);
