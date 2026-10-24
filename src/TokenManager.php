@@ -148,7 +148,10 @@ class TokenManager
                 if (strlen($customToken) < 16) {
                     throw new SaTokenException('自定义 Token 熵不足（至少 16 字符），存在被伪造或碰撞的风险');
                 }
-                return $customToken;
+                // Keep credential classes disjoint even when a custom action
+                // returns the same value on every call. In particular, an
+                // access token must never also be accepted as its refresh token.
+                return $prefix . $customToken;
             }
         }
 

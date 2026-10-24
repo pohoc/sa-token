@@ -627,6 +627,46 @@ class SecurityRegressionTest extends TestCase
         StpUtil::login(20009);
     }
 
+    public function testCustomTokenGeneratorKeepsAccessAndRefreshCredentialsDistinct(): void
+    {
+        SaToken::setConfig(SaToken::getConfig()
+            ->setRefreshToken(true)
+            ->setRefreshTokenTimeout(3600));
+        SaToken::setAction(new class () implements \SaToken\Action\SaTokenActionInterface {
+            public function getPermissionList(mixed $loginId, string $loginType): array
+            {
+                return [];
+            }
+
+            public function getRoleList(mixed $loginId, string $loginType): array
+            {
+                return [];
+            }
+
+            public function generateTokenValue(mixed $loginId, string $loginType): string
+            {
+                return 'custom-generated-credential-value';
+            }
+        });
+
+        $login = StpUtil::login('custom-refresh-user');
+        $accessToken = $login->getAccessToken();
+        $refreshToken = $login->getRefreshToken();
+
+        self::assertNotSame($accessToken, $refreshToken);
+        self::assertStringStartsWith('srt_', (string) $refreshToken);
+        try {
+            StpUtil::refreshToken((string) $accessToken);
+            self::fail('An access token must not also be accepted as a refresh token');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('RefreshToken 无效', $exception->getMessage());
+        }
+
+        $rotated = StpUtil::refreshToken((string) $refreshToken);
+        self::assertSame($accessToken, $rotated->getAccessToken());
+        self::assertNotSame($rotated->getAccessToken(), $rotated->getRefreshToken());
+    }
+
     public function testRevokeTokenWithPermanentTimeoutStaysRevoked(): void
     {
         $result = StpUtil::login(20004, (new \SaToken\SaLoginParameter())->setTimeout(-1));
