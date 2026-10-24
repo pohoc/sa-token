@@ -76,6 +76,9 @@ trait StpLogicRefreshTokenTrait
         }
 
         try {
+            // 与 disable() 共用账号锁后重查，避免被封禁前的预检查结果
+            // 在等待锁期间继续签发新的 AccessToken。
+            $this->checkDisableForLogin($loginId);
             $remainingTimeout = $this->tokenManager->getRefreshTokenTimeout($refreshToken);
 
             // 原子消费：同一 RefreshToken 并发重放时，仅第一个请求成功

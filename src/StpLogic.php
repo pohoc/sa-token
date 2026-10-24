@@ -122,6 +122,9 @@ class StpLogic
         /** @var array<string> $replacedTokens */
         $replacedTokens = [];
         try {
+            // 封禁状态与发证必须在同一账号锁内复查，避免预检查后管理员封禁、
+            // 但本次登录仍继续签发 Token。
+            $this->checkDisableForLogin($loginId);
             $tokenValue = $this->resolveTokenValue($loginId, $deviceType, $isShare, $config, $replacedTokens);
 
             $this->controlMaxLoginCount($loginId, $deviceType, $maxLoginCount, $tokenValue, $replacedTokens);
@@ -215,17 +218,26 @@ class StpLogic
         $timeout = $parameter->getTimeout() ?? $config->getTimeout();
         SaTokenTimeout::validate($timeout);
 
-        $this->checkDisableForLogin($loginId);
-
-        $jwt = $this->getJwt();
-        $tokenValue = $jwt->createStatelessToken($loginId, $this->loginType, $timeout);
-        if ($config->isTokenFingerprint()) {
-            $fingerprint = $this->tokenManager->computeFingerprint();
-            $this->tokenManager->saveFingerprint($tokenValue, $fingerprint, $timeout);
+        $loginIdStr = (string) $loginId;
+        $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', $loginIdStr);
+        if (!$this->tokenManager->acquireLock($lockKey, 30)) {
+            throw new SaTokenException('同账号登录正在处理中，请稍后重试');
         }
-        $this->tokenManager->updateLastActiveToNow($tokenValue);
+        try {
+            $this->checkDisableForLogin($loginId);
 
-        $this->writeTokenToResponse($tokenValue, $parameter);
+            $jwt = $this->getJwt();
+            $tokenValue = $jwt->createStatelessToken($loginId, $this->loginType, $timeout);
+            if ($config->isTokenFingerprint()) {
+                $fingerprint = $this->tokenManager->computeFingerprint();
+                $this->tokenManager->saveFingerprint($tokenValue, $fingerprint, $timeout);
+            }
+            $this->tokenManager->updateLastActiveToNow($tokenValue);
+
+            $this->writeTokenToResponse($tokenValue, $parameter);
+        } finally {
+            $this->tokenManager->releaseLock($lockKey);
+        }
 
         $this->getEvent()->onLogin($this->loginType, $loginId, $tokenValue, $parameter);
 
@@ -722,6 +734,7 @@ class StpLogic
         }
 
         try {
+            $this->checkDisableForLogin($loginId);
             $tokenValue = $this->tokenManager->createTokenValue($loginId, $this->loginType);
             // mixed 模式下实际存储的是 JWT，必须返回真实值
             return $this->tokenManager->saveToken($tokenValue, $loginId, $this->loginType, 'temp', $timeout);

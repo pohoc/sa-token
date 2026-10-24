@@ -197,6 +197,44 @@ class StpLogicFullTest extends TestCase
         $this->logic->login(10001);
     }
 
+    public function testDisableSetAfterPrecheckStillPreventsLogin(): void
+    {
+        $logic = new class ('login') extends StpLogic {
+            private bool $disableAfterPrecheck = true;
+
+            protected function checkDisableForLogin(mixed $loginId): void
+            {
+                parent::checkDisableForLogin($loginId);
+                if ($this->disableAfterPrecheck) {
+                    $this->disableAfterPrecheck = false;
+                    $this->disable($loginId, 'login', 1, 3600);
+                }
+            }
+        };
+
+        $this->expectException(DisableServiceException::class);
+        $logic->login('disable-race-user');
+    }
+
+    public function testDisablePreventsTemporaryTokenIssuance(): void
+    {
+        $this->logic->disable('temp-token-disabled-user', 'login', 1, 3600);
+
+        $this->expectException(DisableServiceException::class);
+        $this->logic->createTempToken('temp-token-disabled-user', 60);
+    }
+
+    public function testDisablePreventsStatelessTokenIssuance(): void
+    {
+        SaToken::getConfig()
+            ->setJwtMode('stateless')
+            ->setJwtSecretKey('stateless-disable-test-secret-32-bytes');
+        $this->logic->disable('stateless-disabled-user', 'login', 1, 3600);
+
+        $this->expectException(DisableServiceException::class);
+        $this->logic->loginStateless('stateless-disabled-user');
+    }
+
     public function testDisableDoesNotAffectOtherUser(): void
     {
         $this->logic->disable(10001, 'login', 1, 3600);

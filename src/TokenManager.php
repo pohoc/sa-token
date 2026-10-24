@@ -623,7 +623,15 @@ class TokenManager
             'disable' => true,
             'time'    => $time,
         ]);
-        $this->getDao()->set($key, $this->encryptValue($data), $time > 0 ? $time : null);
+        $lockKey = 'login:' . $loginType . ':' . hash('sha256', $loginIdStr);
+        if (!$this->acquireLock($lockKey, 30)) {
+            throw new SaTokenException('同账号会话正在处理中，请稍后重试');
+        }
+        try {
+            $this->getDao()->set($key, $this->encryptValue($data), $time > 0 ? $time : null);
+        } finally {
+            $this->releaseLock($lockKey);
+        }
     }
 
     public function isDisable(mixed $loginId, string $service, string $loginType): bool
