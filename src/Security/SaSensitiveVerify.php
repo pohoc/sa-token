@@ -79,8 +79,7 @@ class SaSensitiveVerify
                 'verified' => false,
             ];
 
-            $jsonStr = json_encode($data);
-            $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', self::$validSeconds + 60);
+            $dao->set($key, self::encodeCodeState($data), self::$validSeconds + 60);
             $dao->delete($key . ':att');
             $dao->delete($key . ':verified');
 
@@ -148,14 +147,13 @@ class SaSensitiveVerify
         $key = self::getKey($scene, $loginId, $loginType);
         $lockValue = self::acquireStateLock($key);
         try {
-            $attemptsKey = $key . ':att';
             $data = $dao->get($key);
 
             if ($data === null) {
                 return false;
             }
 
-            $info = @json_decode($data, true);
+            $info = self::decodeCodeState($data);
             if (!is_array($info)) {
                 return false;
             }
@@ -167,18 +165,21 @@ class SaSensitiveVerify
             $expiresAt = $info['expiresAt'] ?? null;
             if (!is_int($expiresAt) || $expiresAt <= time()) {
                 $dao->delete($key);
-                $dao->delete($attemptsKey);
+                $dao->delete($key . ':att');
                 return false;
             }
 
-            // 先原子递增尝试计数再校验：读-改-写在并发提交下会被覆盖，
-            // 攻击者可用远超 maxAttempts 的次数爆破 6 位验证码
-            $attempts = $dao->increment($attemptsKey, 1, max(60, self::$validSeconds));
+            // State lock serializes verification attempts. Keep the counter in
+            // the authenticated record so a cache writer cannot reset the
+            // separate counter key and brute-force a short numeric OTP.
+            $attempts = is_int($info['attempts'] ?? null) ? $info['attempts'] + 1 : 1;
+            $info['attempts'] = $attempts;
             if ($attempts > self::$maxAttempts) {
                 $dao->delete($key);
-                $dao->delete($attemptsKey);
+                $dao->delete($key . ':att');
                 throw new SaTokenException('验证码尝试次数过多，请重新获取', -1);
             }
+            $dao->set($key, self::encodeCodeState($info), max(60, $expiresAt - time() + 60));
 
             $codeHash = $info['codeHash'] ?? null;
             if (!is_string($codeHash) || !password_verify($code, $codeHash)) {
@@ -192,9 +193,8 @@ class SaSensitiveVerify
 
             $info['verified'] = true;
             $info['verifiedAt'] = time();
-            $jsonStr = json_encode($info);
-            $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', 60);
-            $dao->delete($attemptsKey);
+            $dao->set($key, self::encodeCodeState($info), 60);
+            $dao->delete($key . ':att');
 
             return true;
         } finally {
@@ -219,7 +219,7 @@ class SaSensitiveVerify
             return false;
         }
 
-        $info = @json_decode($data, true);
+        $info = self::decodeCodeState($data);
         if (!is_array($info)) {
             return false;
         }
@@ -262,9 +262,83 @@ class SaSensitiveVerify
     public static function getRemainingAttempts(string $scene, mixed $loginId, string $loginType = 'login'): int
     {
         $dao = SaToken::getDao();
-        $attempts = $dao->get(self::getKey($scene, $loginId, $loginType) . ':att');
+        $data = $dao->get(self::getKey($scene, $loginId, $loginType));
+        if ($data === null) {
+            return max(0, self::$maxAttempts);
+        }
 
-        return max(0, self::$maxAttempts - ($attempts !== null ? (int) $attempts : 0));
+        $info = self::decodeCodeState($data);
+        if (!is_array($info)) {
+            return 0;
+        }
+        $attempts = is_int($info['attempts'] ?? null) ? $info['attempts'] : 0;
+
+        return max(0, self::$maxAttempts - $attempts);
+    }
+
+    /** @param array<string, mixed> $data */
+    protected static function encodeCodeState(array $data): string
+    {
+        $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if (!is_string($json)) {
+            throw new SaTokenException('验证码状态序列化失败');
+        }
+
+        $payload = base64_encode($json);
+        $record = json_encode([
+            'payload' => $payload,
+            'mac' => hash_hmac('sha256', $payload, self::getCodeStateMacKey()),
+        ]);
+        if (!is_string($record)) {
+            throw new SaTokenException('验证码状态序列化失败');
+        }
+
+        return $record;
+    }
+
+    /** @return array<string, mixed>|null */
+    protected static function decodeCodeState(string $record): ?array
+    {
+        $envelope = json_decode($record, true);
+        if (!is_array($envelope)
+            || !is_string($envelope['payload'] ?? null)
+            || !is_string($envelope['mac'] ?? null)) {
+            return null;
+        }
+
+        $expectedMac = hash_hmac('sha256', $envelope['payload'], self::getCodeStateMacKey());
+        if (!hash_equals($expectedMac, $envelope['mac'])) {
+            return null;
+        }
+
+        $json = base64_decode($envelope['payload'], true);
+        if ($json === false) {
+            return null;
+        }
+        $data = json_decode($json, true);
+        if (!is_array($data)) {
+            return null;
+        }
+
+        $normalized = [];
+        foreach ($data as $key => $value) {
+            if (!is_string($key)) {
+                return null;
+            }
+            $normalized[$key] = $value;
+        }
+
+        return $normalized;
+    }
+
+    protected static function getCodeStateMacKey(): string
+    {
+        $signKey = SaToken::getConfig()->getSignKey();
+        if (strlen($signKey) < 32) {
+            throw new SaTokenException('敏感验证码状态保护需要配置至少 32 字节的 signKey');
+        }
+
+        return hash_hkdf('sha256', $signKey, 32, 'sa-token-sensitive-verify-state', '');
     }
 
     public static function createSafeToken(string $scene, mixed $loginId, string $loginType = 'login', int $validSeconds = 600): string

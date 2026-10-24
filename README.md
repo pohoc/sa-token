@@ -1093,7 +1093,7 @@ SaToken::init([
 
 ## 敏感操作验证
 
-OTP 验证码与安全令牌：
+OTP 验证码与安全令牌。使用 OTP 前必须配置至少 32 字节的高熵 `signKey`；验证码状态（含尝试次数与验证结果）使用派生 HMAC 防止 DAO 数据被篡改。升级后旧格式的待验证验证码会失效，需要重新获取。
 
 ```php
 $code = StpUtil::generateOtpCode('payment');

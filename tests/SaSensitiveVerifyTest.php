@@ -57,6 +57,7 @@ class SaSensitiveVerifyTest extends TestCase
     protected function setUp(): void
     {
         SaToken::reset();
+        SaToken::getConfig()->setSignKey('sensitive-verify-test-sign-key-32-bytes');
         SaToken::setDao(new SaTokenDaoMemory());
         SaSensitiveVerify::reset();
     }
@@ -86,7 +87,11 @@ class SaSensitiveVerifyTest extends TestCase
         $code = SaSensitiveVerify::generateCode($scene, $loginId);
         $stored = SaToken::getDao()->get(SaSensitiveVerify::getKey($scene, $loginId));
         self::assertNotNull($stored);
-        $data = json_decode($stored, true);
+        $envelope = json_decode($stored, true);
+        $this->assertIsArray($envelope);
+        $encodedPayload = is_string($envelope['payload'] ?? null) ? $envelope['payload'] : '';
+        $payload = base64_decode($encodedPayload, true);
+        $data = is_string($payload) ? json_decode($payload, true) : null;
 
         $this->assertIsArray($data);
         $this->assertArrayNotHasKey('code', $data);
@@ -437,20 +442,52 @@ class SaSensitiveVerifyTest extends TestCase
         SaSensitiveVerify::setValidSeconds(0);
     }
 
-    public function testCodeWithInvalidExpiryFailsClosed(): void
+    public function testTamperedCodeExpiryFailsClosed(): void
     {
         $scene = 'invalid-expiry-code';
         $loginId = 10031;
         $code = SaSensitiveVerify::generateCode($scene, $loginId);
         $key = SaSensitiveVerify::getKey($scene, $loginId);
-        $data = json_decode((string) SaToken::getDao()->get($key), true);
-        if (!is_array($data)) {
-            self::fail('Generated code state must be a JSON object');
+        $envelope = json_decode((string) SaToken::getDao()->get($key), true);
+        if (!is_array($envelope)) {
+            self::fail('Generated code state envelope must be a JSON object');
         }
+        $payload = base64_decode(is_string($envelope['payload'] ?? null) ? $envelope['payload'] : '', true);
+        $data = is_string($payload) ? json_decode($payload, true) : null;
+        self::assertIsArray($data);
         $data['expiresAt'] = 0;
-        SaToken::getDao()->set($key, json_encode($data) ?: '{}', 300);
+        $envelope['payload'] = base64_encode(json_encode($data) ?: '{}');
+        SaToken::getDao()->set($key, json_encode($envelope) ?: '{}', 300);
 
         $this->assertFalse(SaSensitiveVerify::verifyCode($scene, $code, $loginId));
+    }
+
+    public function testTamperedVerificationStateCannotForgeSuccessfulOtp(): void
+    {
+        $scene = 'tampered-verification-state';
+        $loginId = 10034;
+        SaSensitiveVerify::generateCode($scene, $loginId);
+        $key = SaSensitiveVerify::getKey($scene, $loginId);
+        $envelope = json_decode((string) SaToken::getDao()->get($key), true);
+        self::assertIsArray($envelope);
+        $payload = base64_decode(is_string($envelope['payload'] ?? null) ? $envelope['payload'] : '', true);
+        $data = is_string($payload) ? json_decode($payload, true) : null;
+        self::assertIsArray($data);
+        $data['verified'] = true;
+        $envelope['payload'] = base64_encode(json_encode($data) ?: '{}');
+        SaToken::getDao()->set($key, json_encode($envelope) ?: '{}', 300);
+
+        self::assertFalse(SaSensitiveVerify::isVerified($scene, $loginId));
+        self::assertFalse(SaSensitiveVerify::verifyCode($scene, '000000', $loginId));
+    }
+
+    public function testCodeGenerationRequiresStateSigningKey(): void
+    {
+        SaToken::getConfig()->setSignKey('');
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('至少 32 字节的 signKey');
+        SaSensitiveVerify::generateCode('missing-state-signing-key', 10035);
     }
 
     public function testSafeTokenRejectsNonPositiveLifetime(): void

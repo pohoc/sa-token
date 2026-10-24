@@ -208,6 +208,7 @@ class SaAnnotationTest extends TestCase
             'isReadBody'      => false,
             'isWriteCookie'   => false,
             'isWriteHeader'   => false,
+            'signKey'         => 'sensitive-verify-test-sign-key-32-bytes',
         ]));
         SaToken::setDao(new SaTokenDaoMemory());
 

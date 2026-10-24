@@ -42,6 +42,7 @@ class SecurityRegressionTest extends TestCase
             'isWriteCookie'   => false,
             'isWriteHeader'   => false,
             'jwtSecretKey'    => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'signKey'         => 'sensitive-verify-test-sign-key-32-bytes',
         ]));
         SaToken::setDao(new SaTokenDaoMemory());
     }
@@ -1743,6 +1744,7 @@ class SecurityRegressionTest extends TestCase
     {
         $sent = [];
         SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'signKey' => 'sensitive-verify-test-sign-key-32-bytes',
             'sensitiveVerifyCallback' => function (string $scene, string $code, mixed $loginId) use (&$sent): void {
                 $sent[] = $code;
             },
