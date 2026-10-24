@@ -127,6 +127,26 @@ class SaApiKeyTest extends TestCase
         $api->checkApiKey();
     }
 
+    public function testValidatorExceptionCountsAsFailedApiKeyAttemptAndIsRethrown(): void
+    {
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'api-key' => 'throwing-key',
+            'api-secret' => 'wrong-secret',
+        ]));
+        $api = (new SaApiKey())->setValidator(static function (): never {
+            throw new SaTokenException('credential rejected');
+        });
+
+        try {
+            $api->checkApiKey();
+            self::fail('validator rejection must not authenticate');
+        } catch (SaTokenException $exception) {
+            self::assertSame('credential rejected', $exception->getMessage());
+        }
+
+        self::assertSame(1, SaAntiBruteUtil::getFailCount('throwing-key', 'api-key'));
+    }
+
     public function testInvalidSecretAttemptsAreRateLimitedByApiKeyAndSource(): void
     {
         SaToken::setConfig(SaToken::getConfig()->setAntiBruteMaxFailures(2)->setAntiBruteLockDuration(60));

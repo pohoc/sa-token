@@ -77,6 +77,55 @@ class SaHttpAuthTest extends TestCase
         $this->assertTrue(true);
     }
 
+    public function testBasicValidatorExceptionCountsAsFailureAndIsRethrown(): void
+    {
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->willReturnCallback(static fn (string $name): array => $name === 'Authorization'
+            ? ['Basic ' . base64_encode('throwing-user:wrong')]
+            : []);
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '192.0.2.110']);
+        SaTokenContext::setRequest($request);
+
+        $auth = (new SaHttpAuth())->setBasicValidator(static function (): never {
+            throw new SaTokenException('credential rejected');
+        });
+        try {
+            $auth->checkBasic();
+            self::fail('validator rejection must not authenticate');
+        } catch (SaTokenException $exception) {
+            self::assertSame('credential rejected', $exception->getMessage());
+        }
+
+        self::assertSame(1, \SaToken\Security\SaAntiBruteUtil::getFailCount('throwing-user'));
+    }
+
+    public function testDigestValidatorExceptionCountsAsFailureAndIsRethrown(): void
+    {
+        $auth = new SaHttpAuth();
+        $nonce = $auth->generateNonce();
+        $header = sprintf(
+            'Digest username="throwing-digest-user", realm="Sa-Token", nonce="%s", uri="/resource", '
+                . 'response="00000000000000000000000000000000", qop=auth, nc=00000001, cnonce="client-nonce"',
+            $nonce
+        );
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->willReturnCallback(static fn (string $name): array => $name === 'Authorization' ? [$header] : []);
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '192.0.2.111']);
+        SaTokenContext::setRequest($request);
+        $auth->setDigestValidator(static function (): never {
+            throw new SaTokenException('credential lookup rejected');
+        });
+
+        try {
+            $auth->checkDigest();
+            self::fail('validator rejection must not authenticate');
+        } catch (SaTokenException $exception) {
+            self::assertSame('credential lookup rejected', $exception->getMessage());
+        }
+
+        self::assertSame(1, \SaToken\Security\SaAntiBruteUtil::getFailCount('throwing-digest-user'));
+    }
+
     public function testCheckBasicRejectsDuplicateAuthorizationHeaders(): void
     {
         $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);

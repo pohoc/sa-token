@@ -57,7 +57,12 @@ class SaHttpAuth
             throw new SaTokenException('未设置 Basic 认证校验器');
         }
 
-        $loginId = ($this->basicValidator)($username, $password);
+        try {
+            $loginId = ($this->basicValidator)($username, $password);
+        } catch (\Throwable $exception) {
+            SaAntiBruteUtil::recordFailure($username);
+            throw $exception;
+        }
 
         if ($loginId === null || is_bool($loginId) || !is_scalar($loginId) || $loginId === '') {
             SaAntiBruteUtil::recordFailure($username);
@@ -116,7 +121,12 @@ class SaHttpAuth
             throw new SaTokenException('未设置 Digest 认证校验器');
         }
 
-        $ha1 = ($this->digestValidator)($username);
+        try {
+            $ha1 = ($this->digestValidator)($username);
+        } catch (\Throwable $exception) {
+            SaAntiBruteUtil::recordFailure($username);
+            throw $exception;
+        }
 
         // Digest HA1 is an MD5 hex digest in this implementation. Empty or
         // malformed validator sentinels must fail closed; otherwise an empty

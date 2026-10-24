@@ -50,7 +50,12 @@ class SaApiKey
         SaAntiBruteUtil::checkAndThrow($apiKey, 'api-key');
 
         if ($this->validator !== null) {
-            $loginId = ($this->validator)($apiKey, $apiSecret);
+            try {
+                $loginId = ($this->validator)($apiKey, $apiSecret);
+            } catch (\Throwable $exception) {
+                SaAntiBruteUtil::recordFailure($apiKey, 'api-key');
+                throw $exception;
+            }
         } else {
             $loginId = $this->validateFromRegistry($apiKey, $apiSecret);
         }
