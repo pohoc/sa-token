@@ -725,7 +725,7 @@ $accessToken = $oauth2->exchangeTokenByCode($code, $clientId, $clientSecret, $re
 
 ### OpenID Connect
 
-配置 `openIdMode => true` 且请求 scope 必须包含 `openid` 时，响应中自动包含 `id_token`（依赖 `jwtSecretKey` 配置）：
+配置 `openIdMode => true` 且请求 scope 必须包含 `openid` 时，响应中自动包含 `id_token`（依赖 `jwtSecretKey` 配置）；`issuer` 必须配置为无凭据、无查询参数和片段的 HTTPS URL：
 
 ```php
 $accessToken = $oauth2->exchangeTokenByCode($code, $clientId, $clientSecret, $redirectUri);

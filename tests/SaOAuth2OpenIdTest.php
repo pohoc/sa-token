@@ -91,6 +91,69 @@ class SaOAuth2OpenIdTest extends TestCase
         $this->handle->generateIdToken('test-client', 10001, 'openid');
     }
 
+    public function testGenerateIdTokenRejectsInvalidIssuer(): void
+    {
+        $config = new SaOAuth2Config([
+            'openIdMode' => true,
+            'issuer' => 'http://my-app.example.com',
+        ]);
+        $handle = new SaOAuth2Handle($config);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('HTTPS issuer URL');
+        $handle->generateIdToken('test-client', 10001, 'openid');
+    }
+
+    public function testOpenIdTokenIssuanceFailsBeforePersistingAccessTokenWithoutIssuer(): void
+    {
+        $handle = new SaOAuth2Handle(new SaOAuth2Config([
+            'openIdMode' => true,
+        ]));
+        $handle->registerClient($this->testClient);
+        $before = SaToken::getDao()->size();
+
+        try {
+            $handle->generateAccessToken('test-client', 10001, 'openid');
+            self::fail('OIDC access token issuance must reject a missing issuer');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('HTTPS issuer URL', $exception->getMessage());
+        }
+
+        self::assertSame($before, SaToken::getDao()->size());
+    }
+
+    public function testInvalidIssuerDoesNotConsumeAuthorizationCode(): void
+    {
+        $this->config->setIssuer('');
+        $code = $this->handle->generateAuthorizationCode(
+            'test-client',
+            10001,
+            'https://example.com/callback',
+            'openid profile'
+        );
+
+        try {
+            $this->handle->exchangeTokenByCode(
+                $code->getCode(),
+                'test-client',
+                $this->clientSecret,
+                'https://example.com/callback'
+            );
+            self::fail('OIDC code exchange must reject a missing issuer');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('HTTPS issuer URL', $exception->getMessage());
+        }
+
+        $this->config->setIssuer('https://my-app.example.com');
+        $token = $this->handle->exchangeTokenByCode(
+            $code->getCode(),
+            'test-client',
+            $this->clientSecret,
+            'https://example.com/callback'
+        );
+        self::assertNotEmpty($token->getIdToken());
+    }
+
     public function testIdTokenContainsJwtString(): void
     {
         $idToken = $this->handle->generateIdToken('test-client', 10001, 'openid');

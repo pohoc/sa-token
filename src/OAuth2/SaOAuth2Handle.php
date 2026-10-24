@@ -202,6 +202,10 @@ class SaOAuth2Handle
             throw new SaTokenException('公开客户端必须使用 PKCE（授权请求需携带 code_challenge）');
         }
 
+        if ($this->config->isOpenIdMode() && $this->scopeContainsOpenid($codeData->getScope())) {
+            $this->validateIdTokenIssuer();
+        }
+
         // 绑定校验成功后再原子消费；并发兑换时只有一个请求能继续签发令牌。
         $consumedCode = $this->consumeAuthorizationCode($code);
         if ($consumedCode === null || $consumedCode->getCode() !== $code
@@ -832,6 +836,9 @@ class SaOAuth2Handle
         if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
             throw new SaTokenException('loginId 不能为空且必须是非布尔标量');
         }
+        if ($this->config->isOpenIdMode() && $this->scopeContainsOpenid($scope)) {
+            $this->validateIdTokenIssuer();
+        }
         if ($includeAtHash && (!$this->config->isOpenIdMode() || !$this->scopeContainsOpenid($scope) || $idTokenNonce === '')) {
             throw new SaTokenException('OpenID Connect 隐式授权必须包含 openid scope 和 nonce');
         }
@@ -1194,6 +1201,8 @@ class SaOAuth2Handle
      */
     public function generateIdToken(string $clientId, mixed $loginId, string $scope = '', string $nonce = '', string $accessToken = ''): SaOAuth2IdToken
     {
+        $this->validateIdTokenIssuer();
+
         $now = time();
         $expiresAt = $now + $this->config->getAccessTokenTimeout();
 
@@ -1227,6 +1236,21 @@ class SaOAuth2Handle
             'issuer'   => $this->config->getIssuer(),
             'claims'   => $payload,
         ]);
+    }
+
+    /** Ensure an ID Token never carries an empty or non-HTTPS issuer identifier. */
+    protected function validateIdTokenIssuer(): void
+    {
+        $issuer = $this->config->getIssuer();
+        $parsed = parse_url($issuer);
+        if ($issuer === '' || preg_match('/[\\\\\x00-\x20\x7f]/', $issuer) === 1
+            || !is_array($parsed)
+            || strtolower((string) ($parsed['scheme'] ?? '')) !== 'https'
+            || !isset($parsed['host']) || $parsed['host'] === ''
+            || array_key_exists('user', $parsed) || array_key_exists('pass', $parsed)
+            || array_key_exists('query', $parsed) || array_key_exists('fragment', $parsed)) {
+            throw new SaTokenException('OpenID Connect 必须配置无凭据、无查询或片段的 HTTPS issuer URL');
+        }
     }
 
     protected function scopeContainsOpenid(string $scope): bool
