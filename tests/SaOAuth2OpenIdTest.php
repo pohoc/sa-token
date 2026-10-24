@@ -82,6 +82,14 @@ class SaOAuth2OpenIdTest extends TestCase
         $this->assertGreaterThan($idToken->getIssuedAt(), $idToken->getExpiresAt());
     }
 
+    public function testGenerateIdTokenRejectsPayloadThatCannotBeEncoded(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('OAuth2 ID Token Payload 无法编码为 JSON');
+
+        $this->handle->generateIdToken('test-client', "invalid-\xB1-subject", 'openid');
+    }
+
     public function testGenerateIdTokenRejectsShortSigningKey(): void
     {
         SaToken::setConfig(new SaTokenConfig(['jwtSecretKey' => 'short-secret']));

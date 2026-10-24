@@ -135,6 +135,14 @@ class SaTokenJwtTest extends TestCase
         $this->assertSame('kept', $payload['custom']);
     }
 
+    public function testCreateTokenRejectsClaimsThatCannotBeEncoded(): void
+    {
+        $this->expectException(\SaToken\Exception\SaTokenException::class);
+        $this->expectExceptionMessage('JWT Header 或 Payload 无法编码为 JSON');
+
+        $this->jwt->createToken(10001, 'login', null, ['not-a-json-number' => NAN]);
+    }
+
     public function testCreateTokenWithDifferentLoginIds(): void
     {
         $token1 = $this->jwt->createToken(10001, 'login');

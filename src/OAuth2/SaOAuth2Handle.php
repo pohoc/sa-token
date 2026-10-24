@@ -1272,8 +1272,15 @@ class SaOAuth2Handle
             'alg' => 'HS256',
         ];
 
-        $headerB64 = $this->base64UrlEncode(json_encode($header, JSON_UNESCAPED_UNICODE) ?: '');
-        $payloadB64 = $this->base64UrlEncode(json_encode($payload, JSON_UNESCAPED_UNICODE) ?: '');
+        try {
+            $headerJson = json_encode($header, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+            $payloadJson = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        } catch (\JsonException $exception) {
+            throw new SaTokenException('OAuth2 ID Token Payload 无法编码为 JSON', 0, $exception);
+        }
+
+        $headerB64 = $this->base64UrlEncode($headerJson);
+        $payloadB64 = $this->base64UrlEncode($payloadJson);
         $signingInput = $headerB64 . '.' . $payloadB64;
 
         $secretKey = $this->getClientSecretForSigning();

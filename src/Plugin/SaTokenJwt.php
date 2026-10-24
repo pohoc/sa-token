@@ -72,10 +72,15 @@ class SaTokenJwt
         $safeExtraClaims = array_diff_key($extraClaims, array_flip($reservedClaims));
         $payload = array_merge($payload, $safeExtraClaims);
 
-        $headerJson = json_encode($header, JSON_UNESCAPED_UNICODE);
-        $payloadJson = json_encode($payload, JSON_UNESCAPED_UNICODE);
-        $headerB64 = $this->base64UrlEncode(is_string($headerJson) ? $headerJson : '');
-        $payloadB64 = $this->base64UrlEncode(is_string($payloadJson) ? $payloadJson : '');
+        try {
+            $headerJson = json_encode($header, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+            $payloadJson = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        } catch (\JsonException $exception) {
+            throw new SaTokenException('JWT Header 或 Payload 无法编码为 JSON', 0, $exception);
+        }
+
+        $headerB64 = $this->base64UrlEncode($headerJson);
+        $payloadB64 = $this->base64UrlEncode($payloadJson);
         $signingInput = $headerB64 . '.' . $payloadB64;
 
         if ($this->cryptoType === 'sm') {
