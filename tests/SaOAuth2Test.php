@@ -776,6 +776,55 @@ class SaOAuth2Test extends TestCase
         self::assertNotNull($dao->get($malformedKey));
     }
 
+    public function testRefreshTokenWithInvalidLifetimeMetadataFailsClosedWithoutDaoTtl(): void
+    {
+        foreach ([0, -1, time() + 60, PHP_INT_MAX] as $createTime) {
+            $token = new SaOAuth2RefreshToken([
+                'createTime' => $createTime,
+                'expiresIn' => 3600,
+            ]);
+            self::assertTrue($token->isExpired(), '无效的刷新令牌创建时间必须视为过期');
+        }
+
+        $overflowingToken = new SaOAuth2RefreshToken([
+            'createTime' => time(),
+            'expiresIn' => PHP_INT_MAX,
+        ]);
+        self::assertTrue($overflowingToken->isExpired(), '超出可表示范围的刷新令牌有效期必须拒绝');
+
+        $dao = new class () extends SaTokenDaoMemory {
+            public function set(string $key, string $value, ?int $timeout = null): void
+            {
+                parent::set($key, $value, null);
+            }
+        };
+        SaToken::setDao($dao);
+        $this->handle->registerClient($this->testClient);
+
+        foreach ([time() + 60, time() - 60] as $createTime) {
+            $refreshToken = 'refresh-token-invalid-time-' . $createTime;
+            $key = 'oauth2:rt:' . $refreshToken;
+            $dao->set($key, json_encode([
+                'refreshToken' => $refreshToken,
+                'accessToken' => 'access-token-invalid-time',
+                'clientId' => 'test-client',
+                'loginId' => 10001,
+                'scope' => 'read',
+                'expiresIn' => $createTime > time() ? 3600 : PHP_INT_MAX,
+                'createTime' => $createTime,
+                'familyId' => 'invalid-time-family',
+            ], JSON_THROW_ON_ERROR));
+
+            try {
+                $this->handle->refreshToken($refreshToken, 'test-client', $this->clientSecret);
+                self::fail('无效生命周期元数据的刷新令牌必须被拒绝');
+            } catch (SaTokenException $exception) {
+                self::assertStringContainsString('已过期', $exception->getMessage());
+            }
+            self::assertNotNull($dao->get($key), '生命周期预检失败时刷新令牌不应被消费');
+        }
+    }
+
     public function testRefreshTokenWithWrongClientId(): void
     {
         $code = $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback');

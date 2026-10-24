@@ -143,16 +143,17 @@ class SaOAuth2RefreshToken
      */
     public function isExpired(): bool
     {
-        if ($this->createTime <= 0) {
+        $now = time();
+        if ($this->createTime <= 0 || $this->createTime > $now) {
             return true;
         }
         if ($this->expiresIn === -1) {
             return false;
         }
-        if ($this->expiresIn <= 0) {
+        if ($this->expiresIn <= 0 || $this->expiresIn > PHP_INT_MAX - $this->createTime - 60) {
             return true;
         }
 
-        return time() >= $this->createTime + $this->expiresIn;
+        return $now >= $this->createTime + $this->expiresIn;
     }
 }
