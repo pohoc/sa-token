@@ -27,6 +27,8 @@ sa-token 通过 `SaTokenContext` 提供跨框架兼容层，支持以下请求/�
 
 如果只做了第 1 步，没有把 response 回写到 `SaTokenContext`，那么 `isWriteCookie`、`isWriteHeader`、RefreshToken 响应头等能力都不会生效。
 
+登录接口必须先由应用自己的认证服务校验账号凭据，再把服务端查到的用户 ID 传给 `StpUtil::login()`。绝不能直接信任请求中的 `userId`，也不能在公开登录接口中无凭据地签发固定账号的 Token。
+
 ### 请求方法
 - `getHeader(name)` - PSR-7 标准
 - `header(name)` - ThinkPHP/Laravel 风格
@@ -112,14 +114,22 @@ class SaTokenMiddleware
 namespace app\controller;
 
 use SaToken\StpUtil;
+use app\service\AuthService;
 use think\facade\Route;
 
 class AuthController
 {
-    public function login()
+    public function login(AuthService $authService)
     {
-        $userId = 1001;
-        $result = StpUtil::login($userId);
+        $user = $authService->authenticate(
+            input('post.username/s', ''),
+            input('post.password/s', '')
+        );
+        if ($user === null) {
+            return json(['code' => 401, 'msg' => '账号或密码错误'], 401);
+        }
+
+        $result = StpUtil::login($user->id);
         return json(['code' => 0, 'msg' => '登录成功', 'data' => $result->toArray()]);
     }
 
@@ -237,13 +247,22 @@ class SaTokenMiddleware
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use SaToken\StpUtil;
 
 class AuthController extends Controller
 {
     public function login(Request $request)
     {
-        $userId = $request->input('userId', 1001);
+        if (!Auth::attempt($request->only('email', 'password'))) {
+            return response()->json(['code' => 401, 'msg' => '账号或密码错误'], 401);
+        }
+
+        // 身份来自已通过 Laravel 认证的用户，不读取客户端提交的 userId。
+        $userId = Auth::id();
+        if ($userId === null) {
+            return response()->json(['code' => 401, 'msg' => '认证失败'], 401);
+        }
         $result = StpUtil::login($userId);
         return response()->json([
             'code' => 0,
@@ -365,15 +384,22 @@ namespace App\Controller;
 
 use SaToken\StpUtil;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
+use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\Routing\Annotation\Route;
 
 class AuthController extends AbstractController
 {
     #[Route('/auth/login', methods: ['POST'])]
-    public function login(): JsonResponse
+    public function login(Security $security): JsonResponse
     {
-        $userId = 1001;
+        // 此示例假定应用的 Symfony Security firewall 已验证当前用户。
+        $user = $security->getUser();
+        if ($user === null) {
+            return $this->json(['code' => 401, 'msg' => '账号或密码错误'], 401);
+        }
+
+        $userId = $user->getUserIdentifier();
         $result = StpUtil::login($userId);
         return $this->json([
             'code' => 0,
@@ -497,8 +523,12 @@ require __DIR__ . '/vendor/autoload.php';
 SaToken::init();
 
 $server = new Server('0.0.0.0', 9501);
+$authenticateCredentials = static function (string $username, string $password): int|string|null {
+    // 在这里调用应用自己的用户认证服务；无效凭据必须返回 null。
+    return null;
+};
 
-$server->on('request', function (Request $request, Response $response) {
+$server->on('request', function (Request $request, Response $response) use ($authenticateCredentials) {
     // SaTokenContext 自动使用当前 Swoole 协程 ID 隔离请求上下文。
     // 路径必须从当前 Swoole 请求读取，不能依赖常驻 worker 中可能缺失或残留的 $_SERVER['REQUEST_URI']。
     $wrappedRequest = new class($request) {
@@ -533,7 +563,17 @@ $server->on('request', function (Request $request, Response $response) {
         $path = $request->server['request_uri'];
 
         if ($path === '/auth/login') {
-            $result = StpUtil::login(1001);
+            $userId = $authenticateCredentials(
+                (string) ($request->post['username'] ?? ''),
+                (string) ($request->post['password'] ?? '')
+            );
+            if ($userId === null || $userId === '') {
+                $response->status(401);
+                $response->end(json_encode(['code' => 401, 'msg' => '账号或密码错误']));
+                return;
+            }
+
+            $result = StpUtil::login($userId);
             $response->header('Content-Type', 'application/json');
             $response->end(json_encode([
                 'code' => 0,
