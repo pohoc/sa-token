@@ -1068,7 +1068,7 @@ class SaOAuth2Handle
         $scheme = strtolower((string) $parsed['scheme']);
         $host = strtolower((string) $parsed['host']);
         $isLocal = $host === 'localhost' || $host === '127.0.0.1' || $host === '::1';
-        if ($scheme !== 'https' && !$isLocal) {
+        if (!in_array($scheme, ['https', 'http'], true) || ($scheme === 'http' && !$isLocal)) {
             throw new SaTokenException('回调地址必须使用 HTTPS 协议');
         }
 

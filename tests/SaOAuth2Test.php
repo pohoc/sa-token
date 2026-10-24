@@ -315,6 +315,17 @@ class SaOAuth2Test extends TestCase
         }
     }
 
+    public function testRedirectUriRejectsNonHttpSchemesOnLocalhost(): void
+    {
+        $redirectUri = 'javascript://localhost/callback';
+        $this->testClient->setRedirectUris([$redirectUri]);
+        $this->handle->registerClient($this->testClient);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('回调地址必须使用 HTTPS 协议');
+        $this->handle->generateAuthorizationCode('test-client', 10001, $redirectUri);
+    }
+
     public function testExchangeTokenByCode(): void
     {
         $code = $this->handle->generateAuthorizationCode(
