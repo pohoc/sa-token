@@ -79,7 +79,7 @@ class SaOAuth2AccessToken
         if ($this->createTime <= 0) {
             return false;
         }
-        return time() > $this->createTime + $this->expiresIn;
+        return time() >= $this->createTime + $this->expiresIn;
     }
 
     public function getAccessToken(): string

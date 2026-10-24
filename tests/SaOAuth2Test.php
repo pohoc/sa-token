@@ -164,6 +164,22 @@ class SaOAuth2Test extends TestCase
         }
     }
 
+    public function testOAuth2CredentialsExpireAtTheirExactExpirySecond(): void
+    {
+        $expiry = time();
+        $code = new SaOAuth2AuthorizationCode([
+            'createTime' => $expiry - 60,
+            'expiresIn' => 60,
+        ]);
+        $accessToken = new SaOAuth2AccessToken([
+            'createTime' => $expiry - 60,
+            'expiresIn' => 60,
+        ]);
+
+        self::assertTrue($code->isExpired(), '授权码在 exp 边界必须失效');
+        self::assertTrue($accessToken->isExpired(), 'Access Token 在 exp 边界必须失效');
+    }
+
     public function testClientWithoutScopeAllowlistCannotSelfAssignScopes(): void
     {
         $client = new SaOAuth2Client([

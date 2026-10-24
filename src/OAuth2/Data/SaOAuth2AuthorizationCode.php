@@ -63,7 +63,7 @@ class SaOAuth2AuthorizationCode
      */
     public function isExpired(): bool
     {
-        return time() > $this->createTime + $this->expiresIn;
+        return time() >= $this->createTime + $this->expiresIn;
     }
 
     /**
