@@ -315,6 +315,48 @@ class SaRpcContextTest extends TestCase
         self::assertNull(SaToken::getStpLogic()->getLoginId());
     }
 
+    public function testRpcAutoLoginValidatesForwardedIdentityWhenTokenValidationToggleIsOff(): void
+    {
+        $token = StpUtil::login(10009)->getAccessToken();
+        SaTokenContext::clear();
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token'      => $token,
+            'X-Sa-Login-Id'   => 'attacker-controlled-id',
+            'X-Sa-Login-Type' => 'login',
+        ]));
+
+        $interceptor = (new SaRpcInterceptor())->setValidateToken(false)->setAutoLogin(true);
+        try {
+            $interceptor->handleIncoming();
+            self::fail('autoLogin 必须将转发身份绑定到已验证的 Token');
+        } catch (SaTokenException $exception) {
+            self::assertSame('RPC Token 与转发身份信息不匹配', $exception->getMessage());
+        }
+
+        self::assertNull(StpUtil::getLoginId(), '身份不匹配时不得留下有效登录覆盖');
+    }
+
+    public function testRpcAutoLoginRejectsRepeatedForwardedIdentityHeadersWhenValidationToggleIsOff(): void
+    {
+        $token = StpUtil::login(10010)->getAccessToken();
+        SaTokenContext::clear();
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token'      => $token,
+            'X-Sa-Login-Id'   => ['10010', 'attacker-controlled-id'],
+            'X-Sa-Login-Type' => 'login',
+        ]));
+
+        $interceptor = (new SaRpcInterceptor())->setValidateToken(false)->setAutoLogin(true);
+        try {
+            $interceptor->handleIncoming();
+            self::fail('autoLogin 必须拒绝重复身份 Header');
+        } catch (SaTokenException $exception) {
+            self::assertSame('RPC 认证 Header 存在多个值', $exception->getMessage());
+        }
+
+        self::assertNull(StpUtil::getLoginId(), '拒绝重复身份 Header 后不得留下登录覆盖');
+    }
+
     public function testRpcInterceptorOutgoing(): void
     {
         $loginResult = StpUtil::login(10001);

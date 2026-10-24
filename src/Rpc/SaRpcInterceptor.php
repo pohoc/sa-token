@@ -55,6 +55,20 @@ class SaRpcInterceptor
                 throw new SaTokenException('RPC Token 无效');
             }
 
+            if (SaTokenContext::hasMultipleHeaderValues('X-Sa-Login-Id')
+                || SaTokenContext::hasMultipleHeaderValues('X-Sa-Login-Type')) {
+                SaTokenContext::setTokenOverride($this->loginType, '');
+                throw new SaTokenException('RPC 认证 Header 存在多个值');
+            }
+
+            $forwardedLoginId = SaRpcContext::getForwardedLoginId();
+            $forwardedLoginType = SaRpcContext::getForwardedLoginType();
+            if (($forwardedLoginId !== null && $forwardedLoginId !== (string) $loginId)
+                || ($forwardedLoginType !== null && $forwardedLoginType !== $this->loginType)) {
+                SaTokenContext::setTokenOverride($this->loginType, '');
+                throw new SaTokenException('RPC Token 与转发身份信息不匹配');
+            }
+
             // Bind the validated upstream credential to this request's local
             // authentication API without issuing another token or trusting a
             // conflicting native satoken header.
