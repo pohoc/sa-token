@@ -144,6 +144,36 @@ class SaOAuth2OpenIdTest extends TestCase
         $this->assertCount(3, $parts, 'id_token should be a valid JWT');
     }
 
+    public function testAuthorizationNonceIsPresentInReturnedAndStoredIdToken(): void
+    {
+        $nonce = 'client-generated-oidc-nonce';
+        $code = $this->handle->generateAuthorizationCode(
+            'test-client',
+            10001,
+            'https://example.com/callback',
+            'openid profile',
+            nonce: $nonce
+        );
+
+        $issued = $this->handle->exchangeTokenByCode(
+            $code->getCode(),
+            'test-client',
+            $this->clientSecret,
+            'https://example.com/callback'
+        );
+        $stored = $this->handle->validateAccessToken($issued->getAccessToken());
+
+        self::assertNotNull($stored);
+        self::assertSame($issued->getIdToken(), $stored->getIdToken());
+        $idTokenParts = explode('.', $stored->getIdToken());
+        self::assertCount(3, $idTokenParts);
+        $payloadJson = base64_decode(strtr($idTokenParts[1], '-_', '+/') . str_repeat('=', (4 - strlen($idTokenParts[1]) % 4) % 4), true);
+        self::assertIsString($payloadJson);
+        $payload = json_decode($payloadJson, true);
+        self::assertIsArray($payload);
+        self::assertSame($nonce, $payload['nonce'] ?? null);
+    }
+
     public function testScopeContainsOpenid(): void
     {
         $handle = new class ($this->config) extends SaOAuth2Handle {

@@ -210,15 +210,14 @@ class SaOAuth2Handle
             throw new SaTokenException('无效的授权码');
         }
 
-        $accessToken = $this->generateAccessToken($clientId, $codeData->getLoginId(), $codeData->getScope());
-
-        // OIDC：授权请求携带的 nonce 必须回显进 id_token（重放防护）
-        if ($this->config->isOpenIdMode() && $this->scopeContainsOpenid($codeData->getScope()) && $codeData->getNonce() !== '') {
-            $idTokenObj = $this->generateIdToken($clientId, $codeData->getLoginId(), $codeData->getScope(), $codeData->getNonce());
-            $accessToken->setIdToken($idTokenObj->getIdToken());
-        }
-
-        return $accessToken;
+        return $this->generateAccessToken(
+            $clientId,
+            $codeData->getLoginId(),
+            $codeData->getScope(),
+            '',
+            true,
+            $codeData->getNonce()
+        );
     }
 
     /**
@@ -779,7 +778,8 @@ class SaOAuth2Handle
         mixed $loginId,
         string $scope = '',
         string $refreshFamilyId = '',
-        bool $includeRefreshToken = true
+        bool $includeRefreshToken = true,
+        string $idTokenNonce = ''
     ): SaOAuth2AccessToken {
         $client = $this->validateClient($clientId);
         $this->validateScopeForClient($client, $scope);
@@ -815,7 +815,7 @@ class SaOAuth2Handle
         // OIDC 规范：id_token 仅在请求包含 openid scope 时签发，
         // 防止未请求身份信息的流程被附带下发 sub 等身份声明
         if ($this->config->isOpenIdMode() && $this->scopeContainsOpenid($scope)) {
-            $idTokenObj = $this->generateIdToken($clientId, $loginId, $scope);
+            $idTokenObj = $this->generateIdToken($clientId, $loginId, $scope, $idTokenNonce);
             $accessToken->setIdToken($idTokenObj->getIdToken());
             $this->getDao()->set(
                 $this->buildAccessTokenKey($tokenStr),
