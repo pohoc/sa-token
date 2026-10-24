@@ -174,4 +174,13 @@ class SaSignTest extends TestCase
         $this->assertTrue($sign1->verifySign($params1));
         $this->assertTrue($sign2->verifySign($params2));
     }
+
+    public function testVerifySignRejectsNonceConsumedByLegacyGlobalStore(): void
+    {
+        $nonce = 'nonce-consumed-before-key-scoping';
+        $params = $this->sign->signParams(['operation' => 'transfer', 'nonce' => $nonce]);
+        SaToken::getDao()->set('satoken:sign:nonce:' . hash('sha256', $nonce), '1', 1260);
+
+        $this->assertFalse($this->sign->verifySign($params));
+    }
 }

@@ -128,6 +128,13 @@ class SaSign
     protected function recordNonce(string $nonce): bool
     {
         $dao = SaToken::getDao();
+        // Keep rejecting nonces consumed before key-scoped storage was introduced.
+        // Legacy records expire naturally; new requests never write this global key.
+        $legacyKey = 'satoken:sign:nonce:' . hash('sha256', $nonce);
+        if ($dao->get($legacyKey) !== null) {
+            return false;
+        }
+
         // Isolate replay state by signing key: in a shared DAO, one client must
         // not be able to reserve another client's chosen nonce and deny its request.
         $key = 'satoken:sign:nonce:' . hash_hmac('sha256', $nonce, $this->key);
