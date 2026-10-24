@@ -245,7 +245,15 @@ class SaLoginDeviceManager
             if (SaToken::getConfig()->isJwtStateless()) {
                 if ($exceptToken === null) {
                     $logic->kickout($loginId);
-                    $devices = self::loadDeviceList($loginId, $loginType, true);
+                    $devices = self::loadDeviceRecords($loginId, $loginType, true);
+                    foreach ($devices as $record) {
+                        $renewAccountLock();
+                        $dao = SaToken::getDao();
+                        if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface
+                            || !$dao->compareAndSet($record['key'], $record['raw'], null)) {
+                            throw new SaTokenException('设备记录已并发变更或 DAO 不支持原子条件写入，请重试');
+                        }
+                    }
                     return count($devices);
                 }
 

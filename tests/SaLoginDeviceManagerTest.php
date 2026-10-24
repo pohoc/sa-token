@@ -236,6 +236,34 @@ class SaLoginDeviceManagerTest extends TestCase
         self::assertSame($loginId, $this->logic->getLoginIdByToken($secondToken));
     }
 
+    public function testStatelessKickoutAllDevicesRemovesDeviceRecords(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenName'        => 'satoken',
+            'timeout'          => 86400,
+            'activityTimeout'  => -1,
+            'isReadHeader'     => false,
+            'isReadCookie'     => false,
+            'isWriteCookie'    => false,
+            'isWriteHeader'    => false,
+            'deviceManagement' => true,
+            'jwtStateless'     => true,
+            'jwtSecretKey'     => 'test-stateless-device-secret-32-bytes-long',
+        ]));
+
+        $loginId = 'stateless-device-cleanup-account';
+        $token = $this->logic->loginStateless($loginId);
+        $device = new SaLoginDevice([
+            'deviceType' => 'pc',
+            'deviceName' => 'Old workstation',
+        ]);
+        SaLoginDeviceManager::registerDevice($loginId, 'login', $device, $token, $this->logic);
+
+        self::assertSame(1, $this->logic->kickoutAllDevices($loginId));
+        self::assertNull($this->logic->getLoginIdByToken($token));
+        self::assertSame([], $this->logic->getDeviceList($loginId));
+    }
+
     public function testMultipleDeviceLogin(): void
     {
         $this->logic->login(10001);
