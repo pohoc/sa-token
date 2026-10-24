@@ -36,6 +36,9 @@ class SaSession
      */
     protected bool $loaded = false;
 
+    /** Whether this object was loaded from an existing storage record. */
+    protected bool $persisted = false;
+
     protected ?int $timeout = null;
 
     public function __construct(string $id, bool $skipLoad = false, ?int $timeout = null)
@@ -75,6 +78,7 @@ class SaSession
         $dataMap = is_array($dataMap) ? $dataMap : [];
         $session->dataMap = $dataMap;
         $session->loaded = true;
+        $session->persisted = true;
         return $session;
     }
 
@@ -212,6 +216,7 @@ class SaSession
                     $dao->delete($this->id);
                     $this->dataMap = [];
                     $this->loaded = true;
+                    $this->persisted = true;
                     return;
                 } finally {
                     \SaToken\Dao\SaTokenDaoLock::release($dao, $lockKey, $lockValue);
@@ -245,9 +250,17 @@ class SaSession
                 try {
                     $fresh = $this->readFreshDataMap();
                     $fn($fresh);
+                    $previousDataMap = $this->dataMap;
+                    $previousLoaded = $this->loaded;
                     $this->dataMap = $fresh;
                     $this->loaded = true;
-                    $this->saveData();
+                    try {
+                        $this->saveData();
+                    } catch (\Throwable $exception) {
+                        $this->dataMap = $previousDataMap;
+                        $this->loaded = $previousLoaded;
+                        throw $exception;
+                    }
                     return;
                 } finally {
                     \SaToken\Dao\SaTokenDaoLock::release($dao, $lockKey, $lockValue);
@@ -269,6 +282,9 @@ class SaSession
         $dao = SaToken::getDao();
         $json = $dao->get($this->id);
         if ($json === null) {
+            if ($this->persisted) {
+                throw new \SaToken\Exception\SaTokenException('会话已过期或销毁，拒绝重新创建');
+            }
             return [];
         }
 
@@ -297,6 +313,7 @@ class SaSession
 
         $json = SaToken::getDao()->get($this->id);
         if ($json !== null) {
+            $this->persisted = true;
             $encryptor = self::getEncryptor();
             $decrypted = $encryptor->decryptChecked($json);
             if ($decrypted === null) {
@@ -326,14 +343,20 @@ class SaSession
         $encryptor = self::getEncryptor();
         $encrypted = $encryptor->encrypt($json);
 
-        // 经 getBySessionId 读取的会话 timeout 为 null：
-        // 直接写 null 会让已存在会话变成"永不过期"，必须回读并保留原 TTL
-        $timeout = $this->timeout;
-        if ($timeout === null && SaToken::getDao()->exists($this->id)) {
-            $currentTtl = SaToken::getDao()->getTimeout($this->id);
-            $timeout = $currentTtl > 0 ? $currentTtl : null;
+        if ($this->persisted) {
+            // update preserves the storage record's TTL and never creates a
+            // new record after expiry. Recreating with set() could turn an
+            // expired session into a permanent one when a stale object is used.
+            $dao = SaToken::getDao();
+            $dao->update($this->id, $encrypted);
+            if ($dao->get($this->id) === null) {
+                throw new \SaToken\Exception\SaTokenException('会话已过期或销毁，拒绝重新创建');
+            }
+            return;
         }
-        SaToken::getDao()->set($this->id, $encrypted, $timeout);
+
+        SaToken::getDao()->set($this->id, $encrypted, $this->timeout);
+        $this->persisted = true;
     }
 
     protected static function getEncryptor(): SaTokenEncryptor

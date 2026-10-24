@@ -143,6 +143,26 @@ class SaSessionTest extends TestCase
         $this->assertEquals('data', $loaded->get('persistent'));
     }
 
+    public function testExpiredLoadedSessionCannotBeRecreatedByStaleObject(): void
+    {
+        $session = new SaSession('expiring-session', false, 1);
+        $session->set('state', 'original');
+        $loaded = SaSession::getBySessionId('expiring-session');
+        $this->assertNotNull($loaded);
+
+        sleep(2);
+
+        try {
+            $loaded->set('state', 'resurrected');
+            $this->fail('过期会话对象不能重新创建永久会话');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('已过期或销毁', $e->getMessage());
+        }
+
+        $this->assertNull(SaToken::getDao()->get('expiring-session'));
+        $this->assertNull(SaSession::getBySessionId('expiring-session'));
+    }
+
     public function testTokenSession(): void
     {
         $tokenSession = new SaSession('satoken:tokenSession:test-token-123');
