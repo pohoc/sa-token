@@ -550,6 +550,13 @@ class SaOAuth2Handle
             throw new SaTokenException('不支持密码模式');
         }
 
+        // Resource Owner Password Credentials is not an OpenID Connect flow.
+        // Do not let a direct password exchange mint an ID Token that clients
+        // could mistake for an OIDC authentication response.
+        if ($this->config->isOpenIdMode() && $this->scopeContainsOpenid($scope)) {
+            throw new SaTokenException('OpenID Connect 不支持密码授权请求 openid scope');
+        }
+
         $client = $this->validateClientWithSecret($clientId, $clientSecret);
         $this->validateGrantTypeForClient($client, 'password');
 

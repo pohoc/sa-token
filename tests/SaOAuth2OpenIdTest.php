@@ -195,6 +195,21 @@ class SaOAuth2OpenIdTest extends TestCase
         $this->handle->tokenByClientCredentials($clientId, $secret, 'openid');
     }
 
+    public function testPasswordGrantCannotMintOpenIdToken(): void
+    {
+        $this->handle->setUserCredentialsValidator(static fn (): int => 10001);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('OpenID Connect 不支持密码授权请求 openid scope');
+        $this->handle->tokenByPassword(
+            'test-client',
+            $this->clientSecret,
+            'user',
+            'password',
+            'openid profile'
+        );
+    }
+
     public function testScopeContainsOpenid(): void
     {
         $handle = new class ($this->config) extends SaOAuth2Handle {
