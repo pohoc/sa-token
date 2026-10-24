@@ -500,16 +500,14 @@ $server = new Server('0.0.0.0', 9501);
 
 $server->on('request', function (Request $request, Response $response) {
     // SaTokenContext 自动使用当前 Swoole 协程 ID 隔离请求上下文。
-    SaTokenContext::setResponse($response);
-
-    // 适配 Request
+    // 路径必须从当前 Swoole 请求读取，不能依赖常驻 worker 中可能缺失或残留的 $_SERVER['REQUEST_URI']。
     $wrappedRequest = new class($request) {
         protected $request;
         public function __construct($request) {
             $this->request = $request;
         }
         public function header($name) {
-            return $this->request->header[$name] ?? null;
+            return $this->request->header[strtolower($name)] ?? null;
         }
         public function cookie($name) {
             return $this->request->cookie[$name] ?? null;
@@ -518,9 +516,19 @@ $server->on('request', function (Request $request, Response $response) {
             $ip = $this->request->server['remote_addr'] ?? null;
             return is_string($ip) ? $ip : null;
         }
+        public function getPathInfo() {
+            $uri = $this->request->server['request_uri'] ?? null;
+            if (!is_string($uri) || $uri === '') {
+                return '/';
+            }
+            $path = parse_url($uri, PHP_URL_PATH);
+            return is_string($path) && $path !== '' ? $path : '/';
+        }
     };
 
+    // setRequest 会清除该上下文里可能残留的旧响应绑定，因此先绑定请求。
     SaTokenContext::setRequest($wrappedRequest);
+    SaTokenContext::setResponse($response);
     try {
         $path = $request->server['request_uri'];
 
