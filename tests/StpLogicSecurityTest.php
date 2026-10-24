@@ -317,7 +317,7 @@ class StpLogicSecurityTest extends TestCase
         $this->assertFalse($this->stp->isTokenRevoked($token));
     }
 
-    public function testDeleteAllTokenByLoginIdClearsBlacklist(): void
+    public function testDeleteAllTokenByLoginIdPreservesBlacklist(): void
     {
         $token1 = $this->manager->createTokenValue(10001, 'login');
         $token2 = $this->manager->createTokenValue(10001, 'login');
@@ -333,8 +333,8 @@ class StpLogicSecurityTest extends TestCase
 
         $this->manager->deleteAllTokenByLoginId(10001, 'login');
 
-        $this->assertFalse($this->manager->isBlacklisted($token1));
-        $this->assertFalse($this->manager->isBlacklisted($token2));
+        $this->assertTrue($this->manager->isBlacklisted($token1));
+        $this->assertTrue($this->manager->isBlacklisted($token2));
     }
 
     // ===== StpUtil 静态方法测试 =====

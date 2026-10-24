@@ -547,7 +547,6 @@ class TokenManager
                 $keysToDelete[] = self::LAST_ACTIVE_PREFIX . $tokenValue;
                 $keysToDelete[] = self::TOKEN_SESSION_PREFIX . $tokenValue;
                 $keysToDelete[] = self::FINGERPRINT_PREFIX . $tokenValue;
-                $keysToDelete[] = self::BLACKLIST_PREFIX . $tokenValue;
                 $refreshToken = $this->getRefreshTokenByAccessToken($loginId, $loginType, $tokenValue);
                 if ($refreshToken !== null) {
                     $keysToDelete[] = self::REFRESH_TOKEN_PREFIX . $refreshToken;
