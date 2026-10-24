@@ -389,6 +389,8 @@ class RedisDaoRealIntegrationTest extends TestCase
 
         // 负数修正
         $this->assertSame(0, $this->dao->increment($key, -7, 60));
+        $this->assertSame(0, $this->dao->increment($key, -10, 60));
+        $this->assertGreaterThan(0, $this->dao->getTimeout($key));
 
         // 无 TTL 分支
         $key2 = $this->prefix . 'counter-permanent';
@@ -399,6 +401,11 @@ class RedisDaoRealIntegrationTest extends TestCase
         // A timeout applies only when increment creates the key; an existing
         // permanent counter must remain permanent when a later caller passes one.
         $this->assertSame(4, $this->dao->increment($key2, 1, 60));
+        $this->assertSame(-1, $this->dao->getTimeout($key2));
+
+        // Negative adjustments clamp at zero consistently with the memory and
+        // file adapters, while retaining a permanent counter's TTL semantics.
+        $this->assertSame(0, $this->dao->increment($key2, -10, null));
         $this->assertSame(-1, $this->dao->getTimeout($key2));
     }
 

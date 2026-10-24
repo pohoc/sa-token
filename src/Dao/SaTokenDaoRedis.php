@@ -440,21 +440,26 @@ LUA;
     public function increment(string $key, int $amount = 1, ?int $timeout = null): int
     {
         $client = $this->saRedis ?? $this->client;
-        if ($timeout !== null && $timeout > 0) {
-            // 仅在 key 首次创建时设置 TTL，保证"计数 + 过期"原子生效
-            $script = <<<'LUA'
+        // 仅在 key 首次创建时设置 TTL，并与计数和非负下限原子执行。
+        $script = <<<'LUA'
 local existed = redis.call('EXISTS', KEYS[1]) == 1
 local value = redis.call('INCRBY', KEYS[1], ARGV[1])
-if not existed then
+if value < 0 then
+    local ttl = redis.call('PTTL', KEYS[1])
+    if ttl >= 0 then
+        redis.call('SET', KEYS[1], '0', 'PX', math.max(1, ttl))
+    else
+        redis.call('SET', KEYS[1], '0')
+    end
+    value = 0
+end
+local timeout = tonumber(ARGV[2])
+if not existed and timeout and timeout > 0 then
     redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
 end
 return value
 LUA;
-            $result = $client->eval($script, [$key, (string) $amount, (string) $timeout], 1);
-            return is_int($result) ? $result : 0;
-        }
-
-        $result = $client->incrBy($key, $amount);
+        $result = $client->eval($script, [$key, (string) $amount, (string) ($timeout ?? 0)], 1);
         return is_int($result) ? $result : 0;
     }
 
