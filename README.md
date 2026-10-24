@@ -198,9 +198,12 @@ $tokens = StpUtil::getBlacklistTokens();
 
 ### 5. 登录认证
 
+`StpUtil::login()` 只负责为已认证用户建立 Sa-Token 会话，不会校验账号密码。请先通过应用的用户认证逻辑确认身份，再把服务端查到的用户 ID 传入；不要直接使用请求提交的 `userId`。
+
 ```php
 use SaToken\StpUtil;
 
+// 此处假设上游登录流程已经验证了账号凭据。
 $result = StpUtil::login(10001);
 $token = $result->getAccessToken();
 
@@ -742,14 +745,18 @@ $hasScope = $oauth2->hasScope($accessTokenValue, 'user:write');
 
 ## Http Basic / Digest 认证
 
+认证回调必须查询应用的用户存储并验证密码，不能使用示例账号或硬编码密码。生产环境应通过 HTTPS 使用 Basic；Digest 仅适用于兼容既有客户端的场景。Digest HA1 可用于离线猜测密码，必须按密码等价凭据保护。
+
 ```php
 use SaToken\SaToken;
 
 $auth = SaToken::getHttpAuth();
+$userRepository = app(UserRepository::class); // 替换为应用自己的用户仓库
 
-$auth->setBasicValidator(function (string $username, string $password): mixed {
-    if ($username === 'admin' && $password === '123456') {
-        return 10001;
+$auth->setBasicValidator(function (string $username, string $password) use ($userRepository): mixed {
+    $user = $userRepository->findByUsername($username);
+    if ($user !== null && password_verify($password, $user->passwordHash)) {
+        return $user->id;
     }
     return null;
 });
@@ -760,9 +767,9 @@ $auth->checkBasic('My Realm');
 Digest 认证：
 
 ```php
-$auth->setDigestValidator(function (string $username): ?string {
-    $users = ['admin' => md5('admin:My Realm:123456')];
-    return $users[$username] ?? null;
+$auth->setDigestValidator(function (string $username) use ($userRepository): ?string {
+    // 返回账户存储中为该 realm 预先保存的 HA1 值，不要在代码中硬编码账号或密码。
+    return $userRepository->findDigestHa1($username, 'My Realm');
 });
 
 $auth->checkDigest('My Realm');
