@@ -54,6 +54,30 @@ class StpLogicSecurityTest extends TestCase
         SaToken::reset();
     }
 
+    public function testSourceAntiBruteLimitRemainsEnabledWhenAccountLimitIsDisabled(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'antiBruteMaxFailures' => 0,
+            'antiBruteIpMaxFailures' => 2,
+            'antiBruteLockDuration' => 600,
+        ]));
+        SaTokenContext::setRequest(new class {
+            public function getClientIp(): string
+            {
+                return '192.0.2.77';
+            }
+        });
+
+        $this->stp->checkAntiBrute('random-user-1');
+        $this->stp->recordAntiBruteFailure('random-user-1');
+        $this->stp->checkAntiBrute('random-user-2');
+        $this->stp->recordAntiBruteFailure('random-user-2');
+
+        $this->expectException(\SaToken\Exception\SaTokenException::class);
+        $this->expectExceptionMessage('当前来源失败次数过多');
+        $this->stp->checkAntiBrute('random-user-3');
+    }
+
     // ===== Token 指纹相关测试 =====
 
     public function testComputeFingerprint(): void

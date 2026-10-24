@@ -141,8 +141,9 @@ trait StpLogicSecurityTrait
     {
         $config = $this->getConfig();
         $maxFailures = $config->getAntiBruteMaxFailures();
+        $ipMaxFailures = $config->getAntiBruteIpMaxFailures();
 
-        if ($maxFailures <= 0) {
+        if ($maxFailures <= 0 && $ipMaxFailures <= 0) {
             return;
         }
 
@@ -153,8 +154,9 @@ trait StpLogicSecurityTrait
     {
         $config = $this->getConfig();
         $maxFailures = $config->getAntiBruteMaxFailures();
+        $ipMaxFailures = $config->getAntiBruteIpMaxFailures();
 
-        if ($maxFailures <= 0) {
+        if ($maxFailures <= 0 && $ipMaxFailures <= 0) {
             return;
         }
 
@@ -164,7 +166,7 @@ trait StpLogicSecurityTrait
     protected function clearAntiBruteFailures(mixed $loginId): void
     {
         $config = $this->getConfig();
-        if ($config->getAntiBruteMaxFailures() <= 0) {
+        if ($config->getAntiBruteMaxFailures() <= 0 && $config->getAntiBruteIpMaxFailures() <= 0) {
             return;
         }
 
