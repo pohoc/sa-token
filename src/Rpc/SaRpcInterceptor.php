@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SaToken\Rpc;
 
 use SaToken\Exception\SaTokenException;
+use SaToken\SaLoginParameter;
 use SaToken\SaToken;
 
 class SaRpcInterceptor
@@ -47,7 +48,9 @@ class SaRpcInterceptor
                 $stpLogic = SaToken::getStpLogic($this->loginType);
                 $loginId = $stpLogic->getLoginIdByToken($tokenValue);
                 if ($loginId !== null) {
-                    $stpLogic->login($loginId);
+                    // RPC identity adoption is internal to this request. Do not
+                    // issue the new local access/refresh credentials to the caller.
+                    $stpLogic->login($loginId, (new SaLoginParameter())->setWriteResponseCredentials(false));
                 }
             }
         }

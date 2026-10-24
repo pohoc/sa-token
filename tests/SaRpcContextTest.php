@@ -264,6 +264,31 @@ class SaRpcContextTest extends TestCase
         $this->assertTrue(true);
     }
 
+    public function testRpcAutoLoginDoesNotSendLocallyIssuedCredentialsInResponse(): void
+    {
+        $token = StpUtil::login(10006)->getAccessToken();
+        SaTokenContext::clear();
+        SaToken::getConfig()
+            ->setIsWriteCookie(true)
+            ->setIsWriteHeader(true)
+            ->setRefreshToken(true);
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token' => $token,
+        ]));
+
+        (new SaRpcInterceptor())->setAutoLogin(true)->handleIncoming();
+
+        $pendingCookies = new \ReflectionProperty(SaTokenContext::class, 'pendingCookiesMap');
+        $pendingHeaders = new \ReflectionProperty(SaTokenContext::class, 'pendingHeadersMap');
+        $contextId = SaTokenContext::getContextId();
+        $cookiesByContext = $pendingCookies->getValue();
+        $headersByContext = $pendingHeaders->getValue();
+        self::assertIsArray($cookiesByContext);
+        self::assertIsArray($headersByContext);
+        self::assertSame([], $cookiesByContext[$contextId] ?? []);
+        self::assertSame([], $headersByContext[$contextId] ?? []);
+    }
+
     public function testRpcInterceptorOutgoing(): void
     {
         $loginResult = StpUtil::login(10001);

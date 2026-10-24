@@ -14,6 +14,9 @@ class SaLoginParameter
 
     protected bool $isLastingCookie = true;
 
+    /** Whether this login may issue credentials through the current response. */
+    protected bool $writeResponseCredentials = true;
+
     protected ?int $timeout = null;
 
     protected ?int $maxLoginCount = null;
@@ -54,6 +57,17 @@ class SaLoginParameter
     public function setIsLastingCookie(bool $isLastingCookie): static
     {
         $this->isLastingCookie = $isLastingCookie;
+        return $this;
+    }
+
+    public function shouldWriteResponseCredentials(): bool
+    {
+        return $this->writeResponseCredentials;
+    }
+
+    public function setWriteResponseCredentials(bool $writeResponseCredentials): static
+    {
+        $this->writeResponseCredentials = $writeResponseCredentials;
         return $this;
     }
 

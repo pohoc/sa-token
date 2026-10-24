@@ -138,7 +138,9 @@ class StpLogic
                 $this->tokenManager->saveFingerprint($tokenValue, $fingerprint, $timeout);
             }
 
-            $this->writeTokenToResponse($tokenValue, $parameter);
+            if ($parameter->shouldWriteResponseCredentials()) {
+                $this->writeTokenToResponse($tokenValue, $parameter);
+            }
 
             $this->clearAntiBruteFailures($loginId);
 
@@ -148,7 +150,13 @@ class StpLogic
 
             $this->recordLoginIpIfEnabled($loginId, $config);
 
-            $result = $this->buildLoginResult($tokenValue, $timeout, $loginId, $config);
+            $result = $this->buildLoginResult(
+                $tokenValue,
+                $timeout,
+                $loginId,
+                $config,
+                $parameter->shouldWriteResponseCredentials()
+            );
         } finally {
             $this->tokenManager->releaseLock($lockKey);
         }
@@ -191,13 +199,18 @@ class StpLogic
         SaLoginDeviceManager::registerDevice($loginId, $this->loginType, $device, $tokenValue, $this);
     }
 
-    protected function buildLoginResult(string $tokenValue, int $timeout, mixed $loginId, SaTokenConfig $config): SaLoginResult
-    {
+    protected function buildLoginResult(
+        string $tokenValue,
+        int $timeout,
+        mixed $loginId,
+        SaTokenConfig $config,
+        bool $writeResponseCredentials = true
+    ): SaLoginResult {
         $result = (new SaLoginResult())
             ->setAccessToken($tokenValue)
             ->setAccessExpire($timeout > 0 ? $timeout : 0);
 
-        if ($config->isRefreshToken()) {
+        if ($config->isRefreshToken() && $writeResponseCredentials) {
             $refreshTokenValue = $this->tokenManager->createTokenValue($loginId, $this->loginType, 'srt_');
             $refreshTimeout = $config->getRefreshTokenTimeout();
             $this->tokenManager->saveRefreshToken($refreshTokenValue, $tokenValue, $loginId, $this->loginType, $refreshTimeout);
