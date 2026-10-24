@@ -524,7 +524,7 @@ class SaTokenContext
             && method_exists($response->headers, 'setCookie')
             && class_exists(\Symfony\Component\HttpFoundation\Cookie::class)
         ) {
-            $expire = $timeout > 0 ? time() + $timeout : 0;
+            $expire = $timeout > 0 ? time() + $timeout : ($timeout < 0 ? 1 : 0);
             $cookie = new \Symfony\Component\HttpFoundation\Cookie(
                 $name,
                 $value,
@@ -544,7 +544,7 @@ class SaTokenContext
             // ThinkPHP Response::cookie() takes one options array; its Cookie
             // manager interprets numeric expire values as relative seconds.
             $response->cookie($name, $value, [
-                'expire' => $timeout > 0 ? $timeout : 0,
+                'expire' => $timeout,
                 'path' => $path,
                 'domain' => $domain,
                 'secure' => $secure,
@@ -555,10 +555,11 @@ class SaTokenContext
         }
 
         if (is_object($response) && method_exists($response, 'cookie')) {
-            // Framework cookie() signatures differ: Laravel expects a lifetime
-            // in minutes and cannot accept this adapter's SameSite option. Prefer
-            // a Symfony Cookie on responses exposing HeaderBag::setCookie().
-            $response->cookie($name, $value, $timeout > 0 ? time() + $timeout : 0, $path, $domain, $secure, $httpOnly);
+            // Laravel-style cookie() expects a lifetime in minutes, not an
+            // absolute timestamp. Round positive second-based TTLs up so the
+            // client cookie cannot expire before the server-side token.
+            $minutes = $timeout > 0 ? (int) ceil($timeout / 60) : $timeout;
+            $response->cookie($name, $value, $minutes, $path, $domain, $secure, $httpOnly);
         }
 
         return $response;
@@ -589,9 +590,10 @@ class SaTokenContext
     ): string {
         $parts = [$name . '=' . urlencode($value)];
 
-        if ($timeout > 0) {
-            $parts[] = 'Expires=' . gmdate('D, d M Y H:i:s T', time() + $timeout);
-            $parts[] = 'Max-Age=' . $timeout;
+        if ($timeout !== 0) {
+            $expiresAt = $timeout > 0 ? time() + $timeout : 1;
+            $parts[] = 'Expires=' . gmdate('D, d M Y H:i:s T', $expiresAt);
+            $parts[] = 'Max-Age=' . max(0, $timeout);
         }
 
         if ($path !== '') {

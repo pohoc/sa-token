@@ -277,6 +277,46 @@ class SaTokenContextTest extends TestCase
         $this->assertSame($newResponse, SaTokenContext::getResponse());
     }
 
+    public function testNegativeCookieTimeoutExpiresCookieImmediately(): void
+    {
+        $response = $this->createMock(\Psr\Http\Message\ResponseInterface::class);
+        $newResponse = $this->createMock(\Psr\Http\Message\ResponseInterface::class);
+        $response->expects(self::once())
+            ->method('withAddedHeader')
+            ->with('Set-Cookie', self::callback(static function (string $cookie): bool {
+                self::assertStringContainsString('satoken=', $cookie);
+                self::assertStringContainsString('Expires=', $cookie);
+                self::assertStringContainsString('Max-Age=0', $cookie);
+                return true;
+            }))
+            ->willReturn($newResponse);
+        SaTokenContext::setResponse($response);
+
+        SaTokenContext::setCookie('satoken', '', -1, '/', '', true, true, 'Lax');
+
+        self::assertSame($newResponse, SaTokenContext::getResponse());
+    }
+
+    public function testFrameworkCookieUsesMinutesAndNegativeTimeoutForDeletion(): void
+    {
+        $response = new class () {
+            /** @var list<array{string, string, int, string, string, bool, bool}> */
+            public array $cookies = [];
+
+            public function cookie(string $name, string $value, int $minutes, string $path, string $domain, bool $secure, bool $httpOnly): void
+            {
+                $this->cookies[] = [$name, $value, $minutes, $path, $domain, $secure, $httpOnly];
+            }
+        };
+        SaTokenContext::setResponse($response);
+
+        SaTokenContext::setCookie('satoken', 'token-value', 3600, '/', '', true, true);
+        SaTokenContext::setCookie('satoken', '', -1, '/', '', true, true);
+
+        self::assertSame(60, $response->cookies[0][2]);
+        self::assertSame(-1, $response->cookies[1][2]);
+    }
+
     public function testSetCookieWhenNoResponse(): void
     {
         $response = $this->createMock(\Psr\Http\Message\ResponseInterface::class);
