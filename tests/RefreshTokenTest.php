@@ -296,8 +296,63 @@ class RefreshTokenTest extends TestCase
 
         $result1 = StpUtil::refreshToken($refreshToken);
 
-        $this->expectException(SaTokenException::class);
-        StpUtil::refreshToken($refreshToken);
+        try {
+            StpUtil::refreshToken($refreshToken);
+            $this->fail('RefreshToken 重放必须撤销轮换后派生的账号会话');
+        } catch (SaTokenException $exception) {
+            $this->assertStringContainsString('重放', $exception->getMessage());
+        }
+
+        $this->assertFalse(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($result1->getAccessToken()));
+        $this->assertFalse(StpUtil::isRefreshTokenValid((string) $result1->getRefreshToken()));
+
+        $newLogin = StpUtil::login(10005);
+        try {
+            StpUtil::refreshToken($refreshToken);
+            $this->fail('已处理的旧 RefreshToken 后续重放不得再次触发撤销');
+        } catch (SaTokenException $exception) {
+            $this->assertStringContainsString('无效', $exception->getMessage());
+        }
+        $this->assertTrue(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($newLogin->getAccessToken()));
+    }
+
+    public function testConcurrentRotatedRefreshReplayRevokesWinningDescendants(): void
+    {
+        $dao = new class () extends \SaToken\Dao\SaTokenDaoMemory {
+            public ?string $triggerKey = null;
+            public ?\Closure $afterRead = null;
+
+            public function get(string $key): ?string
+            {
+                $value = parent::get($key);
+                if ($key === $this->triggerKey && $this->afterRead !== null) {
+                    $callback = $this->afterRead;
+                    $this->afterRead = null;
+                    $callback();
+                }
+                return $value;
+            }
+        };
+        SaToken::setDao($dao);
+
+        $accessToken = StpUtil::login(10051)->getAccessToken();
+        $refreshToken = StpUtil::createRefreshToken($accessToken);
+        $winningResult = null;
+        $dao->triggerKey = TokenManager::REFRESH_TOKEN_PREFIX . $refreshToken;
+        $dao->afterRead = function () use ($refreshToken, &$winningResult): void {
+            $winningResult = StpUtil::refreshToken($refreshToken);
+        };
+
+        try {
+            StpUtil::refreshToken($refreshToken);
+            $this->fail('并发旧 RefreshToken 重放必须撤销获胜请求签发的会话');
+        } catch (SaTokenException $exception) {
+            $this->assertStringContainsString('重放', $exception->getMessage());
+        }
+
+        $this->assertNotNull($winningResult);
+        $this->assertFalse(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($winningResult->getAccessToken()));
+        $this->assertFalse(StpUtil::isRefreshTokenValid((string) $winningResult->getRefreshToken()));
     }
 
     public function testRevokeRefreshToken(): void

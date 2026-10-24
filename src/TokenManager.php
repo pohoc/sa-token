@@ -26,6 +26,7 @@ class TokenManager
     protected const SAFE_SERVICES_PREFIX = 'satoken:safe:services:';
     public const SWITCH_PREFIX = 'satoken:switch:';
     public const REFRESH_TOKEN_PREFIX = 'satoken:refresh:';
+    public const REFRESH_TOKEN_USED_PREFIX = 'satoken:refresh:used:';
     public const REFRESH_TOKEN_MAP_PREFIX = 'satoken:refreshMap:';
     public const FINGERPRINT_PREFIX = 'satoken:fingerprint:';
     public const BLACKLIST_PREFIX = 'satoken:blacklist:';
@@ -989,13 +990,61 @@ class TokenManager
      */
     public function consumeRefreshToken(string $refreshToken): ?array
     {
-        $raw = $this->getDao()->getAndDelete(self::REFRESH_TOKEN_PREFIX . $refreshToken);
+        $consumptionLockKey = 'refresh-token:' . hash('sha256', $refreshToken);
+        if (!$this->acquireLock($consumptionLockKey, 30)) {
+            throw new SaTokenException('RefreshToken 正在处理中，请稍后重试');
+        }
+
+        try {
+            return $this->consumeRefreshTokenLocked($refreshToken);
+        } finally {
+            $this->releaseLock($consumptionLockKey);
+        }
+    }
+
+    /** @return array<string, mixed>|null */
+    protected function consumeRefreshTokenLocked(string $refreshToken): ?array
+    {
+        $dao = $this->getDao();
+        $refreshKey = self::REFRESH_TOKEN_PREFIX . $refreshToken;
+        $snapshot = $dao->get($refreshKey);
+        if ($snapshot === null) {
+            return null;
+        }
+
+        $markerKey = self::REFRESH_TOKEN_USED_PREFIX . hash('sha256', $refreshToken);
+        $decodedSnapshot = SaFoxUtil::fromJson($this->decryptValue($snapshot));
+        if ($this->getConfig()->isRefreshTokenRotation()
+            && is_array($decodedSnapshot)
+            && is_string($decodedSnapshot['loginId'] ?? null)
+            && is_string($decodedSnapshot['loginType'] ?? null)
+            && is_string($decodedSnapshot['accessToken'] ?? null)) {
+            // Retain the consumed token's owner until its original expiry. A
+            // permanent or sub-second remaining TTL gets a bounded 24-hour
+            // replay window so rotated credentials cannot grow storage forever.
+            $timeout = $dao->getTimeout($refreshKey);
+            $markerTimeout = $timeout > 0 ? $timeout : 86400;
+            $dao->set($markerKey, $snapshot, $markerTimeout);
+        }
+
+        $raw = $dao->getAndDelete($refreshKey);
         if ($raw === null) {
+            if ($this->getConfig()->isRefreshTokenRotation()
+                && $dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
+                $dao->compareAndDelete($markerKey, $snapshot);
+            }
             return null;
         }
         $data = SaFoxUtil::fromJson($this->decryptValue($raw));
         if (!is_array($data)) {
             return null;
+        }
+
+        if ($raw !== $snapshot && $this->getConfig()->isRefreshTokenRotation()
+            && is_string($data['loginId'] ?? null)
+            && is_string($data['loginType'] ?? null)
+            && is_string($data['accessToken'] ?? null)) {
+            $dao->set($markerKey, $raw, 86400);
         }
         /** @var array<string, mixed> $data */
         $loginId = is_string($data['loginId'] ?? null) ? $data['loginId'] : '';
@@ -1012,6 +1061,26 @@ class TokenManager
         }
 
         return $data;
+    }
+
+    /** @return array<string, mixed>|null */
+    public function getConsumedRefreshTokenData(string $refreshToken): ?array
+    {
+        $value = $this->getDao()->get(self::REFRESH_TOKEN_USED_PREFIX . hash('sha256', $refreshToken));
+        if ($value === null) {
+            return null;
+        }
+        $data = SaFoxUtil::fromJson($this->decryptValue($value));
+        if (!is_array($data)) {
+            return null;
+        }
+        /** @var array<string, mixed> $data */
+        return $data;
+    }
+
+    public function deleteConsumedRefreshTokenData(string $refreshToken): void
+    {
+        $this->getDao()->delete(self::REFRESH_TOKEN_USED_PREFIX . hash('sha256', $refreshToken));
     }
 
     /**

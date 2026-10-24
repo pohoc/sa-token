@@ -12,6 +12,7 @@ use SaToken\SaLoginParameter;
 use SaToken\SaToken;
 use SaToken\Security\SaLoginDeviceManager;
 use SaToken\StpLogic;
+use SaToken\StpUtil;
 use SaToken\TokenManager;
 
 class RedisDaoRealIntegrationTest extends TestCase
@@ -110,6 +111,47 @@ class RedisDaoRealIntegrationTest extends TestCase
         $this->dao->delete($key);
         $this->assertNull($this->dao->get($key));
         $this->assertFalse($this->dao->exists($key));
+    }
+
+    public function testRefreshTokenReplayRevokesRotatedSessionAgainstRealRedis(): void
+    {
+        SaToken::reset();
+        SaToken::setConfig(new SaTokenConfig([
+            'timeout'              => 3600,
+            'activityTimeout'      => -1,
+            'refreshToken'         => true,
+            'refreshTokenTimeout'  => 3600,
+            'refreshTokenRotation' => true,
+        ]));
+        SaToken::setDao($this->dao);
+        $loginId = 'redis-refresh-replay-' . bin2hex(random_bytes(8));
+        $oldRefreshToken = '';
+        $rotatedAccessToken = '';
+        $rotatedRefreshToken = '';
+
+        try {
+            $accessToken = StpUtil::login($loginId)->getAccessToken();
+            $oldRefreshToken = StpUtil::createRefreshToken($accessToken);
+            $rotated = StpUtil::refreshToken($oldRefreshToken);
+            $rotatedAccessToken = $rotated->getAccessToken();
+            $rotatedRefreshToken = (string) $rotated->getRefreshToken();
+
+            try {
+                StpUtil::refreshToken($oldRefreshToken);
+                self::fail('Redis 中重放旧 RefreshToken 必须撤销轮换后的会话');
+            } catch (\SaToken\Exception\SaTokenException $exception) {
+                self::assertStringContainsString('重放', $exception->getMessage());
+            }
+
+            self::assertFalse(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($rotatedAccessToken));
+            self::assertFalse(StpUtil::isRefreshTokenValid($rotatedRefreshToken));
+        } finally {
+            if ($oldRefreshToken !== '') {
+                $this->dao->delete(TokenManager::REFRESH_TOKEN_USED_PREFIX . hash('sha256', $oldRefreshToken));
+            }
+            StpUtil::kickout($loginId);
+            SaToken::reset();
+        }
     }
 
     public function testRefreshTokenKeepsAccountIndexAliveAgainstRealRedis(): void

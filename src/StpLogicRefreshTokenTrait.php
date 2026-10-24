@@ -52,6 +52,9 @@ trait StpLogicRefreshTokenTrait
 
         $data = $this->tokenManager->getRefreshTokenData($refreshToken);
         if ($data === null) {
+            if ($this->revokeAccountAfterRefreshTokenReuse($refreshToken)) {
+                throw new SaTokenException('RefreshToken 重放已检测，账号会话已全部撤销，请重新登录');
+            }
             throw new SaTokenException('RefreshToken 无效或已过期');
         }
 
@@ -84,6 +87,9 @@ trait StpLogicRefreshTokenTrait
             // 原子消费：同一 RefreshToken 并发重放时，仅第一个请求成功
             $consumed = $this->tokenManager->consumeRefreshToken($refreshToken);
             if ($consumed === null) {
+                if ($this->revokeAccountAfterRefreshTokenReuse($refreshToken)) {
+                    throw new SaTokenException('RefreshToken 重放已检测，账号会话已全部撤销，请重新登录');
+                }
                 throw new SaTokenException('RefreshToken 无效或已过期');
             }
 
@@ -133,6 +139,45 @@ trait StpLogicRefreshTokenTrait
             $this->writeTokenToResponse($newAccessToken, new SaLoginParameter());
 
             return $result;
+        } finally {
+            $this->tokenManager->releaseLock($lockKey);
+        }
+    }
+
+    protected function revokeAccountAfterRefreshTokenReuse(string $refreshToken): bool
+    {
+        if (!$this->getConfig()->isRefreshTokenRotation()) {
+            return false;
+        }
+
+        $usedData = $this->tokenManager->getConsumedRefreshTokenData($refreshToken);
+        $loginId = is_string($usedData['loginId'] ?? null) ? $usedData['loginId'] : '';
+        $loginType = is_string($usedData['loginType'] ?? null) ? $usedData['loginType'] : '';
+        if ($loginId === '' || $loginType !== $this->loginType) {
+            return false;
+        }
+
+        $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', $loginId);
+        if (!$this->tokenManager->acquireLock($lockKey, 30)) {
+            throw new SaTokenException('同账号会话正在处理中，请稍后重试');
+        }
+
+        try {
+            // Recheck under the same account lock as refresh/login so the used
+            // token cannot be raced with a new active registration.
+            $usedData = $this->tokenManager->getConsumedRefreshTokenData($refreshToken);
+            if (($usedData['loginId'] ?? null) !== $loginId
+                || ($usedData['loginType'] ?? null) !== $this->loginType
+                || $this->tokenManager->getRefreshTokenData($refreshToken) !== null) {
+                return false;
+            }
+
+            $this->tokenManager->deleteAllTokenByLoginId($loginId, $this->loginType);
+            if ($this->getConfig()->isJwtStateless()) {
+                $this->tokenManager->revokeStatelessTokensByLoginId($loginId, $this->loginType);
+            }
+            $this->tokenManager->deleteConsumedRefreshTokenData($refreshToken);
+            return true;
         } finally {
             $this->tokenManager->releaseLock($lockKey);
         }
