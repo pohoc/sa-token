@@ -228,7 +228,7 @@ trait StpLogicSecurityTrait
     public function openSensitiveVerify(string $scene, int $validSeconds = 600): string
     {
         $loginId = $this->getLoginIdAsNotNull();
-        return SaSensitiveVerify::createSafeToken($scene, $loginId, $this->loginType, $validSeconds);
+        return SaSensitiveVerify::createSafeTokenAfterVerified($scene, $loginId, $this->loginType, $validSeconds);
     }
 
     public function checkSensitiveVerify(string $scene, string $token): void

@@ -235,6 +235,47 @@ class SaSensitiveVerify
             && $expiresAt > time();
     }
 
+    /** Issue a one-time safe token only after consuming a successful OTP verification. */
+    public static function createSafeTokenAfterVerified(string $scene, mixed $loginId, string $loginType = 'login', int $validSeconds = 600): string
+    {
+        self::validateLifetime($validSeconds);
+        if (!self::consumeVerified($scene, $loginId, $loginType)) {
+            throw new NotSafeException('请先完成该场景的一次性验证码验证');
+        }
+
+        return self::createSafeToken($scene, $loginId, $loginType, $validSeconds);
+    }
+
+    /** Atomically consume a successful OTP verification before issuing a safe token. */
+    protected static function consumeVerified(string $scene, mixed $loginId, string $loginType): bool
+    {
+        $dao = SaToken::getDao();
+        $key = self::getKey($scene, $loginId, $loginType);
+        $lockValue = self::acquireStateLock($key);
+        try {
+            $data = $dao->get($key);
+            if ($data === null) {
+                return false;
+            }
+
+            $info = self::decodeSensitiveState($data, $key);
+            $expiresAt = is_array($info) ? ($info['expiresAt'] ?? null) : null;
+            if (!is_array($info)
+                || ($info['verified'] ?? false) !== true
+                || !is_int($expiresAt)
+                || $expiresAt <= time()) {
+                return false;
+            }
+
+            $dao->delete($key);
+            $dao->delete($key . ':att');
+            $dao->delete($key . ':verified');
+            return true;
+        } finally {
+            self::releaseStateLock($key, $lockValue);
+        }
+    }
+
     public static function clearVerified(string $scene, mixed $loginId, string $loginType = 'login'): void
     {
         $dao = SaToken::getDao();

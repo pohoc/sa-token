@@ -7,7 +7,9 @@ namespace SaToken\Tests;
 use PHPUnit\Framework\TestCase;
 use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoMemory;
+use SaToken\Exception\NotSafeException;
 use SaToken\SaToken;
+use SaToken\Security\SaSensitiveVerify;
 use SaToken\StpLogic;
 use SaToken\TokenManager;
 use SaToken\Util\SaTokenContext;
@@ -36,6 +38,7 @@ class StpLogicSecurityTest extends TestCase
             'tokenStyle'      => 'uuid',
             'tokenFingerprint' => true,
             'aesKey'          => 'test-encryption-key-for-sa-token-tests-only-32bytes',
+            'signKey'         => 'sensitive-verify-test-sign-key-32-bytes',
         ]);
         SaToken::setConfig($config);
         $this->dao = new SaTokenDaoMemory();
@@ -54,6 +57,38 @@ class StpLogicSecurityTest extends TestCase
         SaToken::reset();
     }
 
+    public function testOpenSensitiveVerifyCannotMintProofBeforeOtpVerification(): void
+    {
+        $loginId = 'sensitive-user';
+        $token = $this->stp->login($loginId)->getAccessToken();
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->willReturnCallback(static fn (string $name): array => strcasecmp($name, 'satoken') === 0 ? [$token] : []);
+        SaTokenContext::setRequest($request);
+
+        $this->expectException(NotSafeException::class);
+        $this->expectExceptionMessage('请先完成该场景的一次性验证码验证');
+        $this->stp->openSensitiveVerify('payment');
+    }
+
+    public function testOpenSensitiveVerifyConsumesSuccessfulOtpBeforeIssuingProof(): void
+    {
+        $loginId = 'sensitive-user';
+        $token = $this->stp->login($loginId)->getAccessToken();
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->willReturnCallback(static fn (string $name): array => strcasecmp($name, 'satoken') === 0 ? [$token] : []);
+        SaTokenContext::setRequest($request);
+
+        $code = SaSensitiveVerify::generateCode('payment', $loginId);
+        self::assertTrue(SaSensitiveVerify::verifyCode('payment', $code, $loginId));
+
+        $proof = $this->stp->openSensitiveVerify('payment');
+        $this->stp->checkSensitiveVerify('payment', $proof);
+        self::assertFalse(SaSensitiveVerify::isVerified('payment', $loginId));
+
+        $this->expectException(NotSafeException::class);
+        $this->stp->openSensitiveVerify('payment');
+    }
+
     public function testSourceAntiBruteLimitRemainsEnabledWhenAccountLimitIsDisabled(): void
     {
         SaToken::setConfig(new SaTokenConfig([
@@ -61,7 +96,7 @@ class StpLogicSecurityTest extends TestCase
             'antiBruteIpMaxFailures' => 2,
             'antiBruteLockDuration' => 600,
         ]));
-        SaTokenContext::setRequest(new class {
+        SaTokenContext::setRequest(new class () {
             public function getClientIp(): string
             {
                 return '192.0.2.77';
@@ -80,7 +115,7 @@ class StpLogicSecurityTest extends TestCase
 
     public function testGetTokenValueRejectsRepeatedFrameworkCredentialHeaders(): void
     {
-        $headerBag = new class {
+        $headerBag = new class () {
             /** @return array<int, string> */
             public function all(?string $name = null): array
             {
