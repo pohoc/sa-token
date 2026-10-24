@@ -202,7 +202,10 @@ class SaSession
             if ($current === null) {
                 return;
             }
-            if ($this->persisted && !hash_equals($this->generation, $current['generation'])) {
+            if (!$this->persisted) {
+                throw new \SaToken\Exception\SaTokenException('会话对象未持有当前记录，拒绝销毁');
+            }
+            if (!hash_equals($this->generation, $current['generation'])) {
                 throw new \SaToken\Exception\SaTokenException('会话已被销毁并重新创建，拒绝旧对象销毁');
             }
             SaToken::getDao()->delete($this->id);

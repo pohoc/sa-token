@@ -233,6 +233,23 @@ class SaSessionTest extends TestCase
         self::assertSame('new', SaSession::getBySessionId($sessionId)?->get('generation'));
     }
 
+    public function testUnloadedSessionObjectCannotDestroyExistingRecord(): void
+    {
+        $sessionId = TokenManager::buildSessionId('login', 'unloaded-destroy');
+        $current = new SaSession($sessionId);
+        $current->set('owned', 'current');
+        $unloaded = new SaSession($sessionId, true);
+
+        try {
+            $unloaded->destroy();
+            self::fail('未加载记录且未持有代际标识的对象不能删除会话');
+        } catch (SaTokenException $e) {
+            self::assertStringContainsString('未持有当前记录', $e->getMessage());
+        }
+
+        self::assertSame('current', SaSession::getBySessionId($sessionId)?->get('owned'));
+    }
+
     public function testTokenSession(): void
     {
         $tokenSession = new SaSession('satoken:tokenSession:test-token-123');
