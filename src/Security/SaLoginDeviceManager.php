@@ -106,6 +106,15 @@ class SaLoginDeviceManager
      */
     protected static function loadDeviceList(mixed $loginId, string $loginType, bool $includeToken): array
     {
+        return array_map(
+            static fn (array $record): SaLoginDevice => $record['device'],
+            self::loadDeviceRecords($loginId, $loginType, $includeToken)
+        );
+    }
+
+    /** @return array<array{device: SaLoginDevice, key: string, raw: string}> */
+    protected static function loadDeviceRecords(mixed $loginId, string $loginType, bool $includeToken): array
+    {
         $dao = SaToken::getDao();
         $keyPrefix = self::getKey($loginId, $loginType) . ':';
         $results = [];
@@ -140,10 +149,10 @@ class SaLoginDeviceManager
             if (!$includeToken) {
                 $device->setTokenValue('');
             }
-            $devices[] = $device;
+            $devices[] = ['device' => $device, 'key' => $keyPrefix . $device->getDeviceId(), 'raw' => $value];
         }
 
-        usort($devices, fn ($a, $b) => $b->getLoginTime() - $a->getLoginTime());
+        usort($devices, fn ($a, $b) => $b['device']->getLoginTime() - $a['device']->getLoginTime());
         return $devices;
     }
 
@@ -228,11 +237,12 @@ class SaLoginDeviceManager
                     return count($devices);
                 }
 
-                $devices = self::loadDeviceList($loginId, $loginType, true);
+                $devices = self::loadDeviceRecords($loginId, $loginType, true);
                 $count = 0;
-                foreach ($devices as $device) {
+                foreach ($devices as $record) {
                     $renewAccountLock();
-                    $deviceKey = self::getKey($loginId, $loginType) . ':' . $device->getDeviceId();
+                    $device = $record['device'];
+                    $deviceKey = $record['key'];
                     $remainingTokens = [];
                     $revokedToken = false;
                     foreach (self::loadDeviceTokenValues($deviceKey) as $tokenValue) {
@@ -252,9 +262,18 @@ class SaLoginDeviceManager
                         // A device can hold several non-shared tokens. Preserve only
                         // the explicitly exempted bearer, not every token on that device.
                         $device->setTokenValue($exceptToken);
-                        SaToken::getDao()->update($deviceKey, self::encodeDevice($device, $remainingTokens));
+                        $updated = SaToken::getDao() instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface
+                            && SaToken::getDao()->compareAndSet(
+                                $deviceKey,
+                                $record['raw'],
+                                self::encodeDevice($device, $remainingTokens)
+                            );
                     } else {
-                        SaToken::getDao()->delete($deviceKey);
+                        $updated = SaToken::getDao() instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface
+                            && SaToken::getDao()->compareAndSet($deviceKey, $record['raw'], null);
+                    }
+                    if (!$updated) {
+                        throw new SaTokenException('设备记录已并发变更或 DAO 不支持原子条件写入，请重试');
                     }
                     if ($revokedToken) {
                         $count++;
@@ -285,15 +304,19 @@ class SaLoginDeviceManager
             // Cleanup metadata only after the authoritative sessions are revoked;
             // adapters without key search and damaged device records must not
             // prevent the security operation itself.
-            $devices = self::loadDeviceList($loginId, $loginType, true);
-            $devicePrefix = self::getKey($loginId, $loginType) . ':';
+            $devices = self::loadDeviceRecords($loginId, $loginType, true);
             $deviceCount = 0;
-            foreach ($devices as $device) {
+            foreach ($devices as $record) {
                 $renewAccountLock();
+                $device = $record['device'];
                 if ($exceptToken !== null && $device->getTokenValue() === $exceptToken) {
                     continue;
                 }
-                SaToken::getDao()->delete($devicePrefix . $device->getDeviceId());
+                $dao = SaToken::getDao();
+                if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface
+                    || !$dao->compareAndSet($record['key'], $record['raw'], null)) {
+                    throw new SaTokenException('设备记录已并发变更或 DAO 不支持原子条件写入，请重试');
+                }
                 $deviceCount++;
             }
 
