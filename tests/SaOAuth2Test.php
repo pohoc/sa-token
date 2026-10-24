@@ -199,6 +199,37 @@ class SaOAuth2Test extends TestCase
         self::assertTrue($accessToken->isExpired(), 'Access Token 在 exp 边界必须失效');
     }
 
+    public function testAccessTokenWithInvalidLifetimeMetadataFailsClosed(): void
+    {
+        foreach ([0, -1, time() + 60, PHP_INT_MAX] as $createTime) {
+            $token = new SaOAuth2AccessToken([
+                'createTime' => $createTime,
+                'expiresIn' => 3600,
+            ]);
+            self::assertTrue($token->isExpired(), '无效的访问令牌创建时间必须视为过期');
+        }
+
+        $invalidLifetimeToken = new SaOAuth2AccessToken([
+            'createTime' => time(),
+            'expiresIn' => PHP_INT_MAX,
+        ]);
+        self::assertTrue($invalidLifetimeToken->isExpired(), '超出可表示范围的访问令牌有效期必须拒绝');
+
+        $tokenValue = 'oauth2-access-token-invalid-created-at';
+        SaToken::getDao()->set('oauth2:at:' . $tokenValue, \SaToken\Util\SaFoxUtil::toJson([
+            'accessToken' => $tokenValue,
+            'expiresIn' => 3600,
+            'tokenType' => 'Bearer',
+            'refreshToken' => null,
+            'scope' => 'read',
+            'loginId' => 10001,
+            'clientId' => 'test-client',
+            'createTime' => 0,
+            'idToken' => '',
+        ]));
+        self::assertNull($this->handle->validateAccessToken($tokenValue));
+    }
+
     public function testClientWithoutScopeAllowlistCannotSelfAssignScopes(): void
     {
         $client = new SaOAuth2Client([

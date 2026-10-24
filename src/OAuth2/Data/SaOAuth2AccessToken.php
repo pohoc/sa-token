@@ -76,10 +76,13 @@ class SaOAuth2AccessToken
      */
     public function isExpired(): bool
     {
-        if ($this->createTime <= 0) {
-            return false;
+        $now = time();
+        if ($this->createTime <= 0 || $this->createTime > $now || $this->expiresIn <= 0
+            || $this->expiresIn > PHP_INT_MAX - $this->createTime - 60) {
+            return true;
         }
-        return time() >= $this->createTime + $this->expiresIn;
+
+        return $now >= $this->createTime + $this->expiresIn;
     }
 
     public function getAccessToken(): string
