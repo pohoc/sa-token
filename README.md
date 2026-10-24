@@ -1103,8 +1103,7 @@ SaToken::init([
 OTP 验证码与安全令牌。使用这些功能前必须配置至少 32 字节的高熵 `signKey`；敏感验证状态会使用派生 HMAC 绑定当前验证场景和账户，防止 DAO 数据被篡改或跨账户复制。升级后已有的验证码和未消费安全令牌会失效，需要重新获取。
 
 ```php
-$code = StpUtil::generateOtpCode('payment');
-$code = StpUtil::sendOtpCode('payment');
+StpUtil::sendOtpCode('payment');
 
 StpUtil::verifyOtpCode('payment', '123456');
 
@@ -1115,6 +1114,8 @@ StpUtil::clearSensitiveVerify('payment');
 $token = StpUtil::openSensitiveVerify('payment', 600);
 StpUtil::checkSensitiveVerify('payment', $token);
 ```
+
+`sendOtpCode()` 通过配置的发送回调投递验证码，不会把验证码返回给调用方。`generateOtpCode()` 仅供可信服务端自定义投递流程使用；验证码属于秘密凭据，不要将其放入 HTTP/RPC 响应返回给用户。
 
 ## 审计日志
 
