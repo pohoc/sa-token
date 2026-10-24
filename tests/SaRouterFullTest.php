@@ -263,6 +263,22 @@ class SaRouterFullTest extends TestCase
 
     // ======== 特殊字符路径 ========
 
+    public function testDotSegmentsCannotBypassProtectedPathMatch(): void
+    {
+        foreach ([
+            '/public/../admin',
+            '/public/%2e%2e/admin',
+            '/public/./../admin',
+        ] as $path) {
+            SaRouter::setCurrentPath($path);
+            $matched = false;
+            SaRouter::match('/admin/**')->check(function () use (&$matched) {
+                $matched = true;
+            });
+            self::assertTrue($matched, "Dot-segment path {$path} must match the canonical protected route");
+        }
+    }
+
     public function testPathWithNumbers(): void
     {
         SaRouter::setCurrentPath('/api/v2/users');

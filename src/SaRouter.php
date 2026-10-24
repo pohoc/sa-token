@@ -152,6 +152,30 @@ class SaRouter
         // path. Do not decode repeatedly: %252F must remain %2F here.
         $path = rawurldecode($path);
 
+        // Resolve dot segments before applying authorization patterns. A proxy
+        // or downstream router may canonicalize /public/../admin to /admin;
+        // matching the pre-canonical path here would skip /admin protections.
+        $isAbsolute = str_starts_with($path, '/');
+        $hasTrailingSlash = str_ends_with($path, '/')
+            || preg_match('~(?:^|/)\.{1,2}$~D', $path) === 1;
+        $segments = [];
+        foreach (explode('/', $path) as $segment) {
+            if ($segment === '' || $segment === '.') {
+                continue;
+            }
+            if ($segment === '..') {
+                array_pop($segments);
+                continue;
+            }
+            $segments[] = $segment;
+        }
+        $path = ($isAbsolute ? '/' : '') . implode('/', $segments);
+        if ($path === '') {
+            $path = '/';
+        } elseif ($hasTrailingSlash && $path !== '/') {
+            $path .= '/';
+        }
+
         return str_starts_with($path, '/') ? $path : '/' . $path;
     }
 
