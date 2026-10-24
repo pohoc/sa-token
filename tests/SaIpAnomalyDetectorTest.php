@@ -8,6 +8,8 @@ use PHPUnit\Framework\TestCase;
 use SaToken\Dao\SaTokenDaoMemory;
 use SaToken\SaToken;
 use SaToken\Security\SaIpAnomalyDetector;
+use SaToken\StpLogic;
+use SaToken\Util\SaTokenContext;
 
 class SaIpAnomalyDetectorTest extends TestCase
 {
@@ -204,6 +206,53 @@ class SaIpAnomalyDetectorTest extends TestCase
         SaIpAnomalyDetector::recordLoginIp($loginId, '10.0.0.50');
 
         $this->assertEquals(0, SaIpAnomalyDetector::getAnomalyCount($loginId));
+    }
+
+    public function testSuccessfulLoginAutomaticallyRecordsIpHistory(): void
+    {
+        SaToken::getConfig()->setIpAnomalyDetection(true);
+        $logic = new StpLogic('login');
+
+        SaTokenContext::setRequest($this->requestFromIp('8.8.8.8'));
+        $logic->login('automatic-ip-history-user');
+        SaTokenContext::setRequest($this->requestFromIp('114.114.114.114'));
+        $logic->login('automatic-ip-history-user');
+
+        self::assertSame('114.114.114.114', $logic->getLoginInfo('automatic-ip-history-user')['currentIp']);
+        self::assertSame(1, $logic->getAnomalyCount('automatic-ip-history-user'));
+        self::assertCount(2, $logic->getIpHistory('automatic-ip-history-user'));
+    }
+
+    public function testStatelessLoginAutomaticallyRecordsIpHistory(): void
+    {
+        SaToken::getConfig()
+            ->setIpAnomalyDetection(true)
+            ->setJwtStateless(true)
+            ->setJwtSecretKey('test-jwt-secret-key-32-bytes-long-ok!');
+        $logic = new StpLogic('login');
+
+        SaTokenContext::setRequest($this->requestFromIp('8.8.8.8'));
+        $logic->loginStateless('automatic-stateless-ip-user');
+        SaTokenContext::setRequest($this->requestFromIp('114.114.114.114'));
+        $logic->loginStateless('automatic-stateless-ip-user');
+
+        self::assertSame('114.114.114.114', $logic->getLoginInfo('automatic-stateless-ip-user')['currentIp']);
+        self::assertSame(1, $logic->getAnomalyCount('automatic-stateless-ip-user'));
+        self::assertCount(2, $logic->getIpHistory('automatic-stateless-ip-user'));
+    }
+
+    private function requestFromIp(string $ip): object
+    {
+        return new class ($ip) {
+            public function __construct(private string $ip)
+            {
+            }
+
+            public function getClientIp(): string
+            {
+                return $this->ip;
+            }
+        };
     }
 
     public function testMultipleAccountsAreIndependent(): void

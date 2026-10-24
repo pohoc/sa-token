@@ -10,6 +10,7 @@ use SaToken\Exception\NotLoginException;
 use SaToken\Exception\SaTokenException;
 use SaToken\Listener\SaTokenEvent;
 use SaToken\Plugin\SaTokenJwt;
+use SaToken\Security\SaIpAnomalyDetector;
 use SaToken\Security\SaLoginDeviceManager;
 use SaToken\Util\SaFoxUtil;
 use SaToken\Util\SaTokenContext;
@@ -145,6 +146,8 @@ class StpLogic
                 $this->registerLoginDevice($loginId, $deviceType, $parameter, $tokenValue);
             }
 
+            $this->recordLoginIpIfEnabled($loginId, $config);
+
             $result = $this->buildLoginResult($tokenValue, $timeout, $loginId, $config);
         } finally {
             $this->tokenManager->releaseLock($lockKey);
@@ -233,6 +236,7 @@ class StpLogic
                 $this->tokenManager->saveFingerprint($tokenValue, $fingerprint, $timeout);
             }
             $this->tokenManager->updateLastActiveToNow($tokenValue);
+            $this->recordLoginIpIfEnabled($loginId, $config);
 
             $this->writeTokenToResponse($tokenValue, $parameter);
         } finally {
@@ -242,6 +246,20 @@ class StpLogic
         $this->getEvent()->onLogin($this->loginType, $loginId, $tokenValue, $parameter);
 
         return $tokenValue;
+    }
+
+    protected function recordLoginIpIfEnabled(mixed $loginId, SaTokenConfig $config): void
+    {
+        if (!$config->getIpAnomalyDetection()) {
+            return;
+        }
+
+        $ip = SaTokenContext::getClientIp();
+        if ($ip === null || filter_var($ip, FILTER_VALIDATE_IP) === false) {
+            return;
+        }
+
+        SaIpAnomalyDetector::recordLoginIp($loginId, $ip, $this->loginType);
     }
 
     /**
