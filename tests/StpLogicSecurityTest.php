@@ -101,6 +101,20 @@ class StpLogicSecurityTest extends TestCase
         self::assertNull($this->stp->getTokenValue());
     }
 
+    public function testGetTokenValueRejectsDuplicateCookiesWithTheSameName(): void
+    {
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getCookieParams')->willReturn(['satoken' => 'victim-token']);
+        $request->method('getHeader')->willReturnCallback(static function (string $name): array {
+            return strcasecmp($name, 'Cookie') === 0
+                ? ['satoken=attacker-token; satoken=victim-token']
+                : [];
+        });
+        SaTokenContext::setRequest($request);
+
+        self::assertNull($this->stp->getTokenValue());
+    }
+
     // ===== Token 指纹相关测试 =====
 
     public function testComputeFingerprint(): void

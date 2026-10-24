@@ -516,6 +516,11 @@ class StpLogic
 
         // 2. 从 Cookie 读取
         if ($config->isReadCookie()) {
+            if (SaTokenContext::hasMultipleCookieValues($tokenName)) {
+                // 同名 Cookie 可能由 host-only 与父域 Cookie 同时携带；不同
+                // 框架对重复项的选择顺序不同，拒绝歧义请求并避免降级到参数凭据。
+                return null;
+            }
             $tokenValue = SaTokenContext::getCookie($tokenName);
             if ($tokenValue !== null && SaFoxUtil::isNotEmpty($tokenValue)) {
                 return $this->formatTokenValue($tokenValue);

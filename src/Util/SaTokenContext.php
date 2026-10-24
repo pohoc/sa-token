@@ -372,6 +372,95 @@ class SaTokenContext
         return null;
     }
 
+    /** Reject duplicate names in the raw Cookie header before trusting a parsed cookie map. */
+    public static function hasMultipleCookieValues(string $name): bool
+    {
+        $header = self::getCookieHeader();
+        if ($header === null || $header === '') {
+            return false;
+        }
+
+        $count = 0;
+        foreach (preg_split('/[;,]/', $header) ?: [] as $part) {
+            $separator = strpos($part, '=');
+            if ($separator === false || trim(substr($part, 0, $separator)) !== $name) {
+                continue;
+            }
+            if (++$count > 1) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    protected static function getCookieHeader(): ?string
+    {
+        $request = self::getRequest();
+        if ($request instanceof \Psr\Http\Message\ServerRequestInterface) {
+            $values = $request->getHeader('Cookie');
+            return self::joinCookieHeaderValues($values);
+        }
+
+        if (is_object($request)) {
+            $properties = get_object_vars($request);
+            $headerBag = $properties['headers'] ?? null;
+            if (is_object($headerBag) && method_exists($headerBag, 'all')) {
+                try {
+                    $values = $headerBag->all('Cookie');
+                } catch (\Throwable) {
+                    return null;
+                }
+                if (is_array($values)) {
+                    if (array_is_list($values)) {
+                        return self::joinCookieHeaderValues($values);
+                    }
+                    foreach ($values as $headerName => $headerValues) {
+                        if (is_string($headerName) && strcasecmp($headerName, 'Cookie') === 0
+                            && is_array($headerValues)) {
+                            return self::joinCookieHeaderValues($headerValues);
+                        }
+                    }
+                    return null;
+                }
+                return null;
+            }
+
+            if (method_exists($request, 'getHeaderLine')) {
+                $value = $request->getHeaderLine('Cookie');
+                return is_string($value) && $value !== '' ? $value : null;
+            }
+
+            if (method_exists($request, 'header')) {
+                $value = $request->header('Cookie');
+                if (is_array($value)) {
+                    return self::joinCookieHeaderValues($value);
+                }
+                return is_string($value) && $value !== '' ? $value : null;
+            }
+        }
+
+        return null;
+    }
+
+    /** @param array<array-key, mixed> $values */
+    protected static function joinCookieHeaderValues(array $values): ?string
+    {
+        if ($values === []) {
+            return null;
+        }
+
+        $strings = [];
+        foreach ($values as $value) {
+            if (!is_string($value)) {
+                return null;
+            }
+            $strings[] = $value;
+        }
+
+        return implode('; ', $strings);
+    }
+
     /**
      * 从请求参数中获取值
      *
