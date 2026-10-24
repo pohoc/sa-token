@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace SaToken\Rpc;
 
 use SaToken\Exception\SaTokenException;
-use SaToken\SaLoginParameter;
 use SaToken\SaToken;
+use SaToken\Util\SaTokenContext;
 
 class SaRpcInterceptor
 {
@@ -43,16 +43,22 @@ class SaRpcInterceptor
         }
 
         if ($this->autoLogin) {
+            SaTokenContext::setTokenOverride($this->loginType, null);
             $tokenValue = SaRpcContext::getForwardedToken();
-            if ($tokenValue !== null) {
-                $stpLogic = SaToken::getStpLogic($this->loginType);
-                $loginId = $stpLogic->getLoginIdByToken($tokenValue);
-                if ($loginId !== null) {
-                    // RPC identity adoption is internal to this request. Do not
-                    // issue the new local access/refresh credentials to the caller.
-                    $stpLogic->login($loginId, (new SaLoginParameter())->setWriteResponseCredentials(false));
-                }
+            $stpLogic = SaToken::getStpLogic($this->loginType);
+            $loginId = $tokenValue !== null ? $stpLogic->getLoginIdByToken($tokenValue) : null;
+            if ($loginId === null || $tokenValue === null) {
+                // Keep a rejected RPC credential from falling through to a
+                // different native token on the same request if the exception
+                // is intercepted by application middleware.
+                SaTokenContext::setTokenOverride($this->loginType, '');
+                throw new SaTokenException('RPC Token 无效');
             }
+
+            // Bind the validated upstream credential to this request's local
+            // authentication API without issuing another token or trusting a
+            // conflicting native satoken header.
+            SaTokenContext::setTokenOverride($this->loginType, $tokenValue);
         }
     }
 

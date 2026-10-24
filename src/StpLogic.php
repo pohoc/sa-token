@@ -529,6 +529,11 @@ class StpLogic
      */
     public function getTokenValue(): ?string
     {
+        $tokenOverride = SaTokenContext::getTokenOverride($this->loginType);
+        if ($tokenOverride !== null) {
+            return $tokenOverride;
+        }
+
         $config = $this->getConfig();
         $tokenName = $config->getTokenName();
 

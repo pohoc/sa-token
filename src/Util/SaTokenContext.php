@@ -43,6 +43,9 @@ class SaTokenContext
      */
     protected static array $pendingCookiesMap = [];
 
+    /** @var array<string, array<string, string>> Request-scoped authentication token overrides by login type. */
+    protected static array $tokenOverridesMap = [];
+
     /**
      * Cookie 存储键前缀
      * @var string
@@ -105,7 +108,8 @@ class SaTokenContext
         unset(
             self::$responseMap[$contextId],
             self::$pendingHeadersMap[$contextId],
-            self::$pendingCookiesMap[$contextId]
+            self::$pendingCookiesMap[$contextId],
+            self::$tokenOverridesMap[$contextId]
         );
         // SaRouter caches the normalized request path by context ID. A long-
         // running worker may reuse that ID even if cleanup was skipped after
@@ -158,8 +162,28 @@ class SaTokenContext
             self::$requestMap[$id],
             self::$responseMap[$id],
             self::$pendingHeadersMap[$id],
-            self::$pendingCookiesMap[$id]
+            self::$pendingCookiesMap[$id],
+            self::$tokenOverridesMap[$id]
         );
+    }
+
+    public static function setTokenOverride(string $loginType, ?string $tokenValue): void
+    {
+        $id = self::getContextId();
+        if ($tokenValue === null) {
+            unset(self::$tokenOverridesMap[$id][$loginType]);
+            if ((self::$tokenOverridesMap[$id] ?? []) === []) {
+                unset(self::$tokenOverridesMap[$id]);
+            }
+            return;
+        }
+
+        self::$tokenOverridesMap[$id][$loginType] = $tokenValue;
+    }
+
+    public static function getTokenOverride(string $loginType): ?string
+    {
+        return self::$tokenOverridesMap[self::getContextId()][$loginType] ?? null;
     }
 
     /** @var array<string> */

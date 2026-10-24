@@ -267,6 +267,7 @@ class SaRpcContextTest extends TestCase
     public function testRpcAutoLoginDoesNotSendLocallyIssuedCredentialsInResponse(): void
     {
         $token = StpUtil::login(10006)->getAccessToken();
+        $conflictingToken = StpUtil::login(10007)->getAccessToken();
         SaTokenContext::clear();
         SaToken::getConfig()
             ->setIsWriteCookie(true)
@@ -274,6 +275,7 @@ class SaRpcContextTest extends TestCase
             ->setRefreshToken(true);
         SaTokenContext::setRequest($this->mockRequestWithHeaders([
             'X-Sa-Token' => $token,
+            'satoken' => $conflictingToken,
         ]));
 
         (new SaRpcInterceptor())->setAutoLogin(true)->handleIncoming();
@@ -287,6 +289,27 @@ class SaRpcContextTest extends TestCase
         self::assertIsArray($headersByContext);
         self::assertSame([], $cookiesByContext[$contextId] ?? []);
         self::assertSame([], $headersByContext[$contextId] ?? []);
+        self::assertSame('10006', StpUtil::getLoginId(), '下游身份必须与已验证的 RPC Token 一致');
+    }
+
+    public function testRpcAutoLoginRejectsInvalidForwardedTokenInsteadOfFallingBack(): void
+    {
+        $conflictingToken = StpUtil::login(10008)->getAccessToken();
+        SaTokenContext::clear();
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token' => 'invalid-rpc-token',
+            'satoken' => $conflictingToken,
+        ]));
+
+        $interceptor = (new SaRpcInterceptor())->setValidateToken(false)->setAutoLogin(true);
+        try {
+            $interceptor->handleIncoming();
+            self::fail('autoLogin 必须拒绝无效的 RPC Token');
+        } catch (SaTokenException $exception) {
+            self::assertSame('RPC Token 无效', $exception->getMessage());
+        }
+
+        self::assertNull(SaToken::getStpLogic()->getLoginId());
     }
 
     public function testRpcInterceptorOutgoing(): void
