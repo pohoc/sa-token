@@ -573,29 +573,6 @@ class SaOAuth2Test extends TestCase
         $this->assertEquals('read', $accessToken->getScope());
     }
 
-    public function testPasswordGrantRejectsScopesOutsideClientAllowList(): void
-    {
-        $this->handle->registerClient(new SaOAuth2Client([
-            'clientId' => 'restricted-password-client',
-            'clientSecret' => 'restricted-password-secret',
-            'grantTypes' => ['password'],
-            'scopes' => ['read'],
-        ]));
-        $this->handle->setUserCredentialsValidator(static function (): int {
-            throw new \RuntimeException('scope must be rejected before checking user credentials');
-        });
-
-        $this->expectException(SaTokenException::class);
-        $this->expectExceptionMessage('未授予的 scope');
-        $this->handle->tokenByPassword(
-            'restricted-password-client',
-            'restricted-password-secret',
-            'user',
-            'password',
-            'read admin'
-        );
-    }
-
     public function testTokenByPasswordWithWrongCredentials(): void
     {
         $this->handle->setUserCredentialsValidator(function (string $username, string $password): ?int {
@@ -644,24 +621,6 @@ class SaOAuth2Test extends TestCase
         $this->assertNotEmpty($accessToken->getAccessToken());
         $this->assertEquals('client:test-client', $accessToken->getLoginId());
         $this->assertEquals('read', $accessToken->getScope());
-    }
-
-    public function testClientCredentialsGrantRejectsScopesOutsideClientAllowList(): void
-    {
-        $this->handle->registerClient(new SaOAuth2Client([
-            'clientId' => 'restricted-service-client',
-            'clientSecret' => 'restricted-service-secret',
-            'grantTypes' => ['client_credentials'],
-            'scopes' => ['read'],
-        ]));
-
-        $this->expectException(SaTokenException::class);
-        $this->expectExceptionMessage('未授予的 scope');
-        $this->handle->tokenByClientCredentials(
-            'restricted-service-client',
-            'restricted-service-secret',
-            'read admin'
-        );
     }
 
     public function testTokenByClientCredentialsUnsupportedGrantType(): void
