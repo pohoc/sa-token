@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SaToken\Annotation;
 
 use ReflectionClass;
+use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
 
 class SaAnnotationProcessor
@@ -110,17 +111,15 @@ class SaAnnotationProcessor
             if ($instance instanceof SaCheckLogin) {
                 $stpLogic->checkLogin();
             } elseif ($instance instanceof SaCheckPermission) {
-                $permissions = explode(',', $instance->getValue());
-                $permissions = array_map('trim', $permissions);
-                if (strtoupper($instance->getMode()) === 'AND') {
+                $permissions = self::parseAuthorizationValues($instance->getValue(), '权限');
+                if (self::normalizeAuthorizationMode($instance->getMode(), '权限') === 'AND') {
                     $stpLogic->checkPermissionAnd($permissions);
                 } else {
                     $stpLogic->checkPermissionOr($permissions);
                 }
             } elseif ($instance instanceof SaCheckRole) {
-                $roles = explode(',', $instance->getValue());
-                $roles = array_map('trim', $roles);
-                if (strtoupper($instance->getMode()) === 'AND') {
+                $roles = self::parseAuthorizationValues($instance->getValue(), '角色');
+                if (self::normalizeAuthorizationMode($instance->getMode(), '角色') === 'AND') {
                     $stpLogic->checkRoleAnd($roles);
                 } else {
                     $stpLogic->checkRoleOr($roles);
@@ -138,6 +137,27 @@ class SaAnnotationProcessor
                 }
             }
         }
+    }
+
+    /** @return array<string> */
+    protected static function parseAuthorizationValues(string $value, string $kind): array
+    {
+        $values = array_map('trim', explode(',', $value));
+        if ($values === [] || in_array('', $values, true)) {
+            throw new SaTokenException("{$kind}注解必须包含非空值，且不能有空白项");
+        }
+
+        return $values;
+    }
+
+    protected static function normalizeAuthorizationMode(string $mode, string $kind): string
+    {
+        $normalized = strtoupper(trim($mode));
+        if (!in_array($normalized, ['AND', 'OR'], true)) {
+            throw new SaTokenException("{$kind}注解 mode 只支持 AND 或 OR");
+        }
+
+        return $normalized;
     }
 
     /** @param array<\ReflectionAttribute<object>> $attributes */

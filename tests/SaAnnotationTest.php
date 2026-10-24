@@ -20,6 +20,7 @@ use SaToken\Exception\NotLoginException;
 use SaToken\Exception\NotPermissionException;
 use SaToken\Exception\NotRoleException;
 use SaToken\Exception\NotSafeException;
+use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
 use SaToken\StpLogic;
 use SaToken\Util\SaTokenContext;
@@ -114,6 +115,42 @@ class SaAnnotationTestRoleController
 class SaAnnotationTestRoleOrController
 {
     #[SaCheckRole('admin,super', mode: 'OR')]
+    public function adminPanel(): string
+    {
+        return 'admin';
+    }
+}
+
+class SaAnnotationTestInvalidPermissionModeController
+{
+    #[SaCheckPermission('user:add,user:delete', mode: 'ADN')]
+    public function manage(): string
+    {
+        return 'managed';
+    }
+}
+
+class SaAnnotationTestInvalidRoleModeController
+{
+    #[SaCheckRole('admin,super', mode: '')]
+    public function adminPanel(): string
+    {
+        return 'admin';
+    }
+}
+
+class SaAnnotationTestEmptyPermissionController
+{
+    #[SaCheckPermission('user:add,')]
+    public function manage(): string
+    {
+        return 'managed';
+    }
+}
+
+class SaAnnotationTestEmptyRoleController
+{
+    #[SaCheckRole(',admin')]
     public function adminPanel(): string
     {
         return 'admin';
@@ -346,6 +383,38 @@ class SaAnnotationTest extends TestCase
         $this->loginAndGetToken();
         $this->expectException(NotPermissionException::class);
         SaAnnotationProcessor::process(SaAnnotationTestPermissionOrController::class, 'manage');
+    }
+
+    public function testInvalidPermissionModeFailsClosedInsteadOfBecomingOr(): void
+    {
+        $this->setActionWithPermissions(['user:add']);
+        $this->loginAndGetToken();
+        $this->expectException(SaTokenException::class);
+        SaAnnotationProcessor::process(SaAnnotationTestInvalidPermissionModeController::class, 'manage');
+    }
+
+    public function testInvalidRoleModeFailsClosedInsteadOfBecomingOr(): void
+    {
+        $this->setActionWithPermissions([], ['admin']);
+        $this->loginAndGetToken();
+        $this->expectException(SaTokenException::class);
+        SaAnnotationProcessor::process(SaAnnotationTestInvalidRoleModeController::class, 'adminPanel');
+    }
+
+    public function testEmptyPermissionItemIsRejected(): void
+    {
+        $this->setActionWithPermissions(['']);
+        $this->loginAndGetToken();
+        $this->expectException(SaTokenException::class);
+        SaAnnotationProcessor::process(SaAnnotationTestEmptyPermissionController::class, 'manage');
+    }
+
+    public function testEmptyRoleItemIsRejected(): void
+    {
+        $this->setActionWithPermissions([], ['']);
+        $this->loginAndGetToken();
+        $this->expectException(SaTokenException::class);
+        SaAnnotationProcessor::process(SaAnnotationTestEmptyRoleController::class, 'adminPanel');
     }
 
     public function testSaCheckRoleAttributeAndModePasses(): void
