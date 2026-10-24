@@ -888,7 +888,13 @@ class TokenManager
             }
 
             $mapKey = self::buildRefreshTokenMapKey($loginIdStr, $loginType, $accessToken);
-            $this->getDao()->set($mapKey, $this->encryptValue($refreshToken), $effectiveTimeout);
+            $dao = $this->getDao();
+            $previousMapValue = $dao->get($mapKey);
+            if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface
+                || !$dao->compareAndSet($mapKey, $previousMapValue, $this->encryptValue($refreshToken), $effectiveTimeout)) {
+                $dao->delete(self::REFRESH_TOKEN_PREFIX . $refreshToken);
+                throw new SaTokenException('RefreshToken 映射已并发变更或 DAO 不支持原子条件写入，请重试');
+            }
             $this->extendLoginIdListTimeout($loginIdStr, $loginType, $timeout);
         } finally {
             $this->releaseLock($loginLockKey);
@@ -933,7 +939,13 @@ class TokenManager
         $loginType = is_string($data['loginType'] ?? null) ? $data['loginType'] : '';
         $accessToken = is_string($data['accessToken'] ?? null) ? $data['accessToken'] : '';
         if ($loginId !== '' && $loginType !== '' && $accessToken !== '') {
-            $this->getDao()->delete(self::buildRefreshTokenMapKey($loginId, $loginType, $accessToken));
+            $dao = $this->getDao();
+            $mapKey = self::buildRefreshTokenMapKey($loginId, $loginType, $accessToken);
+            $mapped = $dao->get($mapKey);
+            if ($mapped !== null && $this->decryptValue($mapped) === $refreshToken
+                && $dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface) {
+                $dao->compareAndSet($mapKey, $mapped, null);
+            }
         }
 
         return $data;
@@ -982,7 +994,13 @@ class TokenManager
             $loginType = is_string($data['loginType'] ?? null) ? $data['loginType'] : '';
             $accessToken = is_string($data['accessToken'] ?? null) ? $data['accessToken'] : '';
             if ($loginId !== '' && $accessToken !== '') {
-                $this->getDao()->delete(self::buildRefreshTokenMapKey($loginId, $loginType, $accessToken));
+                $dao = $this->getDao();
+                $mapKey = self::buildRefreshTokenMapKey($loginId, $loginType, $accessToken);
+                $mapped = $dao->get($mapKey);
+                if ($mapped !== null && $this->decryptValue($mapped) === $refreshToken
+                    && $dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface) {
+                    $dao->compareAndSet($mapKey, $mapped, null);
+                }
             }
         }
     }
