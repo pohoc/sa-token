@@ -105,9 +105,18 @@ class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteI
     protected function withLock(string $key, callable $operation): mixed
     {
         $lockPath = $this->lockFile($key);
+        $this->assertRegularFileOrMissing($lockPath, '文件存储锁');
         $fp = fopen($lockPath, 'c');
         if ($fp === false) {
             throw new SaTokenException("文件存储锁打开失败：{$lockPath}");
+        }
+        // Recheck the opened inode as well as the path: a pre-planted or raced
+        // symlink must never make flock/chmod operate on an unrelated file.
+        try {
+            $this->assertOpenedRegularFile($fp, $lockPath, '文件存储锁');
+        } catch (\Throwable $exception) {
+            fclose($fp);
+            throw $exception;
         }
         if (!@chmod($lockPath, 0600)) {
             fclose($fp);
@@ -149,11 +158,11 @@ class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteI
     protected function readRecord(string $key): ?array
     {
         $path = $this->dataFile($key);
-        if (!is_file($path)) {
+        if ($this->assertRegularFileOrMissing($path, '文件存储记录') === null) {
             return null;
         }
 
-        $raw = file_get_contents($path);
+        $raw = $this->readRegularFile($path, '文件存储记录');
         if ($raw === false || $raw === '') {
             return null;
         }
@@ -176,6 +185,46 @@ class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteI
             'v' => $record['v'],
             'e' => $expireAt,
         ];
+    }
+
+    /** @return array{dev: int, ino: int, mode: int}|null */
+    protected function assertRegularFileOrMissing(string $path, string $label): ?array
+    {
+        $stat = @lstat($path);
+        if ($stat === false) {
+            return null;
+        }
+        if (($stat['mode'] & 0170000) !== 0100000) {
+            throw new SaTokenException("{$label}不能是符号链接或非普通文件：{$path}");
+        }
+
+        return ['dev' => $stat['dev'], 'ino' => $stat['ino'], 'mode' => $stat['mode']];
+    }
+
+    /** @param resource $stream */
+    protected function assertOpenedRegularFile($stream, string $path, string $label): void
+    {
+        $opened = fstat($stream);
+        $current = $this->assertRegularFileOrMissing($path, $label);
+        if ($opened === false || $current === null
+            || ($opened['mode'] & 0170000) !== 0100000
+            || $opened['dev'] !== $current['dev'] || $opened['ino'] !== $current['ino']) {
+            throw new SaTokenException("{$label}路径在打开时发生变化：{$path}");
+        }
+    }
+
+    protected function readRegularFile(string $path, string $label): string|false
+    {
+        $stream = @fopen($path, 'rb');
+        if ($stream === false) {
+            return false;
+        }
+        try {
+            $this->assertOpenedRegularFile($stream, $path, $label);
+            return stream_get_contents($stream);
+        } finally {
+            fclose($stream);
+        }
     }
 
     protected function isExpired(?int $expireAt): bool
@@ -535,7 +584,8 @@ class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteI
                 continue;
             }
             $path = $this->dataDir . '/' . $file;
-            if (!is_file($path)) {
+            $stat = @lstat($path);
+            if ($stat === false || ($stat['mode'] & 0170000) !== 0100000) {
                 continue;
             }
             $scanned++;

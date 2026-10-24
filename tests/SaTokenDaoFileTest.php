@@ -133,6 +133,56 @@ class SaTokenDaoFileTest extends TestCase
         $this->assertSame(0600, fileperms($lockFile) & 0777);
     }
 
+    public function testDataRecordSymlinkIsRejected(): void
+    {
+        $key = 'k:symlink-record';
+        $target = $this->basePath . '/external-record';
+        $payload = json_encode([
+            'key' => $key,
+            'v' => base64_encode('forged'),
+            'e' => null,
+        ]);
+        self::assertIsString($payload);
+        file_put_contents($target, $payload);
+        $link = $this->basePath . '/data/' . hash('sha256', $key) . '.dat';
+        self::assertTrue(symlink($target, $link));
+
+        try {
+            $this->dao->get($key);
+            self::fail('数据记录符号链接必须拒绝');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('不能是符号链接', $exception->getMessage());
+        } finally {
+            @unlink($link);
+            @unlink($target);
+        }
+    }
+
+    public function testLockFileSymlinkIsRejectedWithoutChangingTargetPermissions(): void
+    {
+        if (DIRECTORY_SEPARATOR !== '/') {
+            $this->markTestSkipped('Symlink lock protection test requires POSIX filesystem behavior.');
+        }
+
+        $key = 'k:symlink-lock';
+        $target = $this->basePath . '/external-lock-target';
+        file_put_contents($target, 'unrelated file');
+        chmod($target, 0644);
+        $link = $this->basePath . '/locks/' . hash('sha256', $key) . '.lock';
+        self::assertTrue(symlink($target, $link));
+
+        try {
+            $this->dao->set($key, 'value');
+            self::fail('锁文件符号链接必须拒绝');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('不能是符号链接', $exception->getMessage());
+        } finally {
+            @unlink($link);
+            self::assertSame(0644, fileperms($target) & 0777);
+            @unlink($target);
+        }
+    }
+
     public function testPermanentAndExpiry(): void
     {
         $this->dao->set('k:perm', 'forever', null);
