@@ -115,6 +115,19 @@ trait StpLogicRefreshTokenTrait
                 ? $consumed['accessToken']
                 : '';
 
+            // Account-wide logout/kickout removes the account token index
+            // before deleting every credential record. If storage cleanup
+            // fails after that first step, an orphaned RefreshToken must not
+            // use its still-present AccessToken record to create a new session.
+            // Stateless JWTs use the account revocation watermark below instead
+            // of an enumerable token list.
+            if (!$config->isJwtStateless()) {
+                $accountTokens = $this->tokenManager->getTokenListByLoginId($loginId, $this->loginType);
+                if (!in_array($oldAccessToken, array_column($accountTokens, 'tokenValue'), true)) {
+                    throw new SaTokenException('AccessToken 已从账号会话中撤销，无法刷新会话');
+                }
+            }
+
             if ($oldAccessToken !== '') {
                 if ($config->isJwtStateless()) {
                     if ($this->tokenManager->isBlacklisted($oldAccessToken)) {

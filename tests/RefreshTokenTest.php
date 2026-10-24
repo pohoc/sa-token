@@ -557,6 +557,41 @@ class RefreshTokenTest extends TestCase
         $this->assertFalse(StpUtil::isRefreshTokenValid($refreshToken));
     }
 
+    public function testRefreshTokenCannotRestoreSessionAfterAccountIndexWasRemovedBeforeBulkDeleteFailure(): void
+    {
+        $dao = new class () extends \SaToken\Dao\SaTokenDaoMemory {
+            public bool $failNextDeleteMultiple = false;
+
+            public function deleteMultiple(array $keys): void
+            {
+                if ($this->failNextDeleteMultiple) {
+                    $this->failNextDeleteMultiple = false;
+                    throw new \RuntimeException('simulated bulk-delete failure');
+                }
+                parent::deleteMultiple($keys);
+            }
+        };
+        SaToken::setDao($dao);
+        $loginId = 10077;
+        $accessToken = StpUtil::login($loginId)->getAccessToken();
+        $refreshToken = StpUtil::createRefreshToken($accessToken);
+
+        $dao->failNextDeleteMultiple = true;
+        try {
+            StpUtil::logoutByLoginId($loginId);
+            self::fail('模拟批量删除故障必须向调用方报告');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('simulated bulk-delete failure', $exception->getMessage());
+        }
+
+        try {
+            StpUtil::refreshToken($refreshToken);
+            self::fail('账号会话索引已删除后，遗留 RefreshToken 不得恢复登录');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('无法刷新', $exception->getMessage());
+        }
+    }
+
     public function testLoginAutoCreatesRefreshTokenWhenEnabled(): void
     {
         $loginResult = StpUtil::login(10011);
