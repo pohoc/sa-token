@@ -260,6 +260,61 @@ class RefreshTokenTest extends TestCase
         }
     }
 
+    public function testStatelessRefreshRejectsOldTokenAfterAccountRevocationEvenIfIndexIsMissing(): void
+    {
+        SaToken::reset();
+        SaToken::init([
+            'timeout'              => 7200,
+            'activityTimeout'      => -1,
+            'jwtStateless'         => true,
+            'jwtSecretKey'         => 'test-refresh-stateless-jwt-secret-32-bytes',
+            'refreshToken'         => true,
+            'refreshTokenTimeout'  => 2592000,
+            'refreshTokenRotation' => true,
+        ]);
+        $logic = new StpLogic('login');
+        $loginId = 'stateless-orphan-refresh-user';
+
+        $accessToken = $logic->loginStateless($loginId);
+        $refreshToken = $logic->createRefreshToken($accessToken);
+        // Simulate an incomplete/corrupt refresh index: the bearer record is
+        // still present, but account-wide cleanup cannot enumerate it.
+        SaToken::getDao()->delete('satoken:refreshAccount:login:' . $loginId);
+        $logic->getTokenManager()->revokeStatelessTokensByLoginId($loginId, 'login');
+
+        try {
+            $logic->refreshToken($refreshToken);
+            self::fail('账号撤销水位之后的旧 JWT 不得通过残留 RefreshToken 重新签发');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('撤销', $exception->getMessage());
+        }
+
+        self::assertNull($logic->getLoginIdByToken($accessToken));
+    }
+
+    public function testStatelessRefreshCanRenewExpiredAccessJwt(): void
+    {
+        SaToken::reset();
+        SaToken::init([
+            'timeout'              => 1,
+            'activityTimeout'      => -1,
+            'jwtStateless'         => true,
+            'jwtSecretKey'         => 'test-refresh-stateless-jwt-secret-32-bytes',
+            'refreshToken'         => true,
+            'refreshTokenTimeout'  => 60,
+            'refreshTokenRotation' => true,
+        ]);
+        $logic = new StpLogic('login');
+
+        $accessToken = $logic->loginStateless('stateless-expired-refresh-user');
+        $refreshToken = $logic->createRefreshToken($accessToken, 60);
+        sleep(2);
+
+        self::assertNull($logic->getLoginIdByToken($accessToken));
+        $result = $logic->refreshToken($refreshToken);
+        self::assertSame('stateless-expired-refresh-user', $logic->getLoginIdByToken($result->getAccessToken()));
+    }
+
     public function testRefreshTokenWithoutRotation(): void
     {
         SaToken::reset();

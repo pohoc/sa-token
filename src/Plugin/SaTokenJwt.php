@@ -111,9 +111,10 @@ class SaTokenJwt
     }
 
     /**
+     * @param  bool                 $allowExpired Allow expiry checks to be deferred while retaining signature and claim validation.
      * @return array<string, mixed>
      */
-    public function parseToken(string $token): array
+    public function parseToken(string $token, bool $allowExpired = false): array
     {
         if ($this->secretKey === '') {
             throw new SaTokenException('JWT 密钥未配置');
@@ -167,7 +168,7 @@ class SaTokenJwt
             if ((!is_int($expiresAt) && !is_float($expiresAt)) || !is_finite((float) $expiresAt)) {
                 throw new SaTokenException('JWT Token exp 字段无效');
             }
-            if ($expiresAt <= time()) {
+            if (!$allowExpired && $expiresAt <= time()) {
                 throw new SaTokenException('JWT Token 已过期');
             }
         }

@@ -110,6 +110,18 @@ trait StpLogicRefreshTokenTrait
                     if ($this->tokenManager->isBlacklisted($oldAccessToken)) {
                         throw new SaTokenException('AccessToken 已撤销，无法刷新会话');
                     }
+                    $oldAccessClaims = $this->getJwt()->parseToken($oldAccessToken, true);
+                    if (($oldAccessClaims['sub'] ?? null) !== $loginId
+                        || ($oldAccessClaims['type'] ?? null) !== $this->loginType) {
+                        throw new SaTokenException('AccessToken 身份不匹配，无法刷新会话');
+                    }
+                    if ($this->tokenManager->isStatelessTokenRevokedByLoginId(
+                        $loginId,
+                        $this->loginType,
+                        $oldAccessClaims['iat'] ?? null
+                    )) {
+                        throw new SaTokenException('AccessToken 已因账号撤销而失效，无法刷新会话');
+                    }
                     if ($this->getLoginIdByToken($oldAccessToken) === $loginId) {
                         $this->revokeToken($oldAccessToken);
                     }

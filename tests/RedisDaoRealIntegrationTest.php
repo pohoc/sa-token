@@ -193,6 +193,44 @@ class RedisDaoRealIntegrationTest extends TestCase
         }
     }
 
+    public function testStatelessRefreshRejectsOrphanCredentialAfterAccountRevocationAgainstRealRedis(): void
+    {
+        SaToken::reset();
+        SaToken::setConfig(new SaTokenConfig([
+            'timeout'              => 3600,
+            'activityTimeout'      => -1,
+            'jwtStateless'         => true,
+            'jwtSecretKey'         => 'redis-stateless-refresh-secret-key-32-bytes',
+            'refreshToken'         => true,
+            'refreshTokenTimeout'  => 3600,
+            'refreshTokenRotation' => true,
+        ]));
+        SaToken::setDao($this->dao);
+        $loginId = 'redis-orphan-refresh-' . bin2hex(random_bytes(8));
+        $logic = new StpLogic('login');
+
+        try {
+            $accessToken = $logic->loginStateless($loginId);
+            $refreshToken = $logic->createRefreshToken($accessToken);
+            // Keep the bearer record but remove its account index to model an
+            // incomplete cleanup or damaged index in the backing store.
+            $this->dao->delete('satoken:refreshAccount:login:' . $loginId);
+            $logic->getTokenManager()->revokeStatelessTokensByLoginId($loginId, 'login');
+
+            try {
+                $logic->refreshToken($refreshToken);
+                self::fail('账号撤销后残留的 RefreshToken 不得重新签发会话');
+            } catch (\SaToken\Exception\SaTokenException $exception) {
+                self::assertStringContainsString('账号撤销', $exception->getMessage());
+            }
+            self::assertNull($logic->getLoginIdByToken($accessToken));
+            self::assertFalse($logic->isRefreshTokenValid($refreshToken));
+        } finally {
+            $logic->kickout($loginId);
+            SaToken::reset();
+        }
+    }
+
     public function testRefreshTokenKeepsAccountIndexAliveAgainstRealRedis(): void
     {
         SaToken::reset();
