@@ -91,6 +91,44 @@ class SaRpcContextTest extends TestCase
         $this->assertEquals('login', $headers['X-Sa-Login-Type']);
     }
 
+    public function testAttachToHeadersRemovesCallerSuppliedAuthWhenNotLoggedIn(): void
+    {
+        $headers = SaRpcContext::attachToHeaders([
+            'x-sa-token'      => 'forged-token',
+            'X-Sa-Login-Id'   => 'forged-user',
+            'X-Sa-Login-Type' => 'admin',
+            'X-Correlation-Id' => 'request-123',
+        ]);
+
+        self::assertArrayNotHasKey('x-sa-token', $headers);
+        self::assertArrayNotHasKey('X-Sa-Login-Id', $headers);
+        self::assertSame('login', $headers['X-Sa-Login-Type']);
+        self::assertSame('request-123', $headers['X-Correlation-Id']);
+    }
+
+    public function testAttachToRequestRemovesCallerSuppliedAuthWhenNotLoggedIn(): void
+    {
+        $request = $this->createMock(\Psr\Http\Message\RequestInterface::class);
+        $removedHeaders = [];
+        $request->method('withoutHeader')->willReturnCallback(
+            function (string $name) use (&$removedHeaders, $request): \Psr\Http\Message\RequestInterface {
+                $removedHeaders[] = $name;
+                return $request;
+            }
+        );
+        $addedHeaders = [];
+        $request->method('withHeader')->willReturnCallback(
+            function (string $name, $value) use (&$addedHeaders, $request): \Psr\Http\Message\RequestInterface {
+                $addedHeaders[$name] = $value;
+                return $request;
+            }
+        );
+
+        self::assertSame($request, SaRpcContext::attachToRequest($request));
+        self::assertSame(['X-Sa-Token', 'X-Sa-Login-Id', 'X-Sa-Login-Type'], $removedHeaders);
+        self::assertSame(['X-Sa-Login-Type' => 'login'], $addedHeaders);
+    }
+
     public function testExtractAndValidateWithValidToken(): void
     {
         $loginResult = StpUtil::login(10001);

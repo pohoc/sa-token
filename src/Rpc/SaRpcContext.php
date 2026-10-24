@@ -31,6 +31,7 @@ class SaRpcContext
      */
     public static function attachToHeaders(array $headers = []): array
     {
+        $headers = self::removeForwardedAuthHeaders($headers);
         $tokenValue = StpUtil::getTokenValue();
         if ($tokenValue !== null) {
             $headers[self::$tokenHeaderName] = $tokenValue;
@@ -46,6 +47,10 @@ class SaRpcContext
 
     public static function attachToRequest(\Psr\Http\Message\RequestInterface $request): \Psr\Http\Message\RequestInterface
     {
+        foreach (self::getForwardedAuthHeaderNames() as $headerName) {
+            $request = $request->withoutHeader($headerName);
+        }
+
         $tokenValue = StpUtil::getTokenValue();
         if ($tokenValue !== null) {
             $request = $request->withHeader(self::$tokenHeaderName, $tokenValue);
@@ -57,6 +62,33 @@ class SaRpcContext
         }
         $request = $request->withHeader(self::$loginTypeHeaderName, StpUtil::TYPE);
         return $request;
+    }
+
+    /** @param array<string, string> $headers
+     * @return array<string, string>
+     */
+    protected static function removeForwardedAuthHeaders(array $headers): array
+    {
+        $authHeaderNames = self::getForwardedAuthHeaderNames();
+        foreach (array_keys($headers) as $headerName) {
+            if (!is_string($headerName)) {
+                continue;
+            }
+            foreach ($authHeaderNames as $authHeaderName) {
+                if (strcasecmp($headerName, $authHeaderName) === 0) {
+                    unset($headers[$headerName]);
+                    break;
+                }
+            }
+        }
+
+        return $headers;
+    }
+
+    /** @return list<string> */
+    protected static function getForwardedAuthHeaderNames(): array
+    {
+        return [self::$tokenHeaderName, self::$loginIdHeaderName, self::$loginTypeHeaderName];
     }
 
     public static function extractAndValidate(?string $expectedLoginType = null): void
