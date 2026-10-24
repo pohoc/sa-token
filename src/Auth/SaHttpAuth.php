@@ -20,6 +20,11 @@ class SaHttpAuth
 
     public function checkBasic(string $realm = 'Sa-Token'): void
     {
+        if (SaTokenContext::hasMultipleHeaderValues('Authorization')) {
+            $this->sendChallenge($realm);
+            throw new SaTokenException('Basic Authorization Header 存在多个值');
+        }
+
         $authHeader = SaTokenContext::getHeader('Authorization');
 
         if ($authHeader === null || preg_match('/^basic\s+/i', $authHeader) !== 1) {
@@ -62,6 +67,11 @@ class SaHttpAuth
 
     public function checkDigest(string $realm = 'Sa-Token'): void
     {
+        if (SaTokenContext::hasMultipleHeaderValues('Authorization')) {
+            $this->sendDigestChallenge($realm);
+            throw new SaTokenException('Digest Authorization Header 存在多个值');
+        }
+
         $authHeader = SaTokenContext::getHeader('Authorization');
 
         if ($authHeader === null || preg_match('/^digest\s+/i', $authHeader) !== 1) {

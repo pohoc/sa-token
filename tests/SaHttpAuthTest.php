@@ -75,6 +75,30 @@ class SaHttpAuthTest extends TestCase
         $this->assertTrue(true);
     }
 
+    public function testCheckBasicRejectsDuplicateAuthorizationHeaders(): void
+    {
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->willReturnCallback(static fn (string $name): array => $name === 'Authorization'
+            ? ['Basic ' . base64_encode('admin:first'), 'Basic ' . base64_encode('admin:second')]
+            : []);
+        SaTokenContext::setRequest($request);
+
+        $validatorCalls = 0;
+        $auth = new SaHttpAuth();
+        $auth->setBasicValidator(static function () use (&$validatorCalls): string {
+            $validatorCalls++;
+            return 'admin';
+        });
+
+        try {
+            $auth->checkBasic();
+            $this->fail('重复 Authorization Header 必须被拒绝');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('存在多个值', $e->getMessage());
+        }
+        $this->assertSame(0, $validatorCalls);
+    }
+
     public function testCheckBasicThrowsOnMissingHeader(): void
     {
         $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
@@ -84,6 +108,30 @@ class SaHttpAuthTest extends TestCase
         $auth = new SaHttpAuth();
         $this->expectException(SaTokenException::class);
         $auth->checkBasic();
+    }
+
+    public function testCheckDigestRejectsDuplicateAuthorizationHeaders(): void
+    {
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->willReturnCallback(static fn (string $name): array => $name === 'Authorization'
+            ? ['Digest username="alice"', 'Digest username="mallory"']
+            : []);
+        SaTokenContext::setRequest($request);
+
+        $validatorCalls = 0;
+        $auth = new SaHttpAuth();
+        $auth->setDigestValidator(static function () use (&$validatorCalls): string {
+            $validatorCalls++;
+            return md5('alice:Sa-Token:password');
+        });
+
+        try {
+            $auth->checkDigest();
+            $this->fail('重复 Authorization Header 必须被拒绝');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('存在多个值', $e->getMessage());
+        }
+        $this->assertSame(0, $validatorCalls);
     }
 
     public function testCheckBasicThrowsOnInvalidCredentials(): void
