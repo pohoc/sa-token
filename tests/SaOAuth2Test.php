@@ -645,6 +645,60 @@ class SaOAuth2Test extends TestCase
         $this->handle->refreshToken('mock-invalid-refresh-token', 'test-client', $this->clientSecret);
     }
 
+    public function testExpiredRefreshTokenIsRejectedEvenWhenDaoIgnoresTtl(): void
+    {
+        $dao = new class () extends SaTokenDaoMemory {
+            public function set(string $key, string $value, ?int $timeout = null): void
+            {
+                parent::set($key, $value, null);
+            }
+        };
+        SaToken::setDao($dao);
+        $this->handle->registerClient($this->testClient);
+
+        $refreshToken = 'expired-refresh-token';
+        $key = 'oauth2:rt:' . $refreshToken;
+        $dao->set($key, json_encode([
+            'refreshToken' => $refreshToken,
+            'accessToken' => 'expired-access-token',
+            'clientId' => 'test-client',
+            'loginId' => 10001,
+            'scope' => 'read',
+            'expiresIn' => 60,
+            'createTime' => time() - 120,
+            'familyId' => 'expired-family',
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $this->handle->refreshToken($refreshToken, 'test-client', $this->clientSecret);
+            self::fail('DAO 未执行 TTL 时，过期刷新令牌也必须被拒绝');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('已过期', $exception->getMessage());
+        }
+
+        self::assertNotNull($dao->get($key), '预检发现过期时不应消费刷新令牌');
+
+        $malformedRefreshToken = 'refresh-token-without-expiry-metadata';
+        $malformedKey = 'oauth2:rt:' . $malformedRefreshToken;
+        $dao->set($malformedKey, json_encode([
+            'refreshToken' => $malformedRefreshToken,
+            'accessToken' => 'legacy-access-token',
+            'clientId' => 'test-client',
+            'loginId' => 10001,
+            'scope' => 'read',
+            'expiresIn' => 60,
+            'familyId' => 'malformed-family',
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $this->handle->refreshToken($malformedRefreshToken, 'test-client', $this->clientSecret);
+            self::fail('缺少过期元数据的刷新令牌必须 fail closed');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('数据无效', $exception->getMessage());
+        }
+        self::assertNotNull($dao->get($malformedKey));
+    }
+
     public function testRefreshTokenWithWrongClientId(): void
     {
         $code = $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback');

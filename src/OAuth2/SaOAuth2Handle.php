@@ -335,6 +335,9 @@ class SaOAuth2Handle
             $preData = SaFoxUtil::fromJson($this->decryptValue($preJson));
             if (is_array($preData)) {
                 /** @var array<string, mixed> $preData */
+                if (!$this->isRefreshTokenRecordValid($preData)) {
+                    throw new SaTokenException('刷新令牌数据无效或已过期');
+                }
                 $preClientId = is_string($preData['clientId'] ?? null) ? $preData['clientId'] : '';
                 if ($preClientId !== '' && $preClientId !== $clientId) {
                     throw new SaTokenException('客户端 ID 不匹配');
@@ -392,6 +395,9 @@ class SaOAuth2Handle
             throw new SaTokenException('无效的刷新令牌');
         }
         /** @var array<string, mixed> $decoded */
+        if (!$this->isRefreshTokenRecordValid($decoded)) {
+            throw new SaTokenException('刷新令牌数据无效或已过期');
+        }
         $rtData = new SaOAuth2RefreshToken($decoded);
         $familyId = $rtData->getFamilyId();
 
@@ -459,6 +465,19 @@ class SaOAuth2Handle
         }
 
         return $accessToken;
+    }
+
+    /**
+     * Validate persisted expiry metadata instead of trusting the DAO TTL alone.
+     * @param array<string, mixed> $data
+     */
+    protected function isRefreshTokenRecordValid(array $data): bool
+    {
+        if (!is_int($data['createTime'] ?? null) || !is_int($data['expiresIn'] ?? null)) {
+            return false;
+        }
+
+        return !(new SaOAuth2RefreshToken($data))->isExpired();
     }
 
     /**

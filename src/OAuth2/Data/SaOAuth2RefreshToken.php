@@ -136,4 +136,23 @@ class SaOAuth2RefreshToken
         $this->createTime = $createTime;
         return $this;
     }
+
+    /**
+     * 判断刷新令牌是否已过期。
+     * -1 表示未设置过期时间；缺失或无效的创建时间按过期处理。
+     */
+    public function isExpired(): bool
+    {
+        if ($this->createTime <= 0) {
+            return true;
+        }
+        if ($this->expiresIn === -1) {
+            return false;
+        }
+        if ($this->expiresIn <= 0) {
+            return true;
+        }
+
+        return time() >= $this->createTime + $this->expiresIn;
+    }
 }
