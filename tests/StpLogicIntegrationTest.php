@@ -71,6 +71,20 @@ class StpLogicIntegrationTest extends TestCase
         return $token;
     }
 
+    public function testDuplicateTokenHeadersFailClosedWithoutCookieFallback(): void
+    {
+        $token = $this->logic->login('duplicate-header-user')->getAccessToken();
+        SaToken::getConfig()->setIsReadCookie(true);
+
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->with('satoken')->willReturn(['attacker-value', $token]);
+        $request->method('getCookieParams')->willReturn(['satoken' => $token]);
+        SaTokenContext::setRequest($request);
+
+        $this->assertNull($this->logic->getTokenValue());
+        $this->assertNull($this->logic->getLoginId());
+    }
+
     public function testShorterNewTokenDoesNotExpireLongerAccountTokenList(): void
     {
         $loginId = 'mixed-timeout-user';

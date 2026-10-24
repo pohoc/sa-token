@@ -274,6 +274,20 @@ class SaTokenContext
     }
 
     /**
+     * 判断 PSR-7 请求是否为指定 Header 提供了多个值。
+     * 认证凭据不允许依赖不同代理/框架对重复 Header 的选取顺序。
+     */
+    public static function hasMultipleHeaderValues(string $name): bool
+    {
+        $request = self::getRequest();
+        if (!$request instanceof \Psr\Http\Message\ServerRequestInterface) {
+            return false;
+        }
+
+        return count($request->getHeader($name)) > 1;
+    }
+
+    /**
      * 从请求 Cookie 中获取值
      *
      * @param  string      $name Cookie 名称

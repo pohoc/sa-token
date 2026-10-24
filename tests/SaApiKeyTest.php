@@ -74,6 +74,22 @@ class SaApiKeyTest extends TestCase
         $this->assertFalse($api->isApiKeyRequest());
     }
 
+    public function testDuplicateCredentialHeadersAreRejected(): void
+    {
+        $request = $this->createMock(ServerRequestInterface::class);
+        $request->method('getHeader')->willReturnCallback(static fn (string $name): array => match ($name) {
+            'api-key' => ['first-key', 'second-key'],
+            'api-secret' => ['secret'],
+            default => [],
+        });
+        SaTokenContext::setRequest($request);
+
+        $api = new SaApiKey();
+        $this->assertFalse($api->isApiKeyRequest());
+        $this->expectException(SaTokenException::class);
+        $api->checkApiKey();
+    }
+
     public function testRegisterKeyAndValidate(): void
     {
         $request = $this->mockRequestWithHeaders([

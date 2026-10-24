@@ -491,6 +491,11 @@ class StpLogic
 
         // 1. 从 Header 读取
         if ($config->isReadHeader()) {
+            if (SaTokenContext::hasMultipleHeaderValues($tokenName)) {
+                // 重复凭据 Header 的解释在代理与应用之间可能不一致；拒绝整次认证，
+                // 也不继续尝试 Cookie/参数，避免歧义请求意外降级到另一凭据。
+                return null;
+            }
             $tokenValue = SaTokenContext::getHeader($tokenName);
             if ($tokenValue !== null && SaFoxUtil::isNotEmpty($tokenValue)) {
                 return $this->formatTokenValue($tokenValue);
