@@ -147,10 +147,14 @@ class RefreshTokenTest extends TestCase
     public function testRefreshTokenCollisionDoesNotOverwriteExistingOwner(): void
     {
         $manager = StpUtil::getStpLogic()->getTokenManager();
-        $manager->saveRefreshToken('same-refresh-token', 'access-a', 10026, 'login', 3600);
+        $accessTokenA = $manager->createTokenValue(10026, 'login');
+        $accessTokenB = $manager->createTokenValue(10027, 'login');
+        $manager->saveToken($accessTokenA, 10026, 'login');
+        $manager->saveToken($accessTokenB, 10027, 'login');
+        $manager->saveRefreshToken('same-refresh-token', $accessTokenA, 10026, 'login', 3600);
 
         try {
-            $manager->saveRefreshToken('same-refresh-token', 'access-b', 10027, 'login', 3600);
+            $manager->saveRefreshToken('same-refresh-token', $accessTokenB, 10027, 'login', 3600);
             $this->fail('RefreshToken 碰撞不能覆盖已有凭据');
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('冲突', $e->getMessage());
@@ -158,8 +162,8 @@ class RefreshTokenTest extends TestCase
 
         $data = $manager->getRefreshTokenData('same-refresh-token');
         $this->assertSame('10026', $data['loginId'] ?? null);
-        $this->assertSame('same-refresh-token', $manager->getRefreshTokenByAccessToken(10026, 'login', 'access-a'));
-        $this->assertNull($manager->getRefreshTokenByAccessToken(10027, 'login', 'access-b'));
+        $this->assertSame('same-refresh-token', $manager->getRefreshTokenByAccessToken(10026, 'login', $accessTokenA));
+        $this->assertNull($manager->getRefreshTokenByAccessToken(10027, 'login', $accessTokenB));
     }
 
     public function testSaveRefreshTokenRequiresAccountLock(): void

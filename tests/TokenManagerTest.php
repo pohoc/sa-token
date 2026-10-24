@@ -228,6 +228,42 @@ class TokenManagerTest extends TestCase
         self::assertSame('victim', $this->manager->getLoginIdByToken($accessToken));
     }
 
+    public function testSaveRefreshTokenRejectsUnknownAccessToken(): void
+    {
+        try {
+            $this->manager->saveRefreshToken('unknown-access-refresh', 'unknown-access', 'victim', 'login', 3600);
+            self::fail('Expected unknown access token to be rejected');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('AccessToken 无效', $exception->getMessage());
+        }
+
+        self::assertNull($this->manager->getRefreshTokenData('unknown-access-refresh'));
+    }
+
+    public function testSaveRefreshTokenValidatesStatelessJwtOwner(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'activityTimeout' => -1,
+        ]));
+        $logic = new StpLogic('login', $this->manager);
+        $accessToken = $logic->loginStateless('victim');
+
+        try {
+            $this->manager->saveRefreshToken('stateless-refresh-token', $accessToken, 'attacker', 'login', 3600);
+            self::fail('Expected stateless JWT owner mismatch to be rejected');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('不属于指定账号', $exception->getMessage());
+        }
+
+        self::assertNull($this->manager->getRefreshTokenData('stateless-refresh-token'));
+        $this->manager->saveRefreshToken('valid-stateless-refresh-token', $accessToken, 'victim', 'login', 3600);
+        $refreshData = $this->manager->getRefreshTokenData('valid-stateless-refresh-token');
+        self::assertIsArray($refreshData);
+        self::assertSame('victim', $refreshData['loginId'] ?? null);
+    }
+
     public function testDeleteAllTokenByLoginId(): void
     {
         $token1 = $this->manager->createTokenValue(10001, 'login');
@@ -261,10 +297,12 @@ class TokenManagerTest extends TestCase
 
     public function testRefreshTokenMapDoesNotCollideAcrossTupleComponents(): void
     {
-        $accessTokenA = 'access-token-a';
-        $accessTokenB = 'access-token-b';
+        $accessTokenA = $this->manager->createTokenValue('b:c', 'a');
+        $accessTokenB = $this->manager->createTokenValue('c', 'a:b');
         $refreshTokenA = 'refresh-token-a';
         $refreshTokenB = 'refresh-token-b';
+        $this->manager->saveToken($accessTokenA, 'b:c', 'a');
+        $this->manager->saveToken($accessTokenB, 'c', 'a:b');
         // These tuples produced the same legacy key: a:b:c:d.
         $this->manager->saveRefreshToken($refreshTokenA, $accessTokenA, 'b:c', 'a', 3600);
         $this->manager->saveRefreshToken($refreshTokenB, $accessTokenB, 'c', 'a:b', 3600);

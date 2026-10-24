@@ -185,8 +185,8 @@ class RedisDaoRealIntegrationTest extends TestCase
             TokenManager::SWITCH_PREFIX . 'a%3Ab:c%3A' . $suffix,
             TokenManager::REFRESH_TOKEN_PREFIX . $refreshA,
             TokenManager::REFRESH_TOKEN_PREFIX . $refreshB,
-            TokenManager::REFRESH_TOKEN_MAP_PREFIX . 'a:b%3Ac:d',
-            TokenManager::REFRESH_TOKEN_MAP_PREFIX . 'a%3Ab:c:d',
+            TokenManager::REFRESH_TOKEN_MAP_PREFIX . 'a:owner-a:' . $tokenA,
+            TokenManager::REFRESH_TOKEN_MAP_PREFIX . 'a%3Ab:owner-b:' . $tokenB,
             TokenManager::buildLoginIdKey('a', 'b:c'),
             TokenManager::buildLoginIdKey('a:b', 'c'),
             TokenManager::buildSessionId('a', 'b:c'),
@@ -200,10 +200,10 @@ class RedisDaoRealIntegrationTest extends TestCase
             self::assertSame('switched-user', $manager->getSwitchTo($tokenA, 'a'));
             self::assertNull($manager->getSwitchTo($tokenB, 'a:b'));
 
-            $manager->saveRefreshToken($refreshA, 'd', 'b:c', 'a', 60);
-            $manager->saveRefreshToken($refreshB, 'd', 'c', 'a:b', 60);
-            self::assertSame($refreshA, $manager->getRefreshTokenByAccessToken('b:c', 'a', 'd'));
-            self::assertSame($refreshB, $manager->getRefreshTokenByAccessToken('c', 'a:b', 'd'));
+            $manager->saveRefreshToken($refreshA, $tokenA, 'owner-a', 'a', 60);
+            $manager->saveRefreshToken($refreshB, $tokenB, 'owner-b', 'a:b', 60);
+            self::assertSame($refreshA, $manager->getRefreshTokenByAccessToken('owner-a', 'a', $tokenA));
+            self::assertSame($refreshB, $manager->getRefreshTokenByAccessToken('owner-b', 'a:b', $tokenB));
         } finally {
             $this->redis->del($keys);
             SaToken::reset();

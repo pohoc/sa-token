@@ -904,11 +904,13 @@ class TokenManager
         }
 
         try {
-            $accessTokenOwner = $this->getLoginIdByToken($accessToken);
-            if ($accessTokenOwner !== null) {
+            $accessTokenOwner = (new StpLogic($loginType, $this))->getLoginIdByToken($accessToken);
+            if ($accessTokenOwner !== $loginIdStr) {
+                throw new SaTokenException('AccessToken 无效或不属于指定账号，拒绝绑定 RefreshToken');
+            }
+            if (!$this->getConfig()->isJwtStateless()) {
                 $accountTokens = $this->getTokenListByLoginId($loginIdStr, $loginType);
-                if ($accessTokenOwner !== $loginIdStr
-                    || !in_array($accessToken, array_column($accountTokens, 'tokenValue'), true)) {
+                if (!in_array($accessToken, array_column($accountTokens, 'tokenValue'), true)) {
                     throw new SaTokenException('AccessToken 不属于指定账号或登录类型，拒绝绑定 RefreshToken');
                 }
             }
