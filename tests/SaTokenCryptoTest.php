@@ -59,10 +59,22 @@ class SaTokenCryptoTest extends TestCase
 
     public function testAesWithCustomKey(): void
     {
-        $customKey = 'custom-key-16byt';
+        $customKey = 'custom-key-at-least-32-bytes-long';
         $encrypted = $this->crypto->aesEncrypt('test', $customKey);
         $decrypted = $this->crypto->aesDecrypt($encrypted, $customKey);
         $this->assertEquals('test', $decrypted);
+    }
+
+    public function testAesRejectsShortKeysForAuthenticatedEncryptionAndDecryption(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->crypto->aesEncrypt('test', 'short');
+    }
+
+    public function testAesDecryptRejectsShortKeys(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->crypto->aesDecrypt('not-used', 'short');
     }
 
     public function testAesEncryptEmptyString(): void

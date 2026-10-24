@@ -20,6 +20,8 @@ class SaTokenEncryptor
 
     protected bool $useSm;
 
+    protected bool $keyMaterialStrong = false;
+
     public function __construct(bool $enabled, string $key, string $cryptoType = 'intl')
     {
         $this->enabled = $enabled;
@@ -30,6 +32,13 @@ class SaTokenEncryptor
             $this->macKey = '';
             return;
         }
+
+        // AES needs 256 bits of key material. SM4 accepts its native 128-bit
+        // hexadecimal key representation or a high-entropy 32-byte passphrase.
+        // Keep deriving legacy short keys so decryptLegacy() can migrate old data,
+        // but never use them in normal encryption/decryption paths.
+        $this->keyMaterialStrong = strlen($key) >= 32
+            || ($key === '' && $this->isUnitTestRuntime());
 
         if ($this->useSm) {
             $this->key = $this->deriveSm4Key($key);
@@ -56,6 +65,8 @@ class SaTokenEncryptor
             return $plaintext;
         }
 
+        $this->assertStrongKeyMaterial();
+
         return $this->useSm ? $this->sm4Encrypt($plaintext) : $this->aesEncrypt($plaintext);
     }
 
@@ -64,6 +75,8 @@ class SaTokenEncryptor
         if (!$this->enabled) {
             return $data;
         }
+
+        $this->assertStrongKeyMaterial();
 
         return $this->useSm ? $this->sm4Decrypt($data) : $this->aesDecrypt($data);
     }
@@ -181,6 +194,10 @@ class SaTokenEncryptor
             return $data;
         }
 
+        if (!$this->keyMaterialStrong) {
+            return null;
+        }
+
         if (!$this->isCiphertext($data)) {
             return null;
         }
@@ -213,6 +230,13 @@ class SaTokenEncryptor
             return null;
         }
         return $plaintext;
+    }
+
+    protected function assertStrongKeyMaterial(): void
+    {
+        if (!$this->keyMaterialStrong) {
+            throw new SaTokenException('加密密钥长度不足，AES 至少需要 32 字节；SM4 至少需要 32 字节或 32 位十六进制密钥');
+        }
     }
 
     /**

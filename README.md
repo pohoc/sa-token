@@ -1271,14 +1271,14 @@ try {
 |--------|------|--------|------|
 | `cryptoType` | string | `'intl'` | 加密类型：`intl` / `sm` |
 | `tokenEncrypt` | bool | `false` | 是否启用 Token 内容加密 |
-| `tokenEncryptKey` | string | `''` | Token 加密密钥 |
-| `aesKey` | string | `''` | AES 密钥（16/24/32 字节） |
+| `tokenEncryptKey` | string | `''` | Token 加密密钥（AES 至少 32 字节；SM4 使用 32 字节材料或 32 位十六进制密钥） |
+| `aesKey` | string | `''` | AES 密钥（至少 32 字节；旧版未认证密文迁移入口仍可读取历史短密钥密文） |
 | `rsaPrivateKey` | string | `''` | RSA 私钥 |
 | `rsaPublicKey` | string | `''` | RSA 公钥 |
 | `hmacKey` | string | `''` | HMAC 密钥 |
 | `sm2PrivateKey` | string | `''` | SM2 私钥 |
 | `sm2PublicKey` | string | `''` | SM2 公钥 |
-| `sm4Key` | string | `''` | SM4 密钥（16 字节） |
+| `sm4Key` | string | `''` | SM4 密钥（32 字节材料或 32 位十六进制密钥） |
 | `jwtSecretKey` | string | `''` | JWT 密钥 |
 | `jwtStateless` | bool | `false` | JWT 无状态模式 |
 

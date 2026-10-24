@@ -238,8 +238,8 @@ class SaTokenEncryptorTest extends TestCase
         $e2 = new SaTokenEncryptor(true, 'short', 'intl');
         $this->assertEquals($this->getDerivedKey($e1), $this->getDerivedKey($e2));
         $this->assertEquals(32, strlen($this->getDerivedKey($e1)));
-        $encrypted = $e1->encrypt('test');
-        $this->assertEquals('test', $e2->decrypt($encrypted));
+        $this->expectException(SaTokenException::class);
+        $e1->encrypt('test');
     }
 
     public function testAesKeyDerivationLongKey(): void
@@ -396,6 +396,8 @@ class SaTokenEncryptorTest extends TestCase
         $e2 = new SaTokenEncryptor(true, 'short', 'sm');
         $this->assertEquals($this->getDerivedKey($e1), $this->getDerivedKey($e2));
         $this->assertEquals(32, strlen($this->getDerivedKey($e1)));
+        $this->expectException(SaTokenException::class);
+        $e1->encrypt('test');
     }
 
     public function testSm4KeyDerivationShortKeyDerivesValidKey(): void
@@ -407,8 +409,8 @@ class SaTokenEncryptorTest extends TestCase
         $derivedKey = $this->getDerivedKey($encryptor);
         $this->assertEquals(32, strlen($derivedKey));
         $this->assertTrue(ctype_xdigit($derivedKey));
-        $encrypted = $encryptor->encrypt('test');
-        $this->assertEquals('test', $encryptor->decrypt($encrypted));
+        $this->expectException(SaTokenException::class);
+        $encryptor->encrypt('test');
     }
 
     public function testSm4KeyDerivationLongHexKey(): void

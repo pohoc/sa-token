@@ -480,7 +480,7 @@ class TokenManagerTest extends TestCase
 
     public function testEncryptorDecryptRoundTrip(): void
     {
-        $encryptor = new SaTokenEncryptor(true, 'test-key');
+        $encryptor = new SaTokenEncryptor(true, 'test-encryption-key-at-least-32-bytes');
         $original = 'sensitive-login-id-10001';
         $encrypted = $encryptor->encrypt($original);
         $this->assertNotEquals($original, $encrypted);
@@ -500,7 +500,7 @@ class TokenManagerTest extends TestCase
 
     public function testEncryptorTamperDetection(): void
     {
-        $encryptor = new SaTokenEncryptor(true, 'test-key');
+        $encryptor = new SaTokenEncryptor(true, 'test-encryption-key-at-least-32-bytes');
         $original = 'secret-data';
         $encrypted = $encryptor->encrypt($original);
 

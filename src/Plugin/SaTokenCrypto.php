@@ -78,6 +78,9 @@ class SaTokenCrypto
         if ($key === '') {
             throw new SaTokenException('AES 密钥未配置');
         }
+        if (strlen($key) < 32) {
+            throw new SaTokenException('AES 密钥长度不足，至少需要 32 字节');
+        }
 
         $ivLength = openssl_cipher_iv_length('AES-256-CBC') ?: 16;
         if ($ivLength <= 0) {
@@ -113,6 +116,9 @@ class SaTokenCrypto
         $key = $key ?? $this->aesKey;
         if ($key === '') {
             throw new SaTokenException('AES 密钥未配置');
+        }
+        if (strlen($key) < 32) {
+            throw new SaTokenException('AES 密钥长度不足，至少需要 32 字节');
         }
 
         $decoded = base64_decode($data, true);
