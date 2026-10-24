@@ -60,7 +60,11 @@ class TokenManager
 
     protected ?SaTokenEncryptor $encryptor = null;
 
+    protected ?string $encryptorConfigFingerprint = null;
+
     protected ?SaTokenJwt $jwtInstance = null;
+
+    protected ?string $jwtConfigFingerprint = null;
 
     /**
      * @var array<string, string>
@@ -82,25 +86,36 @@ class TokenManager
 
     protected function getEncryptor(): SaTokenEncryptor
     {
-        if ($this->encryptor === null) {
-            $config = $this->getConfig();
-            $key = $config->getTokenEncryptKey() ?: $config->getAesKey();
-            if ($config->getCryptoType() === 'sm') {
-                $key = $config->getTokenEncryptKey() ?: $config->getSm4Key();
-            }
+        $config = $this->getConfig();
+        $key = $config->getTokenEncryptKey() ?: $config->getAesKey();
+        if ($config->getCryptoType() === 'sm') {
+            $key = $config->getTokenEncryptKey() ?: $config->getSm4Key();
+        }
+        $fingerprint = hash('sha256', serialize([
+            $config->isTokenEncrypt(),
+            $key,
+            $config->getCryptoType(),
+        ]));
+        if ($this->encryptor === null || $this->encryptorConfigFingerprint !== $fingerprint) {
             $this->encryptor = new SaTokenEncryptor($config->isTokenEncrypt(), $key, $config->getCryptoType());
+            $this->encryptorConfigFingerprint = $fingerprint;
         }
         return $this->encryptor;
     }
 
     protected function getJwtInstance(): SaTokenJwt
     {
-        if ($this->jwtInstance === null) {
-            $config = $this->getConfig();
+        $config = $this->getConfig();
+        $fingerprint = hash('sha256', serialize([
+            $config->getJwtSecretKey(),
+            $config->getCryptoType(),
+        ]));
+        if ($this->jwtInstance === null || $this->jwtConfigFingerprint !== $fingerprint) {
             $this->jwtInstance = new SaTokenJwt([
                 'jwtSecretKey' => $config->getJwtSecretKey(),
                 'cryptoType'   => $config->getCryptoType(),
             ]);
+            $this->jwtConfigFingerprint = $fingerprint;
         }
         return $this->jwtInstance;
     }
@@ -862,7 +877,9 @@ class TokenManager
     public function resetEncryptor(): void
     {
         $this->encryptor = null;
+        $this->encryptorConfigFingerprint = null;
         $this->jwtInstance = null;
+        $this->jwtConfigFingerprint = null;
     }
 
     public function saveRefreshToken(string $refreshToken, string $accessToken, mixed $loginId, string $loginType, int $timeout): void

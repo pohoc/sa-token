@@ -448,6 +448,51 @@ class TokenManagerTest extends TestCase
         $this->assertEquals('10001', $loginId);
     }
 
+    public function testInjectedTokenManagerDoesNotKeepOldEncryptionKeyAfterRotation(): void
+    {
+        $oldKey = 'old-injected-token-manager-key-32-bytes';
+        $newKey = 'new-injected-token-manager-key-32-bytes';
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenEncrypt' => true,
+            'tokenEncryptKey' => $oldKey,
+        ]));
+
+        $manager = new TokenManager();
+        $logic = new StpLogic('login', $manager);
+        $token = $manager->createTokenValue('rotation-user', 'login');
+        $token = $manager->saveToken($token, 'rotation-user', 'login');
+        self::assertSame('rotation-user', $logic->getLoginIdByToken($token));
+
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenEncrypt' => true,
+            'tokenEncryptKey' => $newKey,
+        ]));
+
+        self::assertNull($manager->getLoginIdByToken($token), '手动注入的 TokenManager 不得在密钥轮换后继续解密旧会话记录');
+    }
+
+    public function testInjectedTokenManagerDoesNotKeepOldJwtKeyAfterRotation(): void
+    {
+        $oldKey = 'old-injected-token-manager-jwt-key-32-bytes';
+        $newKey = 'new-injected-token-manager-jwt-key-32-bytes';
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtMode' => 'mixed',
+            'jwtSecretKey' => $oldKey,
+        ]));
+
+        $manager = new TokenManager();
+        $token = $manager->createTokenValue('rotation-user', 'login');
+        $token = $manager->saveToken($token, 'rotation-user', 'login');
+        self::assertSame('rotation-user', $manager->getLoginIdByToken($token));
+
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtMode' => 'mixed',
+            'jwtSecretKey' => $newKey,
+        ]));
+
+        self::assertNull($manager->getLoginIdByToken($token), 'TokenManager 不得在 JWT 密钥轮换后继续接受旧签名');
+    }
+
     public function testTokenEncryptPreservesAllOperations(): void
     {
         $aesKey = getenv('TEST_AES_KEY_FOR_TOKEN') ?: 'test-key-placeholder-32-bytes-lo';
