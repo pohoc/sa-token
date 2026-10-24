@@ -61,6 +61,12 @@ class SaRpcContext
 
     public static function extractAndValidate(?string $expectedLoginType = null): void
     {
+        foreach ([self::$tokenHeaderName, self::$loginIdHeaderName, self::$loginTypeHeaderName] as $headerName) {
+            if (SaTokenContext::hasMultipleHeaderValues($headerName)) {
+                throw new SaTokenException('RPC 认证 Header 存在多个值');
+            }
+        }
+
         $tokenValue = SaTokenContext::getHeader(self::$tokenHeaderName);
         if ($tokenValue === null) {
             throw new SaTokenException('RPC 请求缺少 Token 信息');
@@ -86,21 +92,33 @@ class SaRpcContext
 
     public static function getForwardedLoginId(): ?string
     {
+        if (SaTokenContext::hasMultipleHeaderValues(self::$loginIdHeaderName)) {
+            return null;
+        }
         return SaTokenContext::getHeader(self::$loginIdHeaderName);
     }
 
     public static function getForwardedToken(): ?string
     {
+        if (SaTokenContext::hasMultipleHeaderValues(self::$tokenHeaderName)) {
+            return null;
+        }
         return SaTokenContext::getHeader(self::$tokenHeaderName);
     }
 
     public static function getForwardedLoginType(): ?string
     {
+        if (SaTokenContext::hasMultipleHeaderValues(self::$loginTypeHeaderName)) {
+            return null;
+        }
         return SaTokenContext::getHeader(self::$loginTypeHeaderName);
     }
 
     public static function isRpcRequest(): bool
     {
+        if (SaTokenContext::hasMultipleHeaderValues(self::$tokenHeaderName)) {
+            return false;
+        }
         return SaTokenContext::getHeader(self::$tokenHeaderName) !== null;
     }
 

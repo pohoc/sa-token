@@ -49,13 +49,16 @@ class SaRpcContextTest extends TestCase
     }
 
     /**
-     * @param array<string, string> $headers
+     * @param array<string, string|list<string>> $headers
      */
     protected function mockRequestWithHeaders(array $headers): ServerRequestInterface
     {
         $request = $this->createMock(ServerRequestInterface::class);
         $request->method('getHeader')->willReturnCallback(function (string $name) use ($headers): array {
-            return isset($headers[$name]) ? [$headers[$name]] : [];
+            if (!isset($headers[$name])) {
+                return [];
+            }
+            return is_array($headers[$name]) ? $headers[$name] : [$headers[$name]];
         });
         return $request;
     }
@@ -154,6 +157,20 @@ class SaRpcContextTest extends TestCase
         SaRpcContext::extractAndValidate();
     }
 
+    public function testExtractAndValidateRejectsDuplicateCredentialHeaders(): void
+    {
+        $token = StpUtil::login(10007)->getAccessToken();
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token' => ['attacker-value', $token],
+            'X-Sa-Login-Id' => '10007',
+            'X-Sa-Login-Type' => 'login',
+        ]));
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('RPC 认证 Header 存在多个值');
+        SaRpcContext::extractAndValidate();
+    }
+
     public function testIsRpcRequestReturnsTrue(): void
     {
         $request = $this->mockRequestWithHeaders(['X-Sa-Token' => 'some-token']);
@@ -165,6 +182,16 @@ class SaRpcContextTest extends TestCase
     public function testIsRpcRequestReturnsFalse(): void
     {
         $this->assertFalse(SaRpcContext::isRpcRequest());
+    }
+
+    public function testIsRpcRequestReturnsFalseForDuplicateTokenHeaders(): void
+    {
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token' => ['token-one', 'token-two'],
+        ]));
+
+        $this->assertFalse(SaRpcContext::isRpcRequest());
+        $this->assertNull(SaRpcContext::getForwardedToken());
     }
 
     public function testGetForwardedLoginId(): void
