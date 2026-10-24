@@ -160,6 +160,21 @@ class SaAnnotationProcessor
 
     public static function processCallable(callable $callable): void
     {
+        if (is_array($callable) && count($callable) === 2) {
+            $class = is_object($callable[0]) ? $callable[0]::class : $callable[0];
+            self::process($class, $callable[1]);
+            return;
+        }
+
+        if (is_string($callable) && str_contains($callable, '::')) {
+            [$class, $method] = explode('::', $callable, 2);
+            self::process($class, $method);
+            return;
+        }
+
+        if (is_object($callable) && !$callable instanceof \Closure) {
+            self::process($callable::class, '__invoke');
+        }
     }
 
     /**

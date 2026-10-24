@@ -39,6 +39,20 @@ class SaAnnotationTestLoginController
     }
 }
 
+#[SaCheckLogin]
+class SaAnnotationTestInvokableController
+{
+    public function __invoke(): string
+    {
+        return 'invoked';
+    }
+
+    public static function staticAction(): string
+    {
+        return 'static';
+    }
+}
+
 class SaAnnotationTestProtectedBaseController
 {
     #[SaCheckLogin]
@@ -275,6 +289,24 @@ class SaAnnotationTest extends TestCase
     {
         $this->expectException(NotLoginException::class);
         SaAnnotationProcessor::process(SaAnnotationTestLoginController::class, 'doSomething');
+    }
+
+    public function testProcessCallableChecksObjectMethodAnnotations(): void
+    {
+        $this->expectException(NotLoginException::class);
+        SaAnnotationProcessor::processCallable([new SaAnnotationTestLoginController(), 'doSomething']);
+    }
+
+    public function testProcessCallableChecksStaticMethodAnnotations(): void
+    {
+        $this->expectException(NotLoginException::class);
+        SaAnnotationProcessor::processCallable(SaAnnotationTestInvokableController::class . '::staticAction');
+    }
+
+    public function testProcessCallableChecksInvokableObjectAnnotations(): void
+    {
+        $this->expectException(NotLoginException::class);
+        SaAnnotationProcessor::processCallable(new SaAnnotationTestInvokableController());
     }
 
     public function testSaCheckLoginAttributePassesWhenLoggedIn(): void
