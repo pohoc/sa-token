@@ -525,6 +525,18 @@ class RedisDaoRealIntegrationTest extends TestCase
         $this->assertCount(1, $literal);
     }
 
+    public function testSearchTreatsGlobCharactersInPrefixLiterallyAgainstRealRedis(): void
+    {
+        $literalPrefix = $this->prefix . 'literal*:scope:';
+        $matchingKey = $literalPrefix . 'expected';
+        $neighborKey = $this->prefix . 'literal-other:scope:unexpected';
+        $this->dao->set($matchingKey, 'matching-value', 60);
+        $this->dao->set($neighborKey, 'neighbor-value', 60);
+
+        self::assertSame([$matchingKey], $this->dao->searchKeys($literalPrefix, '', 0, 10));
+        self::assertSame(['matching-value'], $this->dao->search($literalPrefix, '', 0, 10));
+    }
+
     public function testLoginConcurrentLockAgainstRealRedis(): void
     {
         // 全链路：真实 Redis 上登录锁 SET NX + 释放 Lua 脚本

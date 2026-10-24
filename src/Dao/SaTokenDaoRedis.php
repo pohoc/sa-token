@@ -384,8 +384,7 @@ LUA;
     public function search(string $prefix, string $keyword, int $start, int $size): array
     {
         $client = $this->saRedis ?? $this->client;
-        $escapedKeyword = str_replace(['\\', '*', '?', '[', ']'], ['\\\\', '\\*', '\\?', '\\[', '\\]'], $keyword);
-        $pattern = $prefix . '*' . $escapedKeyword . '*';
+        $pattern = self::escapeGlobPattern($prefix) . '*' . self::escapeGlobPattern($keyword) . '*';
         $keys = [];
         $iterator = null;
         $maxIterations = 100;
@@ -428,8 +427,7 @@ LUA;
     public function searchKeys(string $prefix, string $keyword, int $start, int $size): array
     {
         $client = $this->saRedis ?? $this->client;
-        $escapedKeyword = str_replace(['\\', '*', '?', '[', ']'], ['\\\\', '\\*', '\\?', '\\[', '\\]'], $keyword);
-        $pattern = $prefix . '*' . $escapedKeyword . '*';
+        $pattern = self::escapeGlobPattern($prefix) . '*' . self::escapeGlobPattern($keyword) . '*';
         $keys = [];
         $iterator = null;
         $maxIterations = 100;
@@ -445,6 +443,12 @@ LUA;
 
         $keys = array_values(array_unique($keys));
         return array_slice($keys, $start, $size);
+    }
+
+    /** Escape Redis glob metacharacters so DAO prefixes retain literal semantics. */
+    protected static function escapeGlobPattern(string $value): string
+    {
+        return str_replace(['\\', '*', '?', '[', ']'], ['\\\\', '\\*', '\\?', '\\[', '\\]'], $value);
     }
 
     public function deleteMultiple(array $keys): void
