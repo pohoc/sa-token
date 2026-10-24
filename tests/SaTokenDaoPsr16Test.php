@@ -138,6 +138,30 @@ class SaTokenDaoPsr16Test extends TestCase
         self::assertLessThanOrEqual($ttl, $this->dao->getTimeout($key));
     }
 
+    public function testLegacyValueWithMissingTtlMetadataFailsClosed(): void
+    {
+        $key = 'legacy-ttl-metadata-eviction';
+        $cacheKey = 'sat_' . substr(hash('sha256', $key), 0, 60);
+        $ttlKey = 'sat_ttl_' . substr(hash('sha256', $key), 0, 56);
+        $this->cache->set($cacheKey, 'legacy-token-value', 120);
+        $this->cache->set($ttlKey, (string) (time() + 120), 120);
+        $this->cache->delete($ttlKey);
+
+        self::assertNull($this->dao->get($key));
+        self::assertFalse($this->dao->exists($key));
+        self::assertSame(-2, $this->dao->getTimeout($key));
+
+        $updateKey = 'legacy-update-ttl-metadata-eviction';
+        $updateCacheKey = 'sat_' . substr(hash('sha256', $updateKey), 0, 60);
+        $updateTtlKey = 'sat_ttl_' . substr(hash('sha256', $updateKey), 0, 56);
+        $this->cache->set($updateCacheKey, 'legacy-token-value', 120);
+        $this->cache->set($updateTtlKey, (string) (time() + 120), 120);
+        $this->cache->delete($updateTtlKey);
+
+        $this->dao->update($updateKey, 'replacement');
+        self::assertNull($this->dao->get($updateKey));
+    }
+
     // ======== update ========
 
     public function testUpdateExistingKey(): void

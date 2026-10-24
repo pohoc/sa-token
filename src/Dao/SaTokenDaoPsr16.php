@@ -141,9 +141,14 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
             }
 
             $metadata = $this->cache->get($this->normalizeTtlKey($key));
-            if ($metadata === null || $metadata === 'permanent') {
-                // Unwrapped values are legacy entries; retain their historical
-                // permanent semantics while all new entries carry their own TTL.
+            if ($metadata === null) {
+                // A legacy value without its sidecar has unknown lifetime. Do
+                // not turn an evicted TTL record into a permanent credential.
+                $this->deleteCache($key);
+                return true;
+            }
+            if ($metadata === 'permanent') {
+                // Explicit permanent metadata retains legacy permanent semantics.
                 return $this->writeCache($key, $value, null);
             }
             if (!is_string($metadata) || !ctype_digit($metadata)) {
@@ -268,7 +273,12 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
     protected function getSharedExpiresAt(string $key): ?int
     {
         $value = $this->cache->get($this->normalizeTtlKey($key));
-        if ($value === null || $value === 'permanent') {
+        if ($value === null) {
+            // A missing sidecar cannot distinguish a legacy permanent value
+            // from an expired legacy value whose metadata was evicted.
+            return 0;
+        }
+        if ($value === 'permanent') {
             return null;
         }
         if (!is_string($value) || !ctype_digit($value)) {
