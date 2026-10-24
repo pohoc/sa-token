@@ -109,6 +109,35 @@ class SaTokenDaoPsr16Test extends TestCase
         self::assertLessThanOrEqual($ttl, $this->dao->getTimeout('session'));
     }
 
+    public function testCompareAndUpdateDoesNotMakeEvictedTtlMetadataPermanent(): void
+    {
+        $key = 'session-ttl-metadata-eviction';
+        $this->dao->set($key, 'before', 120);
+        $ttl = $this->dao->getTimeout($key);
+        $ttlKey = 'sat_ttl_' . substr(hash('sha256', $key), 0, 56);
+        $this->cache->delete($ttlKey);
+
+        self::assertTrue($this->dao->compareAndUpdate($key, 'before', 'after'));
+        self::assertSame('after', $this->dao->get($key));
+        self::assertGreaterThan(0, $this->dao->getTimeout($key));
+        self::assertLessThanOrEqual($ttl, $this->dao->getTimeout($key));
+    }
+
+    public function testUpdateDoesNotMakeEvictedTtlMetadataPermanent(): void
+    {
+        $key = 'updated-session-ttl-metadata-eviction';
+        $this->dao->set($key, 'before', 120);
+        $ttl = $this->dao->getTimeout($key);
+        $ttlKey = 'sat_ttl_' . substr(hash('sha256', $key), 0, 56);
+        $this->cache->delete($ttlKey);
+
+        $this->dao->update($key, 'after');
+
+        self::assertSame('after', $this->dao->get($key));
+        self::assertGreaterThan(0, $this->dao->getTimeout($key));
+        self::assertLessThanOrEqual($ttl, $this->dao->getTimeout($key));
+    }
+
     // ======== update ========
 
     public function testUpdateExistingKey(): void
@@ -139,16 +168,16 @@ class SaTokenDaoPsr16Test extends TestCase
         self::assertSame('after', $dao->get($key));
     }
 
-    public function testCorruptExpiryMetadataDoesNotMakeKeyPermanent(): void
+    public function testCorruptExpiryMetadataDoesNotOverrideEmbeddedExpiry(): void
     {
         $key = 'corrupt-ttl';
         $this->dao->set($key, 'value', 60);
         $ttlKey = 'sat_ttl_' . substr(hash('sha256', $key), 0, 56);
         $this->cache->set($ttlKey, 'not-an-expiry');
 
-        self::assertNull($this->dao->get($key));
-        self::assertFalse($this->dao->exists($key));
-        self::assertSame(-2, $this->dao->getTimeout($key));
+        self::assertSame('value', $this->dao->get($key));
+        self::assertTrue($this->dao->exists($key));
+        self::assertGreaterThan(0, $this->dao->getTimeout($key));
     }
 
     public function testUpdateNonExistentKey(): void
@@ -335,6 +364,14 @@ class SaTokenDaoPsr16Test extends TestCase
         $this->dao->set('key1', '');
         // 空字符串被 get 返回为空字符串
         $this->assertEquals('', $this->dao->get('key1'));
+    }
+
+    public function testBinaryValueRoundTrip(): void
+    {
+        $value = random_bytes(32) . "\0\xff";
+        $this->dao->set('binary-value', $value, 60);
+
+        self::assertSame($value, $this->dao->get('binary-value'));
     }
 
     public function testJsonValue(): void

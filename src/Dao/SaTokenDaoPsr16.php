@@ -14,6 +14,8 @@ use SaToken\Exception\SaTokenException;
  */
 class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface, SaTokenDaoCompareAndExpireInterface, SaTokenDaoCompareAndSetInterface, SaTokenDaoCompareAndUpdateInterface, SaTokenDaoDeleteIfExpiredInterface
 {
+    protected const RECORD_PREFIX = "\0sa-token-psr16:v1\n";
+
     protected CacheInterface $cache;
 
     protected SaTokenDaoFile $atomicLockDao;
@@ -34,6 +36,15 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
             if ($value === null) {
                 return null;
             }
+
+            if (is_string($value) && str_starts_with($value, self::RECORD_PREFIX)) {
+                $record = $this->decodeCacheRecord($value);
+                if ($record === null || ($record['expiresAt'] !== null && $record['expiresAt'] <= time())) {
+                    return null;
+                }
+                return $record['value'];
+            }
+
             $expiresAt = $this->getSharedExpiresAt($key);
             if ($expiresAt !== null && $expiresAt <= time()) {
                 return null;
@@ -62,12 +73,26 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
     protected function writeCache(string $key, string $value, ?int $timeout): bool
     {
         $effectiveTimeout = $timeout !== null && $timeout > 0 ? $timeout : null;
+        $expiresAt = $effectiveTimeout !== null ? time() + $effectiveTimeout : null;
+        return $this->writeCacheRecord($key, $value, $expiresAt, $effectiveTimeout);
+    }
+
+    protected function writeCacheRecord(string $key, string $value, ?int $expiresAt, ?int $backendTimeout): bool
+    {
         try {
-            if (!$this->cache->set($this->normalizeKey($key), $value, $effectiveTimeout)) {
+            $json = json_encode([
+                'value' => base64_encode($value),
+                'expiresAt' => $expiresAt,
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            if (!is_string($json)) {
                 return false;
             }
-            $expiresAt = $effectiveTimeout !== null ? (string) (time() + $effectiveTimeout) : 'permanent';
-            if (!$this->cache->set($this->normalizeTtlKey($key), $expiresAt, $effectiveTimeout)) {
+            $encoded = self::RECORD_PREFIX . $json;
+            if (!$this->cache->set($this->normalizeKey($key), $encoded, $backendTimeout)) {
+                return false;
+            }
+            $ttlMetadata = $expiresAt !== null ? (string) $expiresAt : 'permanent';
+            if (!$this->cache->set($this->normalizeTtlKey($key), $ttlMetadata, $backendTimeout)) {
                 $this->cache->delete($this->normalizeKey($key));
                 return false;
             }
@@ -90,13 +115,36 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
     {
         try {
             $cacheKey = $this->normalizeKey($key);
-            if (!$this->cache->has($cacheKey)) {
+            $storedValue = $this->cache->get($cacheKey);
+            if ($storedValue === null) {
                 return true;
+            }
+
+            if (is_string($storedValue) && str_starts_with($storedValue, self::RECORD_PREFIX)) {
+                $record = $this->decodeCacheRecord($storedValue);
+                if ($record === null) {
+                    $this->deleteCache($key);
+                    return true;
+                }
+                $expiresAt = $record['expiresAt'];
+                if ($expiresAt === null) {
+                    return $this->writeCache($key, $value, null);
+                }
+                $remaining = $expiresAt - time();
+                if ($remaining <= 0) {
+                    $this->deleteCache($key);
+                    return true;
+                }
+                // Keep the absolute expiry embedded in the value. TTL metadata
+                // is a compatibility index and may be evicted independently.
+                return $this->writeCacheRecord($key, $value, $expiresAt, $remaining + 1);
             }
 
             $metadata = $this->cache->get($this->normalizeTtlKey($key));
             if ($metadata === null || $metadata === 'permanent') {
-                return $this->cache->set($cacheKey, $value, null);
+                // Unwrapped values are legacy entries; retain their historical
+                // permanent semantics while all new entries carry their own TTL.
+                return $this->writeCache($key, $value, null);
             }
             if (!is_string($metadata) || !ctype_digit($metadata)) {
                 $this->deleteCache($key);
@@ -112,7 +160,7 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
 
             // Round up the backend TTL so its physical expiry cannot precede
             // the exact shared expiry recorded in metadata.
-            return $this->cache->set($cacheKey, $value, $remaining + 1);
+            return $this->writeCacheRecord($key, $value, $expiresAt, $remaining + 1);
         } catch (InvalidArgumentException) {
             return false;
         }
@@ -136,11 +184,23 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
 
     public function getTimeout(string $key): int
     {
-        if (!$this->exists($key)) {
-            return -2;
-        }
-
         try {
+            $storedValue = $this->cache->get($this->normalizeKey($key));
+            if ($storedValue === null) {
+                return -2;
+            }
+            if (is_string($storedValue) && str_starts_with($storedValue, self::RECORD_PREFIX)) {
+                $record = $this->decodeCacheRecord($storedValue);
+                if ($record === null) {
+                    return -2;
+                }
+                if ($record['expiresAt'] === null) {
+                    return -1;
+                }
+                $remaining = $record['expiresAt'] - time();
+                return $remaining > 0 ? $remaining : -2;
+            }
+
             $expiresAt = $this->getSharedExpiresAt($key);
             if ($expiresAt === null) {
                 // Missing metadata is treated as legacy/permanent for compatibility.
@@ -188,9 +248,16 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
     public function exists(string $key): bool
     {
         try {
-            if (!$this->cache->has($this->normalizeKey($key))) {
+            $storedValue = $this->cache->get($this->normalizeKey($key));
+            if ($storedValue === null) {
                 return false;
             }
+
+            if (is_string($storedValue) && str_starts_with($storedValue, self::RECORD_PREFIX)) {
+                $record = $this->decodeCacheRecord($storedValue);
+                return $record !== null && ($record['expiresAt'] === null || $record['expiresAt'] > time());
+            }
+
             $expiresAt = $this->getSharedExpiresAt($key);
             return $expiresAt === null || $expiresAt > time();
         } catch (InvalidArgumentException) {
@@ -208,6 +275,29 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
             return 0;
         }
         return (int) $value;
+    }
+
+    /** @return array{value: string, expiresAt: int|null}|null */
+    protected function decodeCacheRecord(string $value): ?array
+    {
+        if (!str_starts_with($value, self::RECORD_PREFIX)) {
+            return null;
+        }
+
+        $record = json_decode(substr($value, strlen(self::RECORD_PREFIX)), true);
+        if (!is_array($record)
+            || !is_string($record['value'] ?? null)
+            || (!array_key_exists('expiresAt', $record))
+            || ($record['expiresAt'] !== null && !is_int($record['expiresAt']))) {
+            return null;
+        }
+
+        $decodedValue = base64_decode($record['value'], true);
+        if ($decodedValue === false) {
+            return null;
+        }
+
+        return ['value' => $decodedValue, 'expiresAt' => $record['expiresAt']];
     }
 
     public function deleteMultiple(array $keys): void
@@ -348,8 +438,18 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
     {
         return $this->withAtomicLock($key, function () use ($key): bool {
             try {
-                if ($this->cache->get($this->normalizeKey($key)) === null) {
+                $storedValue = $this->cache->get($this->normalizeKey($key));
+                if ($storedValue === null) {
                     return false;
+                }
+                if (is_string($storedValue) && str_starts_with($storedValue, self::RECORD_PREFIX)) {
+                    $record = $this->decodeCacheRecord($storedValue);
+                    if ($record === null) {
+                        return $this->deleteCache($key);
+                    }
+                    return $record['expiresAt'] !== null
+                        && $record['expiresAt'] <= time()
+                        && $this->deleteCache($key);
                 }
                 $expiresAt = $this->getSharedExpiresAt($key);
                 if ($expiresAt === null || $expiresAt > time()) {
