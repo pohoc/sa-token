@@ -161,4 +161,17 @@ class SaSignTest extends TestCase
 
         $this->assertNotEquals($params1['sign'], $params2['sign']);
     }
+
+    public function testDifferentKeysDoNotConsumeEachOthersNonce(): void
+    {
+        $sign1 = new SaSign(['key' => 'key-a-with-at-least-32-bytes-long']);
+        $sign2 = new SaSign(['key' => 'key-b-with-at-least-32-bytes-long']);
+        $nonce = 'shared-client-chosen-nonce';
+        $timestamp = (string) time();
+        $params1 = $sign1->signParams(['operation' => 'transfer', 'timestamp' => $timestamp, 'nonce' => $nonce]);
+        $params2 = $sign2->signParams(['operation' => 'transfer', 'timestamp' => $timestamp, 'nonce' => $nonce]);
+
+        $this->assertTrue($sign1->verifySign($params1));
+        $this->assertTrue($sign2->verifySign($params2));
+    }
 }

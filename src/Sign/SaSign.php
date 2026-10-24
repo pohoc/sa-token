@@ -128,7 +128,9 @@ class SaSign
     protected function recordNonce(string $nonce): bool
     {
         $dao = SaToken::getDao();
-        $key = 'satoken:sign:nonce:' . hash('sha256', $nonce);
+        // Isolate replay state by signing key: in a shared DAO, one client must
+        // not be able to reserve another client's chosen nonce and deny its request.
+        $key = 'satoken:sign:nonce:' . hash_hmac('sha256', $nonce, $this->key);
         $ttl = $this->timestampGap * 2 + 60;
         return $dao->setIfNotExists($key, '1', $ttl);
     }
