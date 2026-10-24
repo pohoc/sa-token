@@ -245,7 +245,7 @@ class SaLoginDeviceManager
                     $deviceKey = $record['key'];
                     $remainingTokens = [];
                     $revokedToken = false;
-                    foreach (self::loadDeviceTokenValues($deviceKey) as $tokenValue) {
+                    foreach (self::loadDeviceTokenValues($deviceKey, $record['raw']) as $tokenValue) {
                         $renewAccountLock();
                         if ($tokenValue === $exceptToken) {
                             $remainingTokens[] = $tokenValue;
@@ -428,9 +428,9 @@ class SaLoginDeviceManager
     /**
      * @return array<string>
      */
-    protected static function loadDeviceTokenValues(string $key): array
+    protected static function loadDeviceTokenValues(string $key, ?string $snapshot = null): array
     {
-        $json = SaToken::getDao()->get($key);
+        $json = $snapshot ?? SaToken::getDao()->get($key);
         if ($json === null) {
             return [];
         }
