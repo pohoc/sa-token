@@ -131,13 +131,22 @@ class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteI
         }
 
         $record = json_decode($raw, true);
-        if (!is_array($record) || !is_string($record['key'] ?? null) || !is_string($record['v'] ?? null)) {
+        $expireAt = is_array($record) ? ($record['e'] ?? null) : null;
+        if (!is_array($record)
+            || !is_string($record['key'] ?? null)
+            || $record['key'] !== $key
+            || !is_string($record['v'] ?? null)
+            || ($expireAt !== null && !is_int($expireAt))) {
             // 损坏的记录文件视为不存在并清理
             @unlink($path);
             return null;
         }
-        /** @var array{key: string, v: string, e: int|null} $record */
-        return $record;
+
+        return [
+            'key' => $key,
+            'v' => $record['v'],
+            'e' => $expireAt,
+        ];
     }
 
     protected function isExpired(?int $expireAt): bool

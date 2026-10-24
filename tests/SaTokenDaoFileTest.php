@@ -288,6 +288,20 @@ class SaTokenDaoFileTest extends TestCase
         $this->assertFalse($this->dao->exists('k:corrupt'));
     }
 
+    public function testCorruptedExpiryAndMismatchedKeyAreTreatedAsMissing(): void
+    {
+        foreach ([
+            'k:corrupt-expiry' => ['key' => 'k:corrupt-expiry', 'v' => base64_encode('value'), 'e' => 'invalid'],
+            'k:mismatched-key' => ['key' => 'another-key', 'v' => base64_encode('value'), 'e' => null],
+        ] as $key => $record) {
+            $path = $this->basePath . '/data/' . hash('sha256', $key) . '.dat';
+            file_put_contents($path, json_encode($record) ?: '{}');
+
+            $this->assertNull($this->dao->get($key));
+            $this->assertFileDoesNotExist($path);
+        }
+    }
+
     public function testSizeAndDeleteMultiple(): void
     {
         $this->dao->set('k:m1', '1', 60);
