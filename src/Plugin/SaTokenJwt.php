@@ -264,11 +264,23 @@ class SaTokenJwt
 
     protected function base64UrlDecode(string $data): string
     {
+        // JWT compact serialization uses the unpadded, canonical Base64URL
+        // alphabet. Non-canonical final pad bits can decode to the same
+        // signature bytes while changing the token string, bypassing
+        // string-keyed revocation lists.
+        if (preg_match('/^[A-Za-z0-9_-]*$/D', $data) !== 1) {
+            return '';
+        }
+
         $remainder = strlen($data) % 4;
         if ($remainder !== 0) {
             $data .= str_repeat('=', 4 - $remainder);
         }
         $decoded = base64_decode(strtr($data, '-_', '+/'), true);
-        return $decoded !== false ? $decoded : '';
+        if ($decoded === false || $this->base64UrlEncode($decoded) !== rtrim($data, '=')) {
+            return '';
+        }
+
+        return $decoded;
     }
 }

@@ -354,6 +354,28 @@ class SecurityRegressionTest extends TestCase
         $this->assertFalse(StpUtil::isLogin());
     }
 
+    public function testRevokedStatelessJwtCannotBeReissuedThroughSignatureEncodingAlias(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'isReadHeader' => true,
+        ]));
+
+        $logic = SaToken::getStpLogic('login');
+        $token = $logic->loginStateless('alias-user');
+        [$header, $payload, $signature] = explode('.', $token);
+        $alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+        $lastIndex = strpos($alphabet, substr($signature, -1));
+        self::assertIsInt($lastIndex);
+        $alias = $header . '.' . $payload . '.'
+            . substr($signature, 0, -1) . $alphabet[$lastIndex ^ 1];
+
+        self::assertNotSame($token, $alias);
+        self::assertTrue($logic->revokeToken($token));
+        self::assertNull($logic->getLoginIdByToken($alias), '撤销 Token 后，等价签名编码不得继续认证');
+    }
+
     public function testKickoutByTokenRevokesStatelessJwt(): void
     {
         SaToken::setConfig(new SaTokenConfig([

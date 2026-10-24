@@ -40,6 +40,21 @@ class SaTokenJwtTest extends TestCase
         $smConfiguredJwt->parseToken($token);
     }
 
+    public function testParseTokenRejectsNonCanonicalSignatureBase64Url(): void
+    {
+        $token = $this->jwt->createToken('user-1', 'login', 3600);
+        [$header, $payload, $signature] = explode('.', $token);
+        $alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+        $lastIndex = strpos($alphabet, substr($signature, -1));
+        self::assertIsInt($lastIndex);
+        $aliasSignature = substr($signature, 0, -1) . $alphabet[$lastIndex ^ 1];
+        $alias = $header . '.' . $payload . '.' . $aliasSignature;
+
+        self::assertNotSame($token, $alias);
+        $this->expectException(SaTokenException::class);
+        $this->jwt->parseToken($alias);
+    }
+
     public function testCreateTokenRejectsInvalidLoginIdTypes(): void
     {
         foreach ([null, '', false, true, [], new \stdClass()] as $loginId) {
