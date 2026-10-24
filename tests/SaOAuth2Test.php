@@ -199,6 +199,52 @@ class SaOAuth2Test extends TestCase
         self::assertTrue($accessToken->isExpired(), 'Access Token 在 exp 边界必须失效');
     }
 
+    public function testAuthorizationCodeWithInvalidLifetimeMetadataFailsClosedWithoutDaoTtl(): void
+    {
+        foreach ([0, -1, time() + 60, PHP_INT_MAX] as $createTime) {
+            $code = new SaOAuth2AuthorizationCode([
+                'createTime' => $createTime,
+                'expiresIn' => 60,
+            ]);
+            self::assertTrue($code->isExpired(), '无效的授权码创建时间必须视为过期');
+        }
+
+        $overflowingCode = new SaOAuth2AuthorizationCode([
+            'createTime' => time(),
+            'expiresIn' => PHP_INT_MAX,
+        ]);
+        self::assertTrue($overflowingCode->isExpired(), '超出可表示范围的授权码有效期必须拒绝');
+
+        $dao = new class () extends SaTokenDaoMemory {
+            public function set(string $key, string $value, ?int $timeout = null): void
+            {
+                parent::set($key, $value, null);
+            }
+        };
+        SaToken::setDao($dao);
+        $this->handle->registerClient($this->testClient);
+
+        $codeValue = 'oauth2-authorization-code-future-created-at';
+        $codeKey = 'oauth2:code:' . $codeValue;
+        $dao->set($codeKey, \SaToken\Util\SaFoxUtil::toJson([
+            'code' => $codeValue,
+            'clientId' => 'test-client',
+            'loginId' => 10001,
+            'redirectUri' => 'https://example.com/callback',
+            'scope' => '',
+            'expiresIn' => 60,
+            'createTime' => time() + 60,
+        ]));
+
+        try {
+            $this->handle->exchangeTokenByCode($codeValue, 'test-client', $this->clientSecret, 'https://example.com/callback');
+            self::fail('无效时间元数据的授权码不得签发访问令牌');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('已过期', $exception->getMessage());
+        }
+        self::assertNotNull($dao->get($codeKey), '无效元数据预检失败时授权码不应被消费');
+    }
+
     public function testAccessTokenWithInvalidLifetimeMetadataFailsClosed(): void
     {
         foreach ([0, -1, time() + 60, PHP_INT_MAX] as $createTime) {
