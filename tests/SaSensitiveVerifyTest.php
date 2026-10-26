@@ -379,6 +379,38 @@ class SaSensitiveVerifyTest extends TestCase
         $this->assertFalse(SaSensitiveVerify::isVerified($scene, $loginId));
     }
 
+    public function testExpiredClearLockCannotDeleteANewerOtpGeneration(): void
+    {
+        $dao = new SensitiveVerifyInterleavingDao();
+        SaToken::setDao($dao);
+        $scene = 'expired-clear-lock-generation';
+        $loginId = 'alice';
+        SaSensitiveVerify::generateCode($scene, $loginId);
+        $stateKey = SaSensitiveVerify::getKey($scene, $loginId);
+        $newCode = null;
+
+        $dao->afterNextGet(function (string $key) use ($dao, $stateKey, $scene, $loginId, &$newCode): void {
+            if ($key !== $stateKey) {
+                return;
+            }
+
+            // Simulate the clear worker's lock lease expiring after it reads
+            // the old state, then let another worker issue a fresh OTP.
+            $dao->delete($stateKey . ':state-lock');
+            $newCode = SaSensitiveVerify::generateCode($scene, $loginId);
+        });
+
+        try {
+            SaSensitiveVerify::clearVerified($scene, $loginId);
+            self::fail('过期锁持有者必须检测到状态已被新验证码替换');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('状态已并发更新', $exception->getMessage());
+        }
+
+        self::assertIsString($newCode);
+        self::assertTrue(SaSensitiveVerify::verifyCode($scene, $newCode, $loginId));
+    }
+
     public function testCreateAndVerifySafeToken(): void
     {
         $scene = 'test-scene';

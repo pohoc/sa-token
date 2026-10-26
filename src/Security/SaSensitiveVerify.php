@@ -331,10 +331,18 @@ class SaSensitiveVerify
     public static function clearVerified(string $scene, mixed $loginId, string $loginType = 'login'): void
     {
         $dao = SaToken::getDao();
+        if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface) {
+            throw new SaTokenException('DAO 必须实现安全比较设置接口才能清除验证码');
+        }
         $key = self::getKey($scene, $loginId, $loginType);
         $lockValue = self::acquireStateLock($key);
         try {
-            $dao->delete($key);
+            // The state lock is a lease. A paused worker must not delete an
+            // OTP generation written after that lease expired.
+            $currentRecord = $dao->get($key);
+            if (!$dao->compareAndSet($key, $currentRecord, null)) {
+                throw new SaTokenException('验证码状态已并发更新，请重试');
+            }
             $dao->delete($key . ':att');
             $dao->delete($key . ':verified');
         } finally {
