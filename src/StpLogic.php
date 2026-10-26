@@ -122,6 +122,7 @@ class StpLogic
 
         /** @var array<string> $replacedTokens */
         $replacedTokens = [];
+        $tokenValue = null;
         try {
             // 封禁状态与发证必须在同一账号锁内复查，避免预检查后管理员封禁、
             // 但本次登录仍继续签发 Token。
@@ -157,6 +158,15 @@ class StpLogic
                 $config,
                 $parameter->shouldWriteResponseCredentials()
             );
+        } catch (\Throwable $exception) {
+            // Login setup spans token persistence, device metadata, response
+            // credentials and optional refresh-token creation. If any later
+            // step fails, do not leave a usable session behind for a login
+            // request that reported failure.
+            if ($tokenValue !== null && $this->tokenManager->isTokenValid($tokenValue)) {
+                $this->removeTokenAndRefreshToken($tokenValue, $loginId);
+            }
+            throw $exception;
         } finally {
             $this->tokenManager->releaseLock($lockKey);
         }

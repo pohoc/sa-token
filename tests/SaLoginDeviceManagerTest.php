@@ -31,6 +31,21 @@ class SaLoginDevicePausingDao extends SaTokenDaoMemory
     }
 }
 
+class SaLoginDeviceFailingDao extends SaTokenDaoMemory
+{
+    public bool $failDeviceRecordWrite = false;
+
+    public function set(string $key, string $value, ?int $timeout = null): void
+    {
+        if ($this->failDeviceRecordWrite && str_starts_with($key, SaLoginDeviceManager::getKey('failed-login', 'login') . ':')) {
+            $this->failDeviceRecordWrite = false;
+            throw new \RuntimeException('simulated device storage failure');
+        }
+
+        parent::set($key, $value, $timeout);
+    }
+}
+
 class SaLoginDeviceManagerTest extends TestCase
 {
     protected StpLogic $logic;
@@ -89,6 +104,23 @@ class SaLoginDeviceManagerTest extends TestCase
         $this->assertEquals('192.168.1.100', $savedDevice->getIp());
         $this->assertSame('', $savedDevice->getTokenValue());
         $this->assertTrue($this->logic->getTokenManager()->isTokenValid($token));
+    }
+
+    public function testFailedDeviceRegistrationRevokesNewlyIssuedSession(): void
+    {
+        $this->dao = new SaLoginDeviceFailingDao();
+        SaToken::setDao($this->dao);
+        $this->dao->failDeviceRecordWrite = true;
+
+        try {
+            $this->logic->login('failed-login');
+            self::fail('设备记录写入失败时登录应失败');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('simulated device storage failure', $exception->getMessage());
+        }
+
+        self::assertSame([], $this->logic->getTokenManager()->getTokenListByLoginId('failed-login', 'login'));
+        self::assertSame(0, SaLoginDeviceManager::getDeviceCount('failed-login', 'login'));
     }
 
     public function testKickoutAllDevicesDispatchesEventsAfterAccountLockRelease(): void
