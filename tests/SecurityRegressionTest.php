@@ -432,6 +432,52 @@ class SecurityRegressionTest extends TestCase
         self::assertFalse($logic->isRefreshTokenValid($refreshToken));
     }
 
+    public function testStatelessLoginHonorsDisabledResponseCredentialWriting(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'isWriteHeader' => true,
+        ])));
+        $logic = new StpLogic('login');
+
+        $privateToken = $logic->loginStateless(
+            'private-stateless-login',
+            (new \SaToken\SaLoginParameter())->setWriteResponseCredentials(false)
+        );
+        self::assertSame('private-stateless-login', $logic->getLoginIdByToken($privateToken));
+
+        $pendingHeaders = new \ReflectionProperty(SaTokenContext::class, 'pendingHeadersMap');
+        $headersByContext = $pendingHeaders->getValue();
+        if (!is_array($headersByContext)) {
+            self::fail('待写响应头状态必须是数组');
+        }
+        $contextHeaders = $headersByContext[SaTokenContext::getContextId()] ?? [];
+        if (!is_array($contextHeaders)) {
+            self::fail('当前请求上下文的响应头状态必须是数组');
+        }
+        foreach ($contextHeaders as $header) {
+            if (is_array($header) && is_string($header['name'] ?? null)) {
+                self::assertNotSame('satoken', strtolower($header['name']));
+            }
+        }
+
+        $defaultToken = $logic->loginStateless('default-stateless-login');
+        $headersByContext = $pendingHeaders->getValue();
+        if (!is_array($headersByContext)) {
+            self::fail('待写响应头状态必须是数组');
+        }
+        $contextHeaders = $headersByContext[SaTokenContext::getContextId()] ?? [];
+        if (!is_array($contextHeaders)) {
+            self::fail('当前请求上下文的响应头状态必须是数组');
+        }
+        self::assertContains(
+            ['name' => 'satoken', 'value' => $defaultToken],
+            $contextHeaders,
+            '默认登录仍按配置向响应写入 JWT'
+        );
+    }
+
     // ======== C1: mixed JWT 模式下会话必须可终止 ========
 
     public function testMixedJwtModeLogoutInvalidatesToken(): void

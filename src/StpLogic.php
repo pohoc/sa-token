@@ -307,7 +307,9 @@ class StpLogic
             $this->tokenManager->updateLastActiveToNow($tokenValue);
             $this->recordLoginIpIfEnabled($loginId, $config);
 
-            $this->writeTokenToResponse($tokenValue, $parameter);
+            if ($parameter->shouldWriteResponseCredentials()) {
+                $this->writeTokenToResponse($tokenValue, $parameter);
+            }
         } finally {
             $this->tokenManager->releaseLock($lockKey);
         }
