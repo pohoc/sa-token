@@ -16,7 +16,8 @@ class SaAntiBruteUtilTest extends TestCase
 {
     protected function setUp(): void
     {
-        SaToken::reset();
+        SaTokenContext::setContextId('default');
+        SaTokenContext::clear();
         SaToken::setDao(new SaTokenDaoMemory());
         SaAntiBruteUtil::reset();
         SaTokenContext::setRequest($this->requestFromIp('192.0.2.1'));
@@ -24,6 +25,8 @@ class SaAntiBruteUtilTest extends TestCase
 
     protected function tearDown(): void
     {
+        SaTokenContext::setContextId('default');
+        SaTokenContext::clear();
         SaToken::reset();
         SaAntiBruteUtil::reset();
     }
@@ -314,6 +317,42 @@ class SaAntiBruteUtilTest extends TestCase
 
         $this->assertSame(1, SaAntiBruteUtil::getFailCount('account'));
         $this->assertFalse(SaAntiBruteUtil::isAccountLocked('account'));
+    }
+
+    public function testExpiredSourceReservationCannotReleaseAnotherRequestSlot(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'antiBruteMaxFailures' => 0,
+            'antiBruteIpMaxFailures' => 2,
+            'antiBruteLockDuration' => 1,
+        ]));
+        $ip = '192.0.2.77';
+
+        SaTokenContext::setContextId('slow-auth-request');
+        SaTokenContext::setRequest($this->requestFromIp($ip));
+        SaAntiBruteUtil::checkAndThrow('slow-account');
+
+        // Let the first request's concurrency lease expire, then admit a new
+        // request into the refreshed shared counter.
+        sleep(2);
+        SaTokenContext::setContextId('new-auth-request');
+        SaTokenContext::setRequest($this->requestFromIp($ip));
+        SaAntiBruteUtil::checkAndThrow('new-account');
+
+        // The old request now completes. It must not decrement the new
+        // request's live reservation merely because the shared key exists.
+        SaTokenContext::setContextId('slow-auth-request');
+        SaTokenContext::setRequest($this->requestFromIp($ip));
+        SaAntiBruteUtil::recordFailure('slow-account');
+
+        SaTokenContext::setContextId('third-auth-request');
+        SaTokenContext::setRequest($this->requestFromIp($ip));
+        SaAntiBruteUtil::checkAndThrow('third-account');
+
+        SaTokenContext::setContextId('fourth-auth-request');
+        SaTokenContext::setRequest($this->requestFromIp($ip));
+        $this->expectException(SaTokenException::class);
+        SaAntiBruteUtil::checkAndThrow('fourth-account');
     }
 
     public function testManualLockAppliesAcrossSourceIps(): void

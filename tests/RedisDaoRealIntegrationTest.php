@@ -15,11 +15,13 @@ use SaToken\OAuth2\SaOAuth2Config;
 use SaToken\OAuth2\SaOAuth2Handle;
 use SaToken\SaLoginParameter;
 use SaToken\SaToken;
+use SaToken\Security\SaAntiBruteUtil;
 use SaToken\Security\SaLoginDeviceManager;
 use SaToken\Security\SaSensitiveVerify;
 use SaToken\StpLogic;
 use SaToken\StpUtil;
 use SaToken\TokenManager;
+use SaToken\Util\SaTokenContext;
 
 class RedisDaoRealIntegrationTest extends TestCase
 {
@@ -117,6 +119,62 @@ class RedisDaoRealIntegrationTest extends TestCase
         $this->dao->delete($key);
         $this->assertNull($this->dao->get($key));
         $this->assertFalse($this->dao->exists($key));
+    }
+
+    public function testExpiredBruteForceReservationCannotReleaseNewRedisSlot(): void
+    {
+        SaToken::reset();
+        SaToken::setDao($this->dao);
+        SaToken::setConfig(new SaTokenConfig([
+            'antiBruteMaxFailures' => 0,
+            'antiBruteIpMaxFailures' => 2,
+            'antiBruteLockDuration' => 2,
+        ]));
+        SaAntiBruteUtil::setKeyPrefix($this->prefix . 'brute:');
+        $ip = '192.0.2.77';
+        $request = static fn (): object => new class ($ip) {
+            public function __construct(private string $ip)
+            {
+            }
+            /** @return array{REMOTE_ADDR: string} */
+            public function getServerParams(): array
+            {
+                return ['REMOTE_ADDR' => $this->ip];
+            }
+            public function getHeaderLine(string $name): string
+            {
+                return '';
+            }
+        };
+
+        try {
+            SaTokenContext::setContextId('redis-slow-auth-request');
+            SaTokenContext::setRequest($request());
+            SaAntiBruteUtil::checkAndThrow('slow-account');
+
+            sleep(3);
+            SaTokenContext::setContextId('redis-new-auth-request');
+            SaTokenContext::setRequest($request());
+            SaAntiBruteUtil::checkAndThrow('new-account');
+
+            SaTokenContext::setContextId('redis-slow-auth-request');
+            SaTokenContext::setRequest($request());
+            SaAntiBruteUtil::recordFailure('slow-account');
+
+            SaTokenContext::setContextId('redis-third-auth-request');
+            SaTokenContext::setRequest($request());
+            SaAntiBruteUtil::checkAndThrow('third-account');
+
+            SaTokenContext::setContextId('redis-fourth-auth-request');
+            SaTokenContext::setRequest($request());
+            $this->expectException(SaTokenException::class);
+            SaAntiBruteUtil::checkAndThrow('fourth-account');
+        } finally {
+            SaTokenContext::setContextId('default');
+            SaTokenContext::clear();
+            SaAntiBruteUtil::reset();
+            SaToken::reset();
+        }
     }
 
     public function testSensitiveOtpGenerationAndVerificationUseRedisCompareAndSet(): void
