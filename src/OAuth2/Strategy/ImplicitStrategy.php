@@ -81,6 +81,12 @@ class ImplicitStrategy
             throw new SaTokenException('OpenID Connect 隐式授权必须提供 nonce');
         }
 
+        // 用户交互和策略校验之间可能发生客户端配置变更；令牌签发前
+        // 再次确认 grant、redirect_uri 与 scope 仍获当前客户端授权。
+        $this->handle->validateGrantTypePublic($clientId, 'implicit');
+        $this->handle->validateRedirectUriPublic($clientId, $redirectUri);
+        $scope = $this->handle->validateScopePublic($clientId, $scope);
+
         return $this->handle->generateAccessToken(
             $clientId,
             $loginId,
