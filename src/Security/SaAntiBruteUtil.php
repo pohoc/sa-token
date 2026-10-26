@@ -88,9 +88,25 @@ class SaAntiBruteUtil
         return self::$keyPrefix . 'source-lock:' . $identity;
     }
 
+    protected static function getSourceAttemptKey(string $identity): string
+    {
+        return self::$keyPrefix . 'source-attempt:' . $identity;
+    }
+
     protected static function getIpCountPrefix(string $account, string $loginType = 'login'): string
     {
         return self::getKey($account, $loginType) . ':ip-count:';
+    }
+
+    protected static function getIpAttemptKey(
+        string $account,
+        string $loginType = 'login',
+        ?int $epoch = null,
+        ?int $ipEpoch = null
+    ): string {
+        $epoch ??= self::getEpoch($account, $loginType);
+        $ipEpoch ??= self::getIpEpoch($account, $loginType, $epoch);
+        return self::getKey($account, $loginType) . ':ip-attempt:' . $epoch . ':' . $ipEpoch . ':' . self::getIpSuffix();
     }
 
     protected static function getIpLockPrefix(string $account, string $loginType = 'login'): string
@@ -171,6 +187,15 @@ class SaAntiBruteUtil
         // the account counter because concurrent requests may all pass
         // checkAndThrow() before any of them records its failed credential.
         $sourceProtectionEnabled = $sourceProtectionEnabled && $sourceIdentity !== null;
+        if ($sourceIdentity !== null) {
+            // Release the pre-validation source slot while recording the
+            // completed failure. The cumulative source failure counter below
+            // remains independent and retains its existing semantics.
+            $sourceAttemptKey = self::getSourceAttemptKey($sourceIdentity);
+            if ($dao->get($sourceAttemptKey) !== null) {
+                $dao->increment($sourceAttemptKey, -1, $lockDuration);
+            }
+        }
         if ($sourceProtectionEnabled && $sourceIdentity !== null) {
             $sourceCount = $dao->increment(self::getSourceFailureKey($sourceIdentity), 1, $lockDuration);
             if ($sourceCount >= $sourceMax) {
@@ -224,6 +249,55 @@ class SaAntiBruteUtil
                 -10
             );
         }
+
+        $sourceSlotReserved = false;
+        if ($sourceProtectionEnabled && $sourceIdentity !== null) {
+            $sourceAttemptKey = self::getSourceAttemptKey($sourceIdentity);
+            $sourceAttemptCount = SaToken::getDao()->increment(
+                $sourceAttemptKey,
+                1,
+                $config->getAntiBruteLockDuration()
+            );
+            if ($sourceAttemptCount > $config->getAntiBruteIpMaxFailures()) {
+                SaToken::getDao()->increment($sourceAttemptKey, -1, $config->getAntiBruteLockDuration());
+                throw new SaTokenException('当前来源并发认证尝试过多，请稍后重试', -10);
+            }
+            $sourceSlotReserved = true;
+        }
+
+        // Reserve the account/IP attempt before credential validation. A
+        // read-only precheck lets an arbitrary number of concurrent guesses
+        // enter a slow password verifier before any failure is recorded.
+        if ($accountProtectionEnabled) {
+            $epoch = self::getEpoch($account, $loginType);
+            $ipEpoch = self::getIpEpoch($account, $loginType, $epoch);
+            $attemptKey = self::getIpAttemptKey($account, $loginType, $epoch, $ipEpoch);
+            $attemptCount = SaToken::getDao()->increment($attemptKey, 1, $config->getAntiBruteLockDuration());
+            if ($attemptCount >= $config->getAntiBruteMaxFailures()) {
+                SaToken::getDao()->set(
+                    self::getIpLockKey($account, $loginType, $epoch, $ipEpoch),
+                    (string) (time() + $config->getAntiBruteLockDuration()),
+                    $config->getAntiBruteLockDuration() + 60
+                );
+            }
+            if ($attemptCount > $config->getAntiBruteMaxFailures()) {
+                // Roll back only this rejected reservation. The attempt counter
+                // is atomic, so this cannot free a slot already held by a
+                // concurrent request.
+                SaToken::getDao()->increment($attemptKey, -1, $config->getAntiBruteLockDuration());
+                if ($sourceSlotReserved && $sourceIdentity !== null) {
+                    SaToken::getDao()->increment(
+                        self::getSourceAttemptKey($sourceIdentity),
+                        -1,
+                        $config->getAntiBruteLockDuration()
+                    );
+                }
+                throw new SaTokenException(
+                    '账号已达到当前来源的尝试次数上限，请稍后重试',
+                    -10
+                );
+            }
+        }
     }
 
     public static function lock(string $account, string $loginType = 'login', int $durationSeconds = 600): void
@@ -253,6 +327,13 @@ class SaAntiBruteUtil
     public static function clearCurrentSourceFailures(string $account, string $loginType = 'login'): void
     {
         $dao = SaToken::getDao();
+        $sourceIdentity = self::getSourceIdentity($loginType);
+        if ($sourceIdentity !== null) {
+            $sourceAttemptKey = self::getSourceAttemptKey($sourceIdentity);
+            if ($dao->get($sourceAttemptKey) !== null) {
+                $dao->increment($sourceAttemptKey, -1);
+            }
+        }
         $epoch = self::getEpoch($account, $loginType);
         $ipEpoch = self::getIpEpoch($account, $loginType, $epoch);
         // Advance before deleting old keys. A failure operation already in
@@ -260,6 +341,7 @@ class SaAntiBruteUtil
         // but lock checks and counters now resolve only the new generation.
         $dao->increment(self::getIpEpochKey($account, $loginType, $epoch));
         $dao->delete(self::getIpCountKey($account, $loginType, $epoch, $ipEpoch));
+        $dao->delete(self::getIpAttemptKey($account, $loginType, $epoch, $ipEpoch));
         $dao->delete(self::getIpLockKey($account, $loginType, $epoch, $ipEpoch));
     }
 

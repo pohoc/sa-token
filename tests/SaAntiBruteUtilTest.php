@@ -184,26 +184,77 @@ class SaAntiBruteUtilTest extends TestCase
             \Fiber::suspend();
             SaAntiBruteUtil::recordFailure('random-user-1');
         });
+        $secondDenied = false;
         $second = new \Fiber(function () use ($makeRequest): void {
             SaTokenContext::setRequest($makeRequest());
-            SaAntiBruteUtil::checkAndThrow('random-user-2');
-            \Fiber::suspend();
-            SaAntiBruteUtil::recordFailure('random-user-2');
+            try {
+                SaAntiBruteUtil::checkAndThrow('random-user-2');
+                \Fiber::suspend();
+                SaAntiBruteUtil::recordFailure('random-user-2');
+            } catch (SaTokenException) {
+                // The source cap must reject before another credential check.
+            }
         });
 
-        // Both requests pass the pre-authentication check before either
-        // credential validator returns a failure.
+        // The configured source cap rejects concurrent requests before they
+        // enter credential validation.
         $first->start();
         $second->start();
+        $secondDenied = $second->isTerminated();
         $first->resume();
-        $second->resume();
+        if ($second->isSuspended()) {
+            $second->resume();
+        }
 
+        $this->assertTrue($secondDenied);
         SaTokenContext::setRequest($makeRequest());
         $this->assertSame(0, SaAntiBruteUtil::getFailCount('random-user-1'));
         $this->assertSame(0, SaAntiBruteUtil::getFailCount('random-user-2'));
         $this->expectException(SaTokenException::class);
         $this->expectExceptionMessage('当前来源失败次数过多');
         SaAntiBruteUtil::checkAndThrow('random-user-3');
+    }
+
+    public function testConcurrentAccountAttemptsAreReservedBeforeCredentialValidation(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'antiBruteMaxFailures' => 1,
+            'antiBruteIpMaxFailures' => 0,
+            'antiBruteLockDuration' => 600,
+        ]));
+
+        $makeRequest = fn (): object => $this->requestFromIp('192.0.2.61');
+        $admitted = 0;
+        $fibers = [];
+        for ($i = 0; $i < 12; $i++) {
+            $fibers[] = new \Fiber(function () use (&$admitted, $makeRequest): void {
+                SaTokenContext::setRequest($makeRequest());
+                try {
+                    SaAntiBruteUtil::checkAndThrow('concurrent-victim');
+                    $admitted++;
+                    \Fiber::suspend();
+                    SaAntiBruteUtil::recordFailure('concurrent-victim');
+                } catch (SaTokenException) {
+                    // The limit must deny requests before they enter the
+                    // credential verifier.
+                }
+            });
+        }
+
+        foreach ($fibers as $fiber) {
+            $fiber->start();
+        }
+
+        self::assertSame(1, $admitted);
+        foreach ($fibers as $fiber) {
+            if ($fiber->isSuspended()) {
+                $fiber->resume();
+            }
+        }
+
+        SaTokenContext::setRequest($makeRequest());
+        self::assertTrue(SaAntiBruteUtil::isAccountLocked('concurrent-victim'));
+        self::assertSame(1, SaAntiBruteUtil::getFailCount('concurrent-victim'));
     }
 
     public function testSourceFailureLimitIsIsolatedByIpAndLoginType(): void

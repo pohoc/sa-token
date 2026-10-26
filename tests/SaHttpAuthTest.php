@@ -255,6 +255,8 @@ class SaHttpAuthTest extends TestCase
         );
         $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
         $request->method('getHeader')->willReturnCallback(static fn (string $name): array => $name === 'Authorization' ? [$header] : []);
+        $request->method('getMethod')->willReturn('GET');
+        $request->method('getRequestTarget')->willReturn('/resource');
         $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '192.0.2.111']);
         SaTokenContext::setRequest($request);
         $auth->setDigestValidator(static function (): never {

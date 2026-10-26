@@ -53,11 +53,11 @@ class SaHttpAuth
 
         [$username, $password] = $parts;
 
-        SaAntiBruteUtil::checkAndThrow($username);
-
         if ($this->basicValidator === null) {
             throw new SaTokenException('未设置 Basic 认证校验器');
         }
+
+        SaAntiBruteUtil::checkAndThrow($username);
 
         try {
             $loginId = ($this->basicValidator)($username, $password);
@@ -120,26 +120,8 @@ class SaHttpAuth
             throw new SaTokenException('Digest nonce 无效或已使用，可能遭受重放攻击');
         }
 
-        SaAntiBruteUtil::checkAndThrow($username);
-
         if ($this->digestValidator === null) {
             throw new SaTokenException('未设置 Digest 认证校验器');
-        }
-
-        try {
-            $ha1 = ($this->digestValidator)($username);
-        } catch (\Throwable $exception) {
-            SaAntiBruteUtil::recordFailure($username);
-            throw $exception;
-        }
-
-        // Digest HA1 is an MD5 hex digest in this implementation. Empty or
-        // malformed validator sentinels must fail closed; otherwise an empty
-        // HA1 lets callers forge a valid response for an unknown user.
-        if (!is_string($ha1) || preg_match('/^[0-9a-fA-F]{32}$/D', $ha1) !== 1) {
-            SaAntiBruteUtil::recordFailure($username);
-            $this->sendDigestChallenge($realm);
-            throw new SaTokenException('Digest 认证失败');
         }
 
         $request = SaTokenContext::getRequest();
@@ -156,6 +138,24 @@ class SaHttpAuth
             throw new SaTokenException('Digest URI 与当前请求目标不匹配');
         }
         $method = strtoupper($requestMethod);
+
+        SaAntiBruteUtil::checkAndThrow($username);
+
+        try {
+            $ha1 = ($this->digestValidator)($username);
+        } catch (\Throwable $exception) {
+            SaAntiBruteUtil::recordFailure($username);
+            throw $exception;
+        }
+
+        // Digest HA1 is an MD5 hex digest in this implementation. Empty or
+        // malformed validator sentinels must fail closed; otherwise an empty
+        // HA1 lets callers forge a valid response for an unknown user.
+        if (!is_string($ha1) || preg_match('/^[0-9a-fA-F]{32}$/D', $ha1) !== 1) {
+            SaAntiBruteUtil::recordFailure($username);
+            $this->sendDigestChallenge($realm);
+            throw new SaTokenException('Digest 认证失败');
+        }
 
         $ha2 = md5($method . ':' . $uri);
 
