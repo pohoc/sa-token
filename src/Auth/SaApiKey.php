@@ -34,8 +34,8 @@ class SaApiKey
 
     public function checkApiKey(): void
     {
-        if (SaTokenContext::hasMultipleHeaderValues($this->keyHeaderName)
-            || SaTokenContext::hasMultipleHeaderValues($this->secretHeaderName)) {
+        if (SaTokenContext::hasMultipleHeaderValues($this->keyHeaderName, true)
+            || SaTokenContext::hasMultipleHeaderValues($this->secretHeaderName, true)) {
             throw new SaTokenException('API Key 或 Secret Header 存在多个值');
         }
 
@@ -127,8 +127,8 @@ class SaApiKey
 
     public function isApiKeyRequest(): bool
     {
-        if (SaTokenContext::hasMultipleHeaderValues($this->keyHeaderName)
-            || SaTokenContext::hasMultipleHeaderValues($this->secretHeaderName)) {
+        if (SaTokenContext::hasMultipleHeaderValues($this->keyHeaderName, true)
+            || SaTokenContext::hasMultipleHeaderValues($this->secretHeaderName, true)) {
             return false;
         }
 

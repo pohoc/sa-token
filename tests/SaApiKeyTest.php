@@ -91,6 +91,29 @@ class SaApiKeyTest extends TestCase
         $api->checkApiKey();
     }
 
+    public function testProxyCombinedCredentialHeadersAreRejected(): void
+    {
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'api-key' => 'first-key, second-key',
+            'api-secret' => 'first-secret, second-secret',
+        ]));
+
+        $validatorCalls = 0;
+        $api = (new SaApiKey())->setValidator(static function () use (&$validatorCalls): string {
+            $validatorCalls++;
+            return 'api-user';
+        });
+
+        self::assertFalse($api->isApiKeyRequest());
+        try {
+            $api->checkApiKey();
+            self::fail('合并的 Key/Secret Header 必须被拒绝');
+        } catch (SaTokenException $exception) {
+            self::assertSame('API Key 或 Secret Header 存在多个值', $exception->getMessage());
+        }
+        self::assertSame(0, $validatorCalls);
+    }
+
     public function testRegisterKeyAndValidate(): void
     {
         $request = $this->mockRequestWithHeaders([
