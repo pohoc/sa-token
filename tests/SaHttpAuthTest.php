@@ -97,6 +97,66 @@ class SaHttpAuthTest extends TestCase
         self::assertSame('bearer-account', $logic->getLoginIdByToken($unrelatedToken));
     }
 
+    public function testFailedBasicAuthenticationCannotFallBackToAnUnrelatedBearerToken(): void
+    {
+        SaToken::setConfig(SaToken::getConfig()->setIsReadHeader(true));
+        $logic = SaToken::getStpLogic();
+        $bearerToken = $logic->login('bearer-account')->getAccessToken();
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->willReturnCallback(static fn (string $name): array => match ($name) {
+            'Authorization' => ['Basic ' . base64_encode('attacker:wrong-password')],
+            'satoken' => [$bearerToken],
+            default => [],
+        });
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '192.0.2.122']);
+        SaTokenContext::setRequest($request);
+
+        $auth = (new SaHttpAuth())->setBasicValidator(static fn (): ?string => null);
+        try {
+            $auth->checkBasic();
+            self::fail('无效 Basic 凭据必须拒绝认证');
+        } catch (SaTokenException) {
+            self::assertNull($logic->getLoginId(), 'Basic 认证失败后不得回退到请求携带的 bearer token');
+        }
+    }
+
+    public function testFailedDigestAuthenticationCannotFallBackToAnUnrelatedBearerToken(): void
+    {
+        SaToken::setConfig(SaToken::getConfig()->setIsReadHeader(true));
+        $logic = SaToken::getStpLogic();
+        $bearerToken = $logic->login('bearer-account')->getAccessToken();
+        $auth = new SaHttpAuth();
+        $username = 'digest-user';
+        $realm = 'Sa-Token';
+        $uri = '/resource';
+        $header = sprintf(
+            'Digest username="%s", realm="%s", nonce="%s", uri="%s", response="%s", qop=auth, nc=00000001, cnonce="client-nonce"',
+            $username,
+            $realm,
+            $auth->generateNonce(),
+            $uri,
+            str_repeat('0', 32)
+        );
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->willReturnCallback(static fn (string $name): array => match ($name) {
+            'Authorization' => [$header],
+            'satoken' => [$bearerToken],
+            default => [],
+        });
+        $request->method('getMethod')->willReturn('GET');
+        $request->method('getRequestTarget')->willReturn($uri);
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '192.0.2.123']);
+        SaTokenContext::setRequest($request);
+        $auth->setDigestValidator(static fn (): string => md5($username . ':' . $realm . ':password'));
+
+        try {
+            $auth->checkDigest($realm);
+            self::fail('无效 Digest 凭据必须拒绝认证');
+        } catch (SaTokenException) {
+            self::assertNull($logic->getLoginId(), 'Digest 认证失败后不得回退到请求携带的 bearer token');
+        }
+    }
+
     public function testDigestIdentityOverridesAnUnrelatedBearerToken(): void
     {
         SaToken::setConfig(SaToken::getConfig()->setIsReadHeader(true));

@@ -24,6 +24,8 @@ class SaHttpAuth
 
     public function checkBasic(string $realm = 'Sa-Token'): void
     {
+        $this->denyAuthenticationFallback();
+
         if (SaTokenContext::hasMultipleHeaderValues('Authorization')) {
             $this->sendChallenge($realm);
             throw new SaTokenException('Basic Authorization Header 存在多个值');
@@ -77,6 +79,8 @@ class SaHttpAuth
 
     public function checkDigest(string $realm = 'Sa-Token'): void
     {
+        $this->denyAuthenticationFallback();
+
         if (SaTokenContext::hasMultipleHeaderValues('Authorization')) {
             $this->sendDigestChallenge($realm);
             throw new SaTokenException('Digest Authorization Header 存在多个值');
@@ -202,6 +206,12 @@ class SaHttpAuth
     {
         $this->digestValidator = $validator;
         return $this;
+    }
+
+    protected function denyAuthenticationFallback(): void
+    {
+        $loginType = StpUtil::getStpLogic()->getLoginType();
+        SaTokenContext::setTokenOverride($loginType, '');
     }
 
     public function sendChallenge(string $realm): void
