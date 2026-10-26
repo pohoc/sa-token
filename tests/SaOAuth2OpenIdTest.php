@@ -97,6 +97,49 @@ class SaOAuth2OpenIdTest extends TestCase
         $this->assertGreaterThan($idToken->getIssuedAt(), $idToken->getExpiresAt());
     }
 
+    public function testGenerateIdTokenRejectsUnregisteredAudience(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('未注册的客户端');
+
+        $this->handle->generateIdToken('unregistered-client', 10001, 'openid');
+    }
+
+    public function testGenerateIdTokenRejectsScopeOutsideClientGrant(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('请求了未授予的 scope');
+
+        $this->handle->generateIdToken('test-client', 10001, 'openid admin');
+    }
+
+    public function testGenerateIdTokenRejectsInvalidSubject(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('loginId 不能为空且必须是非布尔标量');
+
+        $this->handle->generateIdToken('test-client', false, 'openid');
+    }
+
+    public function testGenerateIdTokenRequiresOpenIdModeAndOpenidScope(): void
+    {
+        $nonOpenIdHandle = new SaOAuth2Handle(new SaOAuth2Config([
+            'issuer' => 'https://my-app.example.com',
+        ]));
+        $nonOpenIdHandle->registerClient($this->testClient);
+
+        try {
+            $nonOpenIdHandle->generateIdToken('test-client', 10001, 'openid');
+            self::fail('ID Token issuance must require OpenID mode');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('启用 OpenID Connect', $exception->getMessage());
+        }
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('请求 openid scope');
+        $this->handle->generateIdToken('test-client', 10001, 'profile');
+    }
+
     public function testGenerateIdTokenRejectsPayloadThatCannotBeEncoded(): void
     {
         $this->expectException(SaTokenException::class);

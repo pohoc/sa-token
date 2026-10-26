@@ -1403,11 +1403,19 @@ class SaOAuth2Handle
     public function generateIdToken(string $clientId, mixed $loginId, string $scope = '', string $nonce = '', string $accessToken = ''): SaOAuth2IdToken
     {
         $this->validateIdTokenIssuer();
+        if (!$this->config->isOpenIdMode() || !$this->scopeContainsOpenid($scope)) {
+            throw new SaTokenException('生成 ID Token 必须启用 OpenID Connect 并请求 openid scope');
+        }
+        $client = $this->validateClient($clientId);
+        $this->validateScopeForClient($client, $scope);
+        if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
+            throw new SaTokenException('loginId 不能为空且必须是非布尔标量');
+        }
 
         $now = time();
         $expiresAt = $now + $this->config->getAccessTokenTimeout();
 
-        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $loginIdStr = (string) $loginId;
 
         $payload = [
             'iss' => $this->config->getIssuer(),
