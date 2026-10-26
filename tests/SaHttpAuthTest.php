@@ -297,6 +297,47 @@ class SaHttpAuthTest extends TestCase
         $this->assertSame(0, $validatorCalls);
     }
 
+    public function testCheckBasicRejectsProxyCombinedAuthorizationHeader(): void
+    {
+        $combined = 'Basic ' . base64_encode('admin:first') . ', Bearer attacker-token';
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->willReturnCallback(static fn (string $name): array => $name === 'Authorization'
+            ? [$combined]
+            : []);
+        SaTokenContext::setRequest($request);
+
+        $validatorCalls = 0;
+        $auth = new SaHttpAuth();
+        $auth->setBasicValidator(static function () use (&$validatorCalls): string {
+            $validatorCalls++;
+            return 'admin';
+        });
+
+        try {
+            $auth->checkBasic();
+            self::fail('合并的 Authorization Header 必须被拒绝');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('存在多个值', $exception->getMessage());
+        }
+        self::assertSame(0, $validatorCalls);
+    }
+
+    public function testCheckBasicAcceptsSingleAuthorizationSchemeValue(): void
+    {
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->willReturnCallback(static fn (string $name): array => $name === 'Authorization'
+            ? ['Basic ' . base64_encode('admin:password')]
+            : []);
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '192.0.2.122']);
+        SaTokenContext::setRequest($request);
+
+        $auth = new SaHttpAuth();
+        $auth->setBasicValidator(static fn (): string => 'admin');
+        $auth->checkBasic();
+
+        self::assertSame('admin', \SaToken\StpUtil::getLoginId());
+    }
+
     public function testCheckBasicThrowsOnMissingHeader(): void
     {
         $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);

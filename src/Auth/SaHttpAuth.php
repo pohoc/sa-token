@@ -26,7 +26,7 @@ class SaHttpAuth
     {
         $this->denyAuthenticationFallback();
 
-        if (SaTokenContext::hasMultipleHeaderValues('Authorization')) {
+        if (SaTokenContext::hasMultipleHeaderValues('Authorization', true)) {
             $this->sendChallenge($realm);
             throw new SaTokenException('Basic Authorization Header 存在多个值');
         }
