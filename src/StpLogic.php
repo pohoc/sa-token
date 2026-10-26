@@ -957,7 +957,7 @@ class StpLogic
      * @param  SaLoginParameter $parameter  登录参数
      * @return void
      */
-    protected function writeTokenToResponse(string $tokenValue, SaLoginParameter $parameter): void
+    public function writeTokenToResponse(string $tokenValue, SaLoginParameter $parameter): void
     {
         $config = $this->getConfig();
         $tokenName = $config->getTokenName();

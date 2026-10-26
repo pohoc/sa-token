@@ -136,6 +136,63 @@ class SaApiKeyTest extends TestCase
         self::assertSame('api-key-account', $logic->getLoginId());
     }
 
+    public function testApiKeySessionReuseDoesNotEmitBearerWhenResponseWritingIsDisabled(): void
+    {
+        $api = new SaApiKey();
+        $api->registerKey('response-policy-key', 'response-policy-secret', 'api-key-account');
+
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'api-key' => 'response-policy-key',
+            'api-secret' => 'response-policy-secret',
+        ]));
+        $api->checkApiKey();
+
+        $pendingHeaders = new \ReflectionProperty(SaTokenContext::class, 'pendingHeadersMap');
+        $headersByContext = $pendingHeaders->getValue();
+        self::assertIsArray($headersByContext);
+        $contextHeaders = $headersByContext[SaTokenContext::getContextId()] ?? [];
+        self::assertIsArray($contextHeaders);
+        self::assertSame([], $contextHeaders);
+
+        // Reuse must obey the same response policy as the initial login. In
+        // particular, an API-Key-only client must not receive a bearer token
+        // that can be used on routes which accept Sa-Token credentials.
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'api-key' => 'response-policy-key',
+            'api-secret' => 'response-policy-secret',
+        ]));
+        $api->checkApiKey();
+
+        $headersByContext = $pendingHeaders->getValue();
+        self::assertIsArray($headersByContext);
+        $contextHeaders = $headersByContext[SaTokenContext::getContextId()] ?? [];
+        self::assertIsArray($contextHeaders);
+        self::assertSame([], $contextHeaders);
+
+        SaToken::getConfig()->setIsWriteHeader(true);
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'api-key' => 'response-policy-key',
+            'api-secret' => 'response-policy-secret',
+        ]));
+        $api->checkApiKey();
+        $headersByContext = $pendingHeaders->getValue();
+        self::assertIsArray($headersByContext);
+        $contextHeaders = $headersByContext[SaTokenContext::getContextId()] ?? [];
+        self::assertIsArray($contextHeaders);
+        self::assertSame(
+            ['name' => 'satoken', 'value' => self::readReusableToken('api-key-account')],
+            $contextHeaders[0] ?? null
+        );
+    }
+
+    private static function readReusableToken(string $loginId): string
+    {
+        $tokens = SaToken::getStpLogic()->getTokenManager()->getTokenListByLoginId($loginId, 'login');
+        $token = $tokens[0]['tokenValue'] ?? null;
+        self::assertIsString($token);
+        return $token;
+    }
+
     public function testCheckApiKeyThrowsOnMissingHeaders(): void
     {
         $api = new SaApiKey();

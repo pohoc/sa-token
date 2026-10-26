@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace SaToken\Auth;
 
 use SaToken\Exception\SaTokenException;
-use SaToken\SaToken;
 use SaToken\Security\SaAntiBruteUtil;
 use SaToken\StpUtil;
 use SaToken\Util\SaTokenContext;
@@ -73,7 +72,7 @@ class SaApiKey
         for ($attempt = 0; $attempt < 3; $attempt++) {
             $reuseToken = $this->findReusableToken($loginId, $apiKey);
             if ($reuseToken !== null) {
-                SaTokenContext::setHeader(SaToken::getConfig()->getTokenName(), $reuseToken);
+                StpUtil::getStpLogic()->writeTokenToResponse($reuseToken, new \SaToken\SaLoginParameter());
                 SaTokenContext::setTokenOverride(StpUtil::getStpLogic()->getLoginType(), $reuseToken);
                 return;
             }
