@@ -1170,6 +1170,9 @@ class TokenManager
             'level'   => $level,
             'disable' => true,
             'time'    => $time,
+            // A unique generation lets a stale unban detect a newer ban even
+            // when the distributed account-lock lease expired mid-operation.
+            'revision' => bin2hex(random_bytes(16)),
         ]);
         $lockKey = 'login:' . $loginType . ':' . hash('sha256', $loginIdStr);
         if (!$this->acquireLock($lockKey, 30)) {
@@ -1231,7 +1234,14 @@ class TokenManager
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
         try {
-            $this->getDao()->delete($key);
+            $dao = $this->getDao();
+            if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
+                throw new SaTokenException('DAO 必须实现安全比较删除接口才能解除封禁');
+            }
+            $current = $dao->get($key);
+            if ($current !== null && !$dao->compareAndDelete($key, $current)) {
+                throw new SaTokenException('封禁状态已并发变更，拒绝执行过期解封操作');
+            }
         } finally {
             $this->releaseLock($lockKey);
         }

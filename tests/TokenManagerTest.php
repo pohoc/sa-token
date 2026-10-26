@@ -733,6 +733,50 @@ class TokenManagerTest extends TestCase
         self::assertTrue($this->manager->isDisable($loginId, 'login', 'login'));
     }
 
+    public function testStaleUntieDisableCannotDeleteANewerBanAfterLeaseExpires(): void
+    {
+        $dao = new class () extends SaTokenDaoMemory {
+            public ?\Closure $duringDisableRead = null;
+
+            public function get(string $key): ?string
+            {
+                $value = parent::get($key);
+                if (str_starts_with($key, 'satoken:disable:') && $this->duringDisableRead !== null) {
+                    $callback = $this->duringDisableRead;
+                    $this->duringDisableRead = null;
+                    $callback();
+                }
+
+                return $value;
+            }
+        };
+        SaToken::setDao($dao);
+        $loginId = 'stale-disable-unban';
+        $this->manager->disable($loginId, 'login', 1, 3600, 'login');
+        $lockKey = 'login:login:' . hash('sha256', $loginId);
+        $dao->duringDisableRead = function () use ($dao, $lockKey, $loginId): void {
+            // The unban has read the old record. Simulate its lease expiring,
+            // then let another request install a newer ban before its CAS.
+            $dao->delete(TokenManager::LOCK_PREFIX . $lockKey);
+            SaTokenContext::setContextId('new-disable-owner');
+            try {
+                (new TokenManager())->disable($loginId, 'login', 2, 3600, 'login');
+            } finally {
+                SaTokenContext::setContextId('default');
+            }
+        };
+
+        try {
+            $this->manager->untieDisable($loginId, 'login', 'login');
+            self::fail('过期租约的解封不得删除更新后的封禁记录');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('并发变更', $exception->getMessage());
+        }
+
+        self::assertTrue($this->manager->isDisable($loginId, 'login', 'login'));
+        self::assertSame(2, $this->manager->getDisableLevel($loginId, 'login', 'login'));
+    }
+
     public function testSafeAuth(): void
     {
         $token = $this->manager->createTokenValue(10001, 'login');
