@@ -98,6 +98,17 @@ class SecurityRegressionTest extends TestCase
         };
     }
 
+    /** @param array<string, mixed> $payload */
+    private function createSignedToken(string $secretKey, array $payload): string
+    {
+        $encode = static fn (string $value): string => rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
+        $header = $encode(json_encode(['typ' => 'JWT', 'alg' => 'HS256'], JSON_THROW_ON_ERROR));
+        $body = $encode(json_encode($payload, JSON_THROW_ON_ERROR));
+        $signingInput = $header . '.' . $body;
+
+        return $signingInput . '.' . $encode(hash_hmac('sha256', $signingInput, $secretKey, true));
+    }
+
     /**
      * @param array<string> $permissions
      */
@@ -581,7 +592,9 @@ class SecurityRegressionTest extends TestCase
         ]));
 
         $logic = SaToken::getStpLogic('login');
-        $token = $logic->loginStateless('watermark-equality-user');
+        $token = (new \SaToken\Plugin\SaTokenJwt([
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]))->createToken('watermark-equality-user', 'login', 3600);
         $claims = (new \SaToken\Plugin\SaTokenJwt([
             'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
         ]))->parseToken($token);
@@ -594,6 +607,30 @@ class SecurityRegressionTest extends TestCase
         SaToken::getDao()->set($watermarkKey, sprintf('%.6F', (float) $claims['iat']));
 
         self::assertNull($logic->getLoginIdByToken($token), 'iat 与撤销水位相等时必须按已撤销处理');
+    }
+
+    public function testStatelessJwtMintedBeforeLogoutByClockAheadNodeIsRevoked(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'isReadHeader' => true,
+        ]));
+        StpUtil::logoutByLoginId('clock-skew-user');
+
+        // Simulate a token minted before logout on another node whose clock is
+        // ahead. Its future iat must not let it survive the account revocation.
+        $token = $this->createSignedToken('test-jwt-secret-key-32-bytes-long-ok!', [
+            'sub' => 'clock-skew-user',
+            'type' => 'login',
+            'iat' => microtime(true) + 60,
+            'jti' => bin2hex(random_bytes(16)),
+            'exp' => time() + 3600,
+            'satoken_gen' => 0,
+        ]);
+
+        $this->actAsToken($token);
+        $this->assertNull(StpUtil::getStpLogic()->getLoginIdByToken($token));
     }
 
     public function testStatelessJwtIssuedAfterAccountLogoutRemainsValid(): void

@@ -291,7 +291,8 @@ class StpLogic
                 || $this->tokenManager->isStatelessTokenRevokedByLoginId(
                     $loginIdStr,
                     $this->loginType,
-                    $claims['iat'] ?? null
+                    $claims['iat'] ?? null,
+                    $claims['satoken_gen'] ?? null
                 )) {
                 throw new SaTokenException('账号会话已撤销，拒绝签发无效登录凭证');
             }
@@ -699,7 +700,8 @@ class StpLogic
         if ($this->tokenManager->isStatelessTokenRevokedByLoginId(
             $subject,
             $this->loginType,
-            $payload['iat'] ?? null
+            $payload['iat'] ?? null,
+            $payload['satoken_gen'] ?? null
         )) {
             return null;
         }

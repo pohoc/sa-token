@@ -142,7 +142,8 @@ trait StpLogicRefreshTokenTrait
                     if ($this->tokenManager->isStatelessTokenRevokedByLoginId(
                         $loginId,
                         $this->loginType,
-                        $oldAccessClaims['iat'] ?? null
+                        $oldAccessClaims['iat'] ?? null,
+                        $oldAccessClaims['satoken_gen'] ?? null
                     )) {
                         throw new SaTokenException('AccessToken 已因账号撤销而失效，无法刷新会话');
                     }

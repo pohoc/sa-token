@@ -6,6 +6,7 @@ namespace SaToken\Plugin;
 
 use CryptoSm\SM3\HmacSm3;
 use SaToken\Exception\SaTokenException;
+use SaToken\TokenManager;
 use SaToken\Util\SaTokenTimeout;
 
 class SaTokenJwt
@@ -28,8 +29,13 @@ class SaTokenJwt
     /**
      * @param array<string, mixed> $extraClaims
      */
-    public function createToken(mixed $loginId, string $loginType, ?int $timeout = null, array $extraClaims = []): string
-    {
+    public function createToken(
+        mixed $loginId,
+        string $loginType,
+        ?int $timeout = null,
+        array $extraClaims = [],
+        ?int $statelessGeneration = null
+    ): string {
         if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
             throw new SaTokenException('loginId 不能为空且必须是非布尔标量');
         }
@@ -71,6 +77,12 @@ class SaTokenJwt
         $reservedClaims = ['sub', 'type', 'exp', 'iat', 'jti', 'nbf', 'iss', 'aud'];
         $safeExtraClaims = array_diff_key($extraClaims, array_flip($reservedClaims));
         $payload = array_merge($payload, $safeExtraClaims);
+        if ($statelessGeneration !== null) {
+            if ($statelessGeneration < 0) {
+                throw new SaTokenException('无状态 JWT 账号会话版本无效');
+            }
+            $payload['satoken_gen'] = $statelessGeneration;
+        }
 
         try {
             $headerJson = json_encode($header, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
@@ -241,13 +253,14 @@ class SaTokenJwt
         // 保留字段是身份与有效性的权威来源，一旦可被 session 数据覆盖，
         // 任何能写 session 顶层键的输入都能伪造登录身份或延长有效期。
         // 额外参数同样不允许碰保留字段
-        $reservedKeys = ['sub', 'exp', 'iat', 'nbf', 'jti', 'iss', 'aud', 'type'];
+        $reservedKeys = ['sub', 'exp', 'iat', 'nbf', 'jti', 'iss', 'aud', 'type', 'satoken_gen'];
         $safeSessionData = array_diff_key($sessionData, array_flip($reservedKeys));
         $safeExtraClaims = array_diff_key($extraClaims, array_flip($reservedKeys));
 
         $statelessClaims = array_merge($safeSessionData, $safeExtraClaims);
+        $generation = (new TokenManager())->getStatelessTokenGeneration($loginIdStr, $loginType);
 
-        return $this->createToken($loginId, $loginType, $timeout, $statelessClaims);
+        return $this->createToken($loginId, $loginType, $timeout, $statelessClaims, $generation);
     }
 
     /**

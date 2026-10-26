@@ -31,6 +31,37 @@ class TokenManager
     protected const REFRESH_TOKEN_ACCOUNT_PREFIX = 'satoken:refreshAccount:';
     public const FINGERPRINT_PREFIX = 'satoken:fingerprint:';
     public const BLACKLIST_PREFIX = 'satoken:blacklist:';
+    public const JWT_GENERATION_PREFIX = 'satoken:jwt:generation:';
+
+    public static function buildStatelessTokenGenerationKey(string $loginId, string $loginType): string
+    {
+        return self::JWT_GENERATION_PREFIX . self::encodeKeyComponent($loginType) . ':' . hash('sha256', $loginId);
+    }
+
+    public function getStatelessTokenGeneration(string $loginId, string $loginType): int
+    {
+        $value = $this->getDao()->get(self::buildStatelessTokenGenerationKey($loginId, $loginType));
+        if ($value === null) {
+            return 0;
+        }
+
+        $generation = self::parseStatelessTokenGeneration($value);
+        if ($generation === null) {
+            throw new SaTokenException('无状态 JWT 账号会话版本数据无效');
+        }
+
+        return $generation;
+    }
+
+    protected static function parseStatelessTokenGeneration(string $value): ?int
+    {
+        if (preg_match('/^(0|[1-9][0-9]*)$/D', $value) !== 1) {
+            return null;
+        }
+
+        $generation = filter_var($value, FILTER_VALIDATE_INT);
+        return is_int($generation) && $generation >= 0 ? $generation : null;
+    }
 
     /** Build a collision-free login session key while preserving legacy keys without colons. */
     public static function buildSessionId(string $loginType, string $loginId): string
@@ -1553,6 +1584,15 @@ class TokenManager
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
         try {
+            $generationKey = self::buildStatelessTokenGenerationKey($loginId, $loginType);
+            $currentGeneration = $this->getStatelessTokenGeneration($loginId, $loginType);
+            if ($currentGeneration === PHP_INT_MAX || $this->getDao()->increment($generationKey) !== $currentGeneration + 1) {
+                throw new SaTokenException('无状态 JWT 账号会话版本更新失败');
+            }
+
+            // Keep the timestamp watermark for tokens issued by older versions;
+            // current tokens use the monotonic generation and do not depend on
+            // synchronized clocks across application nodes.
             $key = 'satoken:jwt:revoked-before:' . $loginType . ':' . hash('sha256', $loginId);
             $current = $this->getDao()->get($key);
             $cutoff = microtime(true);
@@ -1567,8 +1607,26 @@ class TokenManager
         }
     }
 
-    public function isStatelessTokenRevokedByLoginId(string $loginId, string $loginType, mixed $issuedAt): bool
-    {
+    public function isStatelessTokenRevokedByLoginId(
+        string $loginId,
+        string $loginType,
+        mixed $issuedAt,
+        mixed $tokenGeneration = null
+    ): bool {
+        $generationValue = $this->getDao()->get(self::buildStatelessTokenGenerationKey($loginId, $loginType));
+        $currentGeneration = $generationValue === null ? 0 : self::parseStatelessTokenGeneration($generationValue);
+        if ($currentGeneration === null) {
+            return true;
+        }
+        if ($tokenGeneration !== null) {
+            return !is_int($tokenGeneration) || $tokenGeneration < 0 || $tokenGeneration !== $currentGeneration;
+        }
+        // A legacy token without the generation claim cannot be proven to have
+        // been minted after a versioned account logout.
+        if ($currentGeneration > 0) {
+            return true;
+        }
+
         $key = 'satoken:jwt:revoked-before:' . $loginType . ':' . hash('sha256', $loginId);
         $cutoff = $this->getDao()->get($key);
         if ($cutoff === null) {
