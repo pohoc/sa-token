@@ -100,6 +100,34 @@ class StpLogicSecurityTest extends TestCase
         self::assertSame('new-type', $this->manager->getTokenSessionLoginType($token));
     }
 
+    public function testStaleLineageMigrationCannotOverwriteReusedTokenOwner(): void
+    {
+        $dao = new SaTokenDaoPausingTokenLineageWrite();
+        $this->dao = $dao;
+        SaToken::setDao($dao);
+        $token = 'lineage-migration-lease-race-token';
+        $this->manager->saveToken($token, 'old-owner', 'old-type', 'PC', 3600);
+        $dao->delete(TokenManager::TOKEN_SESSION_LINEAGE_PREFIX . $token);
+
+        $tokenLockKey = TokenManager::LOCK_PREFIX . 'token-value:' . hash('sha256', $token);
+        $dao->beforeLineageWrite = function () use ($dao, $tokenLockKey, $token): void {
+            // The migration already read the old bearer and its account index.
+            // Revoke/reuse the raw value before its conditional lineage claim.
+            $dao->delete(TokenManager::TOKEN_PREFIX . $token);
+            $dao->delete($tokenLockKey);
+            SaTokenContext::setContextId('replacement-migration-worker');
+            try {
+                $this->manager->saveToken($token, 'new-owner', 'new-type', 'PC', 3600);
+            } finally {
+                SaTokenContext::setContextId('test');
+            }
+        };
+
+        self::assertNull($this->manager->getTokenSessionBinding($token, 'old-type'));
+        self::assertSame('new-owner', $this->manager->getLoginIdByToken($token));
+        self::assertSame('new-type', $this->manager->getTokenSessionLoginType($token));
+    }
+
     public function testOpenSensitiveVerifyCannotMintProofBeforeOtpVerification(): void
     {
         $loginId = 'sensitive-user';

@@ -676,15 +676,22 @@ class TokenManager
 
             $sessionId = $preCapturedSessionId ?? SaFoxUtil::randomString(32);
             $tokenTimeout = $this->getDao()->getTimeout(self::TOKEN_PREFIX . $tokenValue);
-            $this->getDao()->set(
-                $sessionLineageKey,
-                $this->encryptBoundValue($sessionLineageKey, SaFoxUtil::toJson([
-                    'loginId' => $loginId,
-                    'loginType' => $loginType,
-                    'sessionId' => $sessionId,
-                ])),
-                $tokenTimeout > 0 ? $tokenTimeout : null
-            );
+            $lineageValue = $this->encryptBoundValue($sessionLineageKey, SaFoxUtil::toJson([
+                'loginId' => $loginId,
+                'loginType' => $loginType,
+                'sessionId' => $sessionId,
+            ]));
+            if ($sessionValue === null) {
+                // Lazy migration may race with token-value reuse after a lease
+                // or expiry. Never replace lineage already claimed by a new owner.
+                if (!$this->getDao()->setIfNotExists(
+                    $sessionLineageKey,
+                    $lineageValue,
+                    $tokenTimeout > 0 ? $tokenTimeout : null
+                )) {
+                    return null;
+                }
+            }
             if ($legacyBindingValue !== null && $preCapturedSessionId !== null
                 && $this->getDao() instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
                 $this->getDao()->compareAndDelete($legacyBindingKey, $legacyBindingValue);
