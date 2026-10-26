@@ -352,6 +352,26 @@ class SaSensitiveVerifyTest extends TestCase
         SaSensitiveVerify::verifyCode($scene, $wrongCode, $loginId);
     }
 
+    public function testMaxAttemptsRejectsNonPositiveValuesWithoutChangingCurrentLimit(): void
+    {
+        SaSensitiveVerify::setMaxAttempts(3);
+
+        foreach ([0, -1, PHP_INT_MIN] as $maxAttempts) {
+            try {
+                SaSensitiveVerify::setMaxAttempts($maxAttempts);
+                self::fail('验证码最大尝试次数必须为正数');
+            } catch (SaTokenException $exception) {
+                self::assertStringContainsString('正整数', $exception->getMessage());
+            }
+        }
+
+        $scene = 'invalid-max-attempts';
+        $loginId = 'alice';
+        $code = SaSensitiveVerify::generateCode($scene, $loginId);
+
+        self::assertTrue(SaSensitiveVerify::verifyCode($scene, $code, $loginId));
+    }
+
     public function testIsVerifiedReturnsTrueAfterSuccessfulVerification(): void
     {
         $scene = 'test-scene';

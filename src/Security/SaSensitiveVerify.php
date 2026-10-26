@@ -39,6 +39,9 @@ class SaSensitiveVerify
 
     public static function setMaxAttempts(int $max): void
     {
+        if ($max < 1) {
+            throw new SaTokenException('验证码最大尝试次数必须是正整数');
+        }
         self::$maxAttempts = $max;
     }
 
