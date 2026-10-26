@@ -156,9 +156,12 @@ class SaTokenDaoRedis implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
     {
         $client = $this->saRedis ?? $this->client;
         if ($timeout !== null && $timeout > 0) {
-            $client->setex($key, $timeout, $value);
+            $result = $client->setex($key, $timeout, $value);
         } else {
-            $client->set($key, $value);
+            $result = $client->set($key, $value);
+        }
+        if ($result !== true && $result !== 'OK') {
+            throw new SaTokenException('Redis 写入失败');
         }
     }
 
@@ -176,7 +179,10 @@ else
 end
 return 1
 LUA;
-        ($this->saRedis ?? $this->client)->eval($script, [$key, $value], 1);
+        $result = ($this->saRedis ?? $this->client)->eval($script, [$key, $value], 1);
+        if ($result !== 0 && $result !== 1) {
+            throw new SaTokenException('Redis 更新失败');
+        }
     }
 
     public function delete(string $key): void
@@ -494,7 +500,10 @@ end
 return value
 LUA;
         $result = $client->eval($script, [$key, (string) $amount, (string) ($timeout ?? 0)], 1);
-        return is_int($result) ? $result : 0;
+        if (!is_int($result)) {
+            throw new SaTokenException('Redis 原子计数失败');
+        }
+        return $result;
     }
 
     public function getClient(): \Redis

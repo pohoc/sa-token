@@ -7,6 +7,7 @@ namespace SaToken\Tests;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
 use SaToken\Dao\SaTokenDaoRedis;
+use SaToken\Exception\SaTokenException;
 
 class RedisDaoTest extends TestCase
 {
@@ -46,7 +47,8 @@ class RedisDaoTest extends TestCase
         $this->mockRedis
             ->expects($this->once())
             ->method('setex')
-            ->with($key, 3600, $value);
+            ->with($key, 3600, $value)
+            ->willReturn(true);
 
         $this->mockRedis
             ->expects($this->once())
@@ -57,6 +59,56 @@ class RedisDaoTest extends TestCase
         $this->dao->set($key, $value, 3600);
         $result = $this->dao->get($key);
         $this->assertEquals($value, $result);
+    }
+
+    public function testSetRejectsFailedRedisWrite(): void
+    {
+        $this->mockRedis
+            ->expects($this->once())
+            ->method('set')
+            ->with('test:failed-write', 'value')
+            ->willReturn(false);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('Redis 写入失败');
+        $this->dao->set('test:failed-write', 'value');
+    }
+
+    public function testSetExRejectsFailedRedisWrite(): void
+    {
+        $this->mockRedis
+            ->expects($this->once())
+            ->method('setex')
+            ->with('test:failed-write', 60, 'value')
+            ->willReturn(false);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('Redis 写入失败');
+        $this->dao->set('test:failed-write', 'value', 60);
+    }
+
+    public function testUpdateRejectsRedisScriptFailure(): void
+    {
+        $this->mockRedis
+            ->expects($this->once())
+            ->method('eval')
+            ->willReturn(false);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('Redis 更新失败');
+        $this->dao->update('test:failed-update', 'value');
+    }
+
+    public function testIncrementRejectsRedisScriptFailure(): void
+    {
+        $this->mockRedis
+            ->expects($this->once())
+            ->method('eval')
+            ->willReturn(false);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('Redis 原子计数失败');
+        $this->dao->increment('test:failed-increment');
     }
 
     public function testDelete(): void
