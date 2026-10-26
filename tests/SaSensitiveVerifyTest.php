@@ -16,11 +16,30 @@ class SensitiveVerifyInterleavingDao extends SaTokenDaoMemory
     /** @var callable(string, ?string): void|null */
     private $afterNextGet = null;
 
+    /** @var callable(string): void|null */
+    private $beforeNextGetAndDelete = null;
+
     private ?string $replaceRateKeyOnStateLock = null;
 
     public function afterNextGet(callable $callback): void
     {
         $this->afterNextGet = $callback;
+    }
+
+    public function beforeNextGetAndDelete(callable $callback): void
+    {
+        $this->beforeNextGetAndDelete = $callback;
+    }
+
+    public function getAndDelete(string $key): ?string
+    {
+        if ($this->beforeNextGetAndDelete !== null) {
+            $callback = $this->beforeNextGetAndDelete;
+            $this->beforeNextGetAndDelete = null;
+            $callback($key);
+        }
+
+        return parent::getAndDelete($key);
     }
 
     public function replaceRateKeyOnNextStateLock(string $rateKey): void
@@ -539,6 +558,37 @@ class SaSensitiveVerifyTest extends TestCase
         SaToken::getDao()->set($targetKey, $sourceState, 60);
 
         self::assertFalse(SaSensitiveVerify::isVerified($scene, $targetLoginId));
+    }
+
+    public function testExpiredStateLockCannotMintTwoSafeTokensFromOneOtpVerification(): void
+    {
+        $dao = new SensitiveVerifyInterleavingDao();
+        SaToken::setDao($dao);
+        $scene = 'expired-state-lock-single-use';
+        $loginId = 'alice';
+        $code = SaSensitiveVerify::generateCode($scene, $loginId);
+        self::assertTrue(SaSensitiveVerify::verifyCode($scene, $code, $loginId));
+
+        $stateKey = SaSensitiveVerify::getKey($scene, $loginId);
+        $nestedToken = null;
+        $dao->beforeNextGetAndDelete(function (string $key) use ($dao, $stateKey, $scene, $loginId, &$nestedToken): void {
+            if ($key !== $stateKey) {
+                return;
+            }
+
+            // Model another worker acquiring the state lock after its lease
+            // expires while this request is between reading and deleting.
+            $dao->delete($stateKey . ':state-lock');
+            $nestedToken = SaSensitiveVerify::createSafeTokenAfterVerified($scene, $loginId);
+        });
+
+        try {
+            SaSensitiveVerify::createSafeTokenAfterVerified($scene, $loginId);
+            self::fail('One OTP verification must not issue two safe tokens after lock lease expiry');
+        } catch (NotSafeException) {
+            self::assertIsString($nestedToken);
+            self::assertTrue(SaSensitiveVerify::verifySafeToken($scene, $nestedToken, $loginId));
+        }
     }
 
     public function testCodeGenerationRequiresStateSigningKey(): void

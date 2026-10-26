@@ -253,7 +253,10 @@ class SaSensitiveVerify
         $key = self::getKey($scene, $loginId, $loginType);
         $lockValue = self::acquireStateLock($key);
         try {
-            $data = $dao->get($key);
+            // The distributed lock is a lease and can expire while storage is
+            // stalled. Consume the proof atomically so an old lock owner cannot
+            // issue a second safe token after another worker consumes it.
+            $data = $dao->getAndDelete($key);
             if ($data === null) {
                 return false;
             }
@@ -267,7 +270,6 @@ class SaSensitiveVerify
                 return false;
             }
 
-            $dao->delete($key);
             $dao->delete($key . ':att');
             $dao->delete($key . ':verified');
             return true;
