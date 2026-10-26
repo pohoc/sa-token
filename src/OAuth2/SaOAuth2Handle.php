@@ -143,9 +143,10 @@ class SaOAuth2Handle
         ]);
 
         // 保存授权码到存储层
+        $codeKey = $this->buildCodeKey($code->getCode());
         $this->getDao()->set(
-            $this->buildCodeKey($code->getCode()),
-            $this->encryptValue(SaFoxUtil::toJson($code->toArray())),
+            $codeKey,
+            $this->encryptValueForContext(SaFoxUtil::toJson($code->toArray()), $codeKey),
             $this->config->getCodeTimeout()
         );
 
@@ -1218,33 +1219,46 @@ class SaOAuth2Handle
      */
     protected function getAuthorizationCode(string $code): ?SaOAuth2AuthorizationCode
     {
-        $json = $this->getDao()->get($this->buildCodeKey($code));
+        $key = $this->buildCodeKey($code);
+        $json = $this->getDao()->get($key);
         if ($json === null) {
             return null;
         }
 
-        $data = SaFoxUtil::fromJson($this->decryptValue($json));
+        $data = SaFoxUtil::fromJson($this->decryptValueForContext($json, $key) ?? '');
         if (!is_array($data)) {
             return null;
         }
 
         /** @var array<string, mixed> $data */
+        if (!is_string($data['code'] ?? null) || !hash_equals($code, $data['code'])) {
+            return null;
+        }
         return new SaOAuth2AuthorizationCode($data);
     }
 
     protected function consumeAuthorizationCode(string $code): ?SaOAuth2AuthorizationCode
     {
-        $json = $this->getDao()->getAndDelete($this->buildCodeKey($code));
+        $dao = $this->getDao();
+        if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
+            throw new SaTokenException('DAO 不支持授权码的原子消费');
+        }
+        $key = $this->buildCodeKey($code);
+        $json = $dao->get($key);
         if ($json === null) {
             return null;
         }
 
-        $data = SaFoxUtil::fromJson($this->decryptValue($json));
+        $data = SaFoxUtil::fromJson($this->decryptValueForContext($json, $key) ?? '');
         if (!is_array($data)) {
             return null;
         }
 
         /** @var array<string, mixed> $data */
+        if (!is_string($data['code'] ?? null) || !hash_equals($code, $data['code'])
+            || !$dao->compareAndDelete($key, $json)) {
+            return null;
+        }
         return new SaOAuth2AuthorizationCode($data);
     }
 

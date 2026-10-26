@@ -1360,6 +1360,26 @@ class SaOAuth2Test extends TestCase
         self::assertNull($this->handle->getClient($otherClientId));
     }
 
+    public function testAuthorizationCodeRecordCannotBeCopiedToAnotherCodeKey(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenEncrypt' => true,
+            'tokenEncryptKey' => str_repeat('a', 32),
+        ]));
+        $this->handle->registerClient($this->testClient);
+        $owner = $this->handle->generateAuthorizationCode('test-client', 'owner', 'https://example.com/callback');
+        $other = $this->handle->generateAuthorizationCode('test-client', 'other', 'https://example.com/callback');
+
+        $dao = SaToken::getDao();
+        $ownerKey = 'oauth2:code:' . $owner->getCode();
+        $otherKey = 'oauth2:code:' . $other->getCode();
+        $dao->set($ownerKey, (string) $dao->get($otherKey), 300);
+
+        $getAuthorizationCode = new \ReflectionMethod($this->handle, 'getAuthorizationCode');
+        self::assertNull($getAuthorizationCode->invoke($this->handle, $owner->getCode()));
+        self::assertNotNull($dao->get($otherKey));
+    }
+
     public function testConsumedRefreshTombstoneCannotBeCopiedToAnotherRefreshKey(): void
     {
         SaToken::setConfig(new SaTokenConfig([

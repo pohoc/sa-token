@@ -11,6 +11,7 @@
 - (jwt) 将启用加密时的无状态账号版本与撤销水位认证绑定到账号 key，防止存储篡改回退撤销版本而复活已注销 JWT。
 - (security) 验证 RefreshToken 索引目标与查询账号、登录类型及 AccessToken 的绑定关系，拒绝返回其他账号的刷新凭据。
 - (security) 将 OAuth2 access-token 家族索引和家族标记绑定到各自 DAO key，阻止复制索引后跨家族撤销。
+- (security) 将 OAuth2 授权码记录绑定到 code 对应的 DAO key，拒绝跨 key 复制记录。
 
 本文件由脚本自动生成，基于 git tag 和 commit 记录。
 
