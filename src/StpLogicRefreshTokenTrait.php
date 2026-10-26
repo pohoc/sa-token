@@ -175,6 +175,17 @@ trait StpLogicRefreshTokenTrait
             $timeout = $config->getTimeout();
             if ($config->isJwtStateless()) {
                 $newAccessToken = $this->getJwt()->createStatelessToken($loginId, $this->loginType, $timeout);
+                $newAccessClaims = $this->getJwt()->parseToken($newAccessToken);
+                if (($newAccessClaims['sub'] ?? null) !== $loginId
+                    || ($newAccessClaims['type'] ?? null) !== $this->loginType
+                    || $this->tokenManager->isStatelessTokenRevokedByLoginId(
+                        $loginId,
+                        $this->loginType,
+                        $newAccessClaims['iat'] ?? null,
+                        $newAccessClaims['satoken_gen'] ?? null
+                    )) {
+                    throw new SaTokenException('账号会话已撤销，拒绝签发无效登录凭证');
+                }
                 if ($config->isTokenFingerprint()) {
                     $this->tokenManager->saveFingerprint($newAccessToken, $this->tokenManager->computeFingerprint(), $timeout);
                 }

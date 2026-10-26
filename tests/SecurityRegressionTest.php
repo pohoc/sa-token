@@ -373,6 +373,65 @@ class SecurityRegressionTest extends TestCase
         }
     }
 
+    public function testStatelessRefreshCannotReturnJwtAfterAccountLogoutWinsExpiredLock(): void
+    {
+        $loginId = 'stateless-refresh-lock-expiry-user';
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'jwtStateless'         => true,
+            'jwtSecretKey'         => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'refreshToken'         => true,
+            'refreshTokenRotation' => true,
+            'refreshTokenTimeout'  => 3600,
+        ])));
+
+        $dao = new class () extends SaTokenDaoMemory {
+            public bool $pauseOnGenerationRead = false;
+
+            public function get(string $key): ?string
+            {
+                $value = parent::get($key);
+                if ($this->pauseOnGenerationRead
+                    && str_starts_with($key, TokenManager::JWT_GENERATION_PREFIX)) {
+                    $this->pauseOnGenerationRead = false;
+                    \Fiber::suspend();
+                }
+
+                return $value;
+            }
+        };
+        SaToken::setDao($dao);
+        $logic = new StpLogic('login');
+        $accessToken = $logic->loginStateless($loginId);
+        $refreshToken = $logic->createRefreshToken($accessToken);
+        $dao->pauseOnGenerationRead = true;
+        $refreshResult = null;
+        $refreshError = null;
+
+        $fiber = new \Fiber(function () use ($logic, $refreshToken, &$refreshResult, &$refreshError): void {
+            try {
+                $refreshResult = $logic->refreshToken($refreshToken);
+            } catch (\Throwable $exception) {
+                $refreshError = $exception;
+            }
+        });
+
+        $fiber->start();
+        self::assertTrue($fiber->isSuspended());
+
+        // The refresh worker has read generation 0 but has not signed its JWT.
+        // Let a second worker take over an expired lease and complete logout.
+        $lockKey = TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId);
+        SaToken::getDao()->delete($lockKey);
+        $logic->logoutByLoginId($loginId);
+        $fiber->resume();
+
+        self::assertTrue($fiber->isTerminated());
+        self::assertNull($refreshResult, '账号登出完成后，刷新不能返回新的无状态凭据');
+        self::assertInstanceOf(SaTokenException::class, $refreshError);
+        self::assertNull($logic->getLoginIdByToken($accessToken));
+        self::assertFalse($logic->isRefreshTokenValid($refreshToken));
+    }
+
     // ======== C1: mixed JWT 模式下会话必须可终止 ========
 
     public function testMixedJwtModeLogoutInvalidatesToken(): void
