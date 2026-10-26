@@ -786,6 +786,17 @@ class TokenManager
                 if ($tokenValue === '') {
                     continue;
                 }
+                // The account index is a revocation aid, not proof that the
+                // globally unique bearer is still owned by this account. A
+                // stale index entry must not revoke a token that has since
+                // been assigned to another account or login type.
+                if ($this->getLoginIdByToken($tokenValue) !== $loginIdStr) {
+                    continue;
+                }
+                $binding = $this->getTokenSessionBinding($tokenValue, $loginType);
+                if ($binding === null || $binding['loginId'] !== $loginIdStr) {
+                    continue;
+                }
                 $keysToDelete[] = self::TOKEN_PREFIX . $tokenValue;
                 $keysToDelete[] = self::LAST_ACTIVE_PREFIX . $tokenValue;
                 $keysToDelete[] = self::TOKEN_SESSION_PREFIX . $tokenValue;

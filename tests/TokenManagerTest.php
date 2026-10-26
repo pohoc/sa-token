@@ -135,6 +135,23 @@ class TokenManagerTest extends TestCase
         self::assertTrue($this->manager->isTokenValid($adminToken));
     }
 
+    public function testLogoutDoesNotRevokeTokenFromAnotherLoginTypeViaStaleIndex(): void
+    {
+        $owner = new StpLogic('owner');
+        $otherType = new StpLogic('other');
+        $token = $otherType->login('shared-login-id')->getAccessToken();
+        $ownerListKey = TokenManager::buildLoginIdKey('owner', 'shared-login-id');
+        $this->dao->set($ownerListKey, json_encode([[
+            'tokenValue' => $token,
+            'deviceType' => '',
+            'createTime' => time(),
+        ]], JSON_THROW_ON_ERROR), 3600);
+
+        $this->manager->deleteAllTokenByLoginId('shared-login-id', 'owner');
+
+        self::assertSame('shared-login-id', $otherType->getLoginIdByToken($token));
+    }
+
     public function testSaveTokenRejectsZeroTimeoutInsteadOfCreatingPermanentToken(): void
     {
         $token = $this->manager->createTokenValue('zero-timeout-user', 'login');
