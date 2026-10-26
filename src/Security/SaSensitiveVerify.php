@@ -146,6 +146,7 @@ class SaSensitiveVerify
             }
         }
 
+        $key = self::getKey($scene, $loginId, $loginType);
         try {
             $code = self::generateCode($scene, $loginId, $loginType);
         } catch (SaTokenException $e) {
@@ -156,7 +157,25 @@ class SaSensitiveVerify
             throw $e;
         }
 
-        self::sendNotification($scene, $code, $loginId);
+        try {
+            self::sendNotification($scene, $code, $loginId);
+        } catch (\Throwable $e) {
+            // A delivery failure must not leave an OTP that the caller believes
+            // was never sent. Delete only this exact generation so a concurrent
+            // resend cannot be invalidated by this stale failure handler.
+            $currentRecord = $dao->get($key);
+            if ($currentRecord !== null && $dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface) {
+                $info = self::decodeSensitiveState($currentRecord, $key);
+                $codeHash = $info['codeHash'] ?? null;
+                if (is_string($codeHash) && password_verify($code, $codeHash)) {
+                    $dao->compareAndSet($key, $currentRecord, null);
+                }
+            }
+            if ($rateOwner !== null && $dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
+                $dao->compareAndDelete($rateKey, $rateOwner);
+            }
+            throw $e;
+        }
     }
 
     protected static function sendNotification(string $scene, string $code, mixed $loginId): void

@@ -635,6 +635,25 @@ class SaSensitiveVerifyTest extends TestCase
         $this->assertNull(SaToken::getDao()->get($key . ':sent'));
     }
 
+    public function testFailedDeliveryRevokesUnsentCodeAndReleasesRateLimit(): void
+    {
+        $scene = 'failed-delivery';
+        $loginId = 'delivery-user';
+        SaToken::getConfig()->setSensitiveVerifyCallback(static function (): void {
+            throw new \RuntimeException('provider unavailable');
+        });
+
+        try {
+            SaSensitiveVerify::sendCode($scene, $loginId);
+            self::fail('A delivery callback failure must be reported');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('provider unavailable', $exception->getMessage());
+        }
+
+        self::assertFalse(SaSensitiveVerify::verifyCode($scene, '000000', $loginId));
+        self::assertNull(SaToken::getDao()->get(SaSensitiveVerify::getKey($scene, $loginId) . ':sent'));
+    }
+
     public function testCodeCannotBeReusedAfterVerification(): void
     {
         $scene = 'test-scene';
