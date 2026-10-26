@@ -520,6 +520,7 @@ class SaTokenDaoFileTest extends TestCase
     {
         // storage.type=file 配置驱动装配：init 后无需手动 setDao
         SaToken::reset();
+        SaToken::getDao(); // A prior lazy default must not override configured storage.
         $path = $this->basePath . '-cfg';
         SaToken::init([
             'tokenName' => 'satoken',
@@ -566,13 +567,23 @@ class SaTokenDaoFileTest extends TestCase
         SaToken::reset();
 
         foreach (['redsi', ['redis'], 42] as $invalidType) {
+            // A DAO requested before init is only a default, not an explicit
+            // override of the storage configured by the application.
+            SaToken::getDao();
             try {
                 SaToken::init(['storage' => ['type' => $invalidType]]);
                 self::fail('未知存储类型不能静默退回进程内存储');
             } catch (SaTokenException $exception) {
                 self::assertStringContainsString('storage.type', $exception->getMessage());
             } finally {
-                SaToken::reset();
+                try {
+                    SaToken::getDao();
+                    self::fail('存储装配失败后也不能在延迟读取时退回进程内存储');
+                } catch (SaTokenException $exception) {
+                    self::assertStringContainsString('storage.type', $exception->getMessage());
+                } finally {
+                    SaToken::reset();
+                }
             }
         }
     }

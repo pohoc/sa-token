@@ -43,6 +43,9 @@ class SaToken
      */
     protected static ?SaTokenDaoInterface $dao = null;
 
+    /** Whether the active DAO was explicitly supplied by the application. */
+    protected static bool $daoExplicitlySet = false;
+
     /**
      * 事件分发器
      * @var SaTokenEvent|null
@@ -110,7 +113,10 @@ class SaToken
 
         // storage 配置自动装配存储层：仅在未显式 setDao 时生效，
         // 保证代码内 setDao(new RedisDao(...)) 的优先级高于配置文件
-        if (self::$dao === null) {
+        if (!self::$daoExplicitlySet) {
+            // A lazily-created default DAO must not mask the storage adapter
+            // selected by the explicit application configuration.
+            self::$dao = null;
             self::$dao = self::buildDaoFromStorageConfig($config);
         }
 
@@ -258,6 +264,14 @@ class SaToken
         if (self::$dao !== null) {
             return self::$dao;
         }
+        if (self::$config !== null) {
+            self::$dao = self::buildDaoFromStorageConfig(self::$config);
+            return self::$dao;
+        }
+
+        // Before explicit initialization, preserve the documented default.
+        // Once a storage config exists, never mask failed adapter assembly by
+        // silently creating process-local authentication state.
         self::$dao = new SaTokenDaoMemory();
         return self::$dao;
     }
@@ -271,6 +285,7 @@ class SaToken
     public static function setDao(SaTokenDaoInterface $dao): void
     {
         self::$dao = $dao;
+        self::$daoExplicitlySet = true;
     }
 
     /**
@@ -420,6 +435,7 @@ class SaToken
     {
         self::$config = null;
         self::$dao = null;
+        self::$daoExplicitlySet = false;
         self::$event = null;
         self::$stpLogicMap = [];
         self::$action = null;
