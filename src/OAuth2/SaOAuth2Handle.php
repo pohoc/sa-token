@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SaToken\OAuth2;
 
 use SaToken\Dao\SaTokenDaoCompareAndExpireInterface;
+use SaToken\Dao\SaTokenDaoCompareAndSetInterface;
 use SaToken\Dao\SaTokenDaoCompareAndUpdateInterface;
 use SaToken\Dao\SaTokenDaoInterface;
 use SaToken\Exception\SaTokenException;
@@ -592,29 +593,57 @@ class SaOAuth2Handle
      */
     protected function revokeTokenFamily(string $familyMarkerKey): void
     {
-        $markerJson = $this->getDao()->get($familyMarkerKey);
-        if ($markerJson === null) {
-            return;
+        $dao = $this->getDao();
+        if (!$dao instanceof SaTokenDaoCompareAndSetInterface) {
+            throw new SaTokenException('DAO 不支持 OAuth2 令牌家族的原子撤销');
         }
-        $marker = SaFoxUtil::fromJson($this->decryptValue($markerJson));
-        if (!is_array($marker)) {
-            return;
-        }
-        if (($marker['revoked'] ?? false) === true) {
-            return;
-        }
-        $tokens = is_array($marker['tokens'] ?? null) ? $marker['tokens'] : [];
-        $childRts = is_array($marker['childRts'] ?? null) ? $marker['childRts'] : [];
 
-        // Refresh locks are leases. Keep a tombstone for the maximum lifetime
-        // of family credentials so a paused lock owner cannot resurrect them.
-        $marker['revoked'] = true;
-        $marker['revokedAt'] = time();
-        $this->getDao()->set(
-            $familyMarkerKey,
-            $this->encryptValue(SaFoxUtil::toJson($marker)),
-            $this->getTokenFamilyMarkerTimeout($tokens, $childRts)
-        );
+        // A family lock is a lease, so a paused refresh may resume after the
+        // lock expires and replace the marker with a newly registered child.
+        // Never write a revoked state from an old snapshot: retry against the
+        // latest marker so every descendant is included in cleanup.
+        $marker = null;
+        $tokens = [];
+        $childRts = [];
+        $revokedMarkerJson = '';
+        $updated = false;
+        for ($attempt = 0; $attempt < 8; $attempt++) {
+            $markerJson = $dao->get($familyMarkerKey);
+            if ($markerJson === null) {
+                return;
+            }
+            $marker = SaFoxUtil::fromJson($this->decryptValue($markerJson));
+            if (!is_array($marker)) {
+                return;
+            }
+            if (($marker['revoked'] ?? false) === true) {
+                return;
+            }
+
+            $tokens = is_array($marker['tokens'] ?? null) ? $marker['tokens'] : [];
+            $childRts = is_array($marker['childRts'] ?? null) ? $marker['childRts'] : [];
+
+            // Refresh locks are leases. Keep a tombstone for the maximum
+            // lifetime of family credentials so a paused lock owner cannot
+            // resurrect them. compareAndSet changes the state and TTL in one
+            // atomic operation, preventing stale snapshots from winning.
+            $marker['revoked'] = true;
+            $marker['revokedAt'] = time();
+            $revokedMarkerJson = $this->encryptValue(SaFoxUtil::toJson($marker));
+            if ($dao->compareAndSet(
+                $familyMarkerKey,
+                $markerJson,
+                $revokedMarkerJson,
+                $this->getTokenFamilyMarkerTimeout($tokens, $childRts)
+            )) {
+                $updated = true;
+                break;
+            }
+        }
+
+        if (!$updated) {
+            throw new SaTokenException('OAuth2 令牌家族状态持续变化，撤销失败，请重试');
+        }
 
         foreach ($tokens as $familyToken) {
             if (is_string($familyToken) && $familyToken !== '') {

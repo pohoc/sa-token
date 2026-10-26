@@ -1400,6 +1400,61 @@ class SaOAuth2Test extends TestCase
         self::assertNull(SaToken::getDao()->get('oauth2:rt:' . $rotated->getRefreshToken()));
     }
 
+    public function testFamilyRevocationRetriesWhenRefreshUpdatesMarkerAfterSnapshotRead(): void
+    {
+        $dao = new class () extends SaTokenDaoMemory {
+            public ?string $raceKey = null;
+            public ?string $racingMarker = null;
+            public bool $raceOnRead = false;
+
+            public function get(string $key): ?string
+            {
+                $value = parent::get($key);
+                if ($this->raceOnRead && $key === $this->raceKey) {
+                    $this->raceOnRead = false;
+                    parent::set($key, (string) $this->racingMarker, 3600);
+                }
+                return $value;
+            }
+        };
+        SaToken::setDao($dao);
+        $this->handle->registerClient($this->testClient);
+
+        $familyId = 'family-race';
+        $familyMarkerKey = 'oauth2:family:' . hash('sha256', $familyId);
+        $dao->set($familyMarkerKey, json_encode([
+            'tokens' => ['old-access'],
+            'childRts' => [],
+            'clientId' => 'test-client',
+            'revokedAt' => time(),
+        ], JSON_THROW_ON_ERROR), 3600);
+        $dao->set('oauth2:at:new-access', json_encode([
+            'refreshToken' => 'new-refresh',
+        ], JSON_THROW_ON_ERROR), 3600);
+        $dao->set('oauth2:rt:new-refresh', 'refresh-record', 3600);
+
+        // Simulate a refresh request that wins the marker CAS after revocation
+        // read its snapshot but before it writes the revoked state.
+        $dao->raceKey = $familyMarkerKey;
+        $dao->racingMarker = json_encode([
+            'tokens' => ['new-access'],
+            'childRts' => ['new-refresh'],
+            'clientId' => 'test-client',
+            'revokedAt' => time(),
+        ], JSON_THROW_ON_ERROR);
+        $dao->raceOnRead = true;
+
+        $revokeFamily = new \ReflectionMethod($this->handle, 'revokeTokenFamily');
+        $revokeFamily->invoke($this->handle, $familyMarkerKey);
+
+        $revoked = json_decode((string) $dao->get($familyMarkerKey), true);
+        self::assertIsArray($revoked);
+        self::assertTrue($revoked['revoked'] ?? false);
+        self::assertSame(['new-access'], $revoked['tokens'] ?? null);
+        self::assertNull($dao->get('oauth2:at:new-access'));
+        self::assertNull($dao->get('oauth2:rt:new-refresh'));
+    }
+
     public function testRefreshTokenRotationCanBeDisabled(): void
     {
         $this->config->setIsNewRefreshToken(false);
