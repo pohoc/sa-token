@@ -683,6 +683,52 @@ class TokenManager
         return $this->getDao()->exists(self::TOKEN_PREFIX . $tokenValue);
     }
 
+    /**
+     * Fail closed when login setup fails after the token was persisted but the
+     * account lock has already been taken over by another request.
+     */
+    public function invalidateTokenIfOwnedByLoginType(string $tokenValue, mixed $loginId, string $loginType): bool
+    {
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $tokenLockKey = $this->tokenValueLockKey($tokenValue);
+        $acquired = false;
+        for ($attempt = 0; $attempt < 100; $attempt++) {
+            if ($this->acquireLock($tokenLockKey, 30)) {
+                $acquired = true;
+                break;
+            }
+            if ($attempt < 99) {
+                usleep(10_000);
+            }
+        }
+        if (!$acquired) {
+            throw new SaTokenException('Token 正在签发或注销，无法完成失败登录清理');
+        }
+
+        try {
+            if ($this->getLoginIdByToken($tokenValue) !== $loginIdStr) {
+                return true;
+            }
+
+            $accountTokens = $this->getTokenListByLoginId($loginIdStr, $loginType);
+            if (!in_array($tokenValue, array_column($accountTokens, 'tokenValue'), true)) {
+                return true;
+            }
+
+            $timeout = $this->getTokenTimeout($tokenValue);
+            if ($timeout === -2) {
+                return true;
+            }
+
+            // Keep the bearer value unusable, including through a RefreshToken
+            // whose cleanup may have been part of the failed login sequence.
+            $this->addToBlacklist($tokenValue, $timeout === -1 ? null : max(1, $timeout));
+            return true;
+        } finally {
+            $this->releaseLock($tokenLockKey);
+        }
+    }
+
     public function kickout(string $tokenValue, mixed $loginId, string $loginType): void
     {
         $this->deleteToken($tokenValue, $loginId, $loginType);

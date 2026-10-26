@@ -139,10 +139,6 @@ class StpLogic
                 $this->tokenManager->saveFingerprint($tokenValue, $fingerprint, $timeout);
             }
 
-            if ($parameter->shouldWriteResponseCredentials()) {
-                $this->writeTokenToResponse($tokenValue, $parameter);
-            }
-
             $this->clearAntiBruteFailures($loginId);
 
             if ($config->isDeviceManagement()) {
@@ -158,18 +154,45 @@ class StpLogic
                 $config,
                 $parameter->shouldWriteResponseCredentials()
             );
+
+            // Publish the access credential only after every persistence step
+            // has succeeded; otherwise a failed login may still send a usable
+            // token in a partially built response.
+            if ($parameter->shouldWriteResponseCredentials()) {
+                $this->writeTokenToResponse($tokenValue, $parameter);
+            }
         } catch (\Throwable $exception) {
             // Login setup spans token persistence, device metadata, response
             // credentials and optional refresh-token creation. If any later
             // step fails, do not leave a usable session behind for a login
             // request that reported failure.
             if ($tokenValue !== null && $this->tokenManager->isTokenValid($tokenValue)) {
-                // The account lock may have expired while a DAO operation was
-                // stalled. Drop stale local ownership before retrying cleanup
-                // under a fresh lease; otherwise a failed login could leave a
-                // usable token after a later step correctly rejects its write.
-                $this->tokenManager->renewLock($lockKey, 30);
-                $this->removeTokenAndRefreshToken($tokenValue, $loginId);
+                try {
+                    $this->removeTokenAndRefreshToken($tokenValue, $loginId);
+                } catch (\Throwable $cleanupException) {
+                    // A stale account-lock owner cannot safely edit the session
+                    // index while another request owns it. Revoke the exact
+                    // bearer under its token lock so a failed login cannot
+                    // leave either it or its RefreshToken usable.
+                    $invalidated = $this->tokenManager->invalidateTokenIfOwnedByLoginType(
+                        $tokenValue,
+                        $loginId,
+                        $this->loginType
+                    );
+                    if (!$invalidated) {
+                        throw $cleanupException;
+                    }
+
+                    // The first failure may have been only stale local lock
+                    // ownership. Retry physical cleanup after dropping it;
+                    // if another request still holds the account lock, the
+                    // blacklist above remains the fail-closed safeguard.
+                    try {
+                        $this->removeTokenAndRefreshToken($tokenValue, $loginId);
+                    } catch (\Throwable) {
+                        // The token has already been made unusable.
+                    }
+                }
             }
             throw $exception;
         } finally {

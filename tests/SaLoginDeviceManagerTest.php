@@ -15,6 +15,8 @@ use SaToken\SaLoginParameter;
 use SaToken\SaToken;
 use SaToken\Security\SaLoginDeviceManager;
 use SaToken\StpLogic;
+use SaToken\TokenManager;
+use SaToken\Util\SaTokenContext;
 
 class SaLoginDevicePausingDao extends SaTokenDaoMemory
 {
@@ -43,6 +45,25 @@ class SaLoginDeviceFailingDao extends SaTokenDaoMemory
         }
 
         parent::set($key, $value, $timeout);
+    }
+}
+
+class SaLoginDeviceLockStealingDao extends SaTokenDaoMemory
+{
+    public ?string $deviceRecordPrefix = null;
+
+    public ?string $accountLockKey = null;
+
+    public function compareAndSet(string $key, ?string $expectedValue, ?string $newValue, ?int $timeout = null): bool
+    {
+        if ($this->deviceRecordPrefix !== null && str_starts_with($key, $this->deviceRecordPrefix)) {
+            $this->deviceRecordPrefix = null;
+            $this->delete((string) $this->accountLockKey);
+            $this->set((string) $this->accountLockKey, 'concurrent-owner', 30);
+            return false;
+        }
+
+        return parent::compareAndSet($key, $expectedValue, $newValue, $timeout);
     }
 }
 
@@ -136,6 +157,44 @@ class SaLoginDeviceManagerTest extends TestCase
 
         self::assertSame([], $this->logic->getTokenManager()->getTokenListByLoginId('failed-login', 'login'));
         self::assertSame(0, SaLoginDeviceManager::getDeviceCount('failed-login', 'login'));
+    }
+
+    public function testFailedLoginInvalidatesTokenWhenCleanupLockWasTakenOver(): void
+    {
+        $loginId = 'failed-login-lock-takeover';
+        SaToken::getConfig()->setIsWriteHeader(true);
+        $this->dao = new SaLoginDeviceLockStealingDao();
+        $this->dao->deviceRecordPrefix = SaLoginDeviceManager::getKey($loginId, 'login') . ':';
+        $this->dao->accountLockKey = TokenManager::LOCK_PREFIX
+            . 'login:login:' . hash('sha256', $loginId);
+        SaToken::setDao($this->dao);
+
+        try {
+            $this->logic->login($loginId);
+            self::fail('设备状态写入失败后登录必须失败');
+        } catch (SaTokenException) {
+            // Expected: the account lock was replaced before the failing DAO write.
+        }
+
+        $tokens = $this->logic->getTokenManager()->getTokenListByLoginId($loginId, 'login');
+        self::assertNotEmpty($tokens);
+        $failedToken = $tokens[0]['tokenValue'] ?? null;
+        self::assertIsString($failedToken);
+        self::assertTrue($this->logic->getTokenManager()->isTokenValid($failedToken));
+        self::assertTrue($this->logic->getTokenManager()->isBlacklisted($failedToken));
+        self::assertNull($this->logic->getLoginIdByToken($failedToken));
+
+        $pendingHeaders = new \ReflectionProperty(SaTokenContext::class, 'pendingHeadersMap');
+        $headersByContext = $pendingHeaders->getValue();
+        self::assertIsArray($headersByContext);
+        $headers = $headersByContext[SaTokenContext::getContextId()] ?? [];
+        self::assertIsArray($headers);
+        foreach ($headers as $header) {
+            self::assertIsArray($header);
+            $name = $header['name'] ?? null;
+            self::assertIsString($name);
+            self::assertNotSame('satoken', strtolower($name));
+        }
     }
 
     public function testKickoutAllDevicesDispatchesEventsAfterAccountLockRelease(): void
