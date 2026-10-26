@@ -922,6 +922,16 @@ class SaOAuth2Handle
             throw new SaTokenException('client_credentials 不允许请求 openid scope');
         }
 
+        // Client configuration lives in the shared DAO and may be rotated
+        // while this request validates scope. Recheck credentials and policy
+        // immediately before issuing a token, as the password grant does.
+        $currentClient = $this->validateClientWithSecret($clientId, $clientSecret);
+        $this->validateGrantTypeForClient($currentClient, 'client_credentials');
+        $scope = $this->validateScopeForClient($currentClient, $scope);
+        if ($this->scopeContainsOpenid($scope)) {
+            throw new SaTokenException('client_credentials 不允许请求 openid scope');
+        }
+
         // Client credentials authenticate the client, not a resource owner;
         // they therefore cannot issue refresh credentials for later delegation.
         return $this->generateAccessToken($clientId, 'client:' . $clientId, $scope, '', false, '', false, 'client_credentials');
