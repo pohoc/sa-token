@@ -252,6 +252,28 @@ class SaAuditLogTest extends TestCase
         $this->assertCount(5, $logs);
     }
 
+    public function testAuditLogQueryLimitsAreClamped(): void
+    {
+        SaAuditLog::setEnabled(true);
+        SaAuditLog::logLogin('audit-user');
+
+        self::assertSame([], SaAuditLog::getRecentLogs('login', -1));
+        self::assertSame([], SaAuditLog::getLogsByLoginId('audit-user', 'login', 0));
+        self::assertSame([], SaAuditLog::getLogsByEvent('login', 'login', -5));
+        self::assertSame([], SaAuditLog::getLogsByIp('127.0.0.1', 'login', 0));
+        self::assertCount(1, SaAuditLog::getRecentLogs('login', PHP_INT_MAX));
+    }
+
+    public function testNonPositiveAuditLogTtlCannotDisableExpiration(): void
+    {
+        SaAuditLog::setTtlDays(0);
+        SaAuditLog::setEnabled(true);
+        $id = SaAuditLog::logLogin('audit-user');
+
+        self::assertNotNull($id);
+        self::assertGreaterThan(0, SaToken::getDao()->getTimeout('satoken:audit:login:' . $id));
+    }
+
     public function testIntegrationWithStpLogic(): void
     {
         SaAuditLog::setEnabled(true);

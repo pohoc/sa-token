@@ -26,12 +26,13 @@ class SaAuditLog
 
     public static function setMaxEntries(int $max): void
     {
-        self::$maxEntries = $max;
+        self::$maxEntries = max(0, $max);
     }
 
     public static function setTtlDays(int $days): void
     {
-        self::$ttlDays = $days;
+        // A non-positive TTL is otherwise interpreted by DAO adapters as no expiry.
+        self::$ttlDays = max(1, $days);
     }
 
     /**
@@ -145,6 +146,11 @@ class SaAuditLog
      */
     public static function getRecentLogs(string $loginType = 'login', int $limit = 50): array
     {
+        $limit = self::normalizeLimit($limit);
+        if ($limit === 0) {
+            return [];
+        }
+
         $dao = SaToken::getDao();
         $pattern = self::$keyPrefix . $loginType . ':';
         $results = $dao->search($pattern, '', 0, $limit);
@@ -174,6 +180,10 @@ class SaAuditLog
      */
     public static function getLogsByLoginId(mixed $loginId, string $loginType = 'login', int $limit = 50): array
     {
+        $limit = self::normalizeLimit($limit);
+        if ($limit === 0) {
+            return [];
+        }
         $logs = self::getRecentLogs($loginType, $limit * 2);
         $result = [];
 
@@ -195,6 +205,10 @@ class SaAuditLog
      */
     public static function getLogsByEvent(string $event, string $loginType = 'login', int $limit = 50): array
     {
+        $limit = self::normalizeLimit($limit);
+        if ($limit === 0) {
+            return [];
+        }
         $logs = self::getRecentLogs($loginType, $limit * 2);
         $result = [];
 
@@ -215,6 +229,10 @@ class SaAuditLog
      */
     public static function getLogsByIp(string $ip, string $loginType = 'login', int $limit = 50): array
     {
+        $limit = self::normalizeLimit($limit);
+        if ($limit === 0) {
+            return [];
+        }
         $dao = SaToken::getDao();
         $pattern = self::$keyPrefix . $loginType . ':';
         $results = $dao->search($pattern, '', 0, $limit * 2);
@@ -321,6 +339,12 @@ class SaAuditLog
         // 这里自行解析 X-Forwarded-For 首段会信任客户端可伪造的头，
         // 使审计记录的 IP 全部失真（可嫁祸他人、破坏取证）
         return SaTokenContext::getClientIp();
+    }
+
+    /** Keep user-controlled query sizes bounded across all DAO implementations. */
+    protected static function normalizeLimit(int $limit): int
+    {
+        return min(1000, max(0, $limit));
     }
 
     public static function reset(): void
