@@ -1452,6 +1452,7 @@ class TokenManager
             }
 
             $refreshData = [
+                'refreshToken' => $refreshToken,
                 'loginId'      => $loginIdStr,
                 'loginType'    => $loginType,
                 'accessToken'  => $accessToken,
@@ -1550,6 +1551,10 @@ class TokenManager
             return null;
         }
         /** @var array<string, mixed> $data */
+        if (!is_string($data['refreshToken'] ?? null)
+            || !hash_equals($refreshToken, $data['refreshToken'])) {
+            return null;
+        }
         return $data;
     }
 
@@ -1585,11 +1590,17 @@ class TokenManager
             return null;
         }
 
+        $snapshotData = SaFoxUtil::fromJson($this->decryptValue($snapshot));
+        if (!is_array($snapshotData)
+            || !is_string($snapshotData['refreshToken'] ?? null)
+            || !hash_equals($refreshToken, $snapshotData['refreshToken'])) {
+            return null;
+        }
+
         $markerKey = self::REFRESH_TOKEN_USED_PREFIX . hash('sha256', $refreshToken);
         $markerTimeout = 86400;
-        $decodedSnapshot = SaFoxUtil::fromJson($this->decryptValue($snapshot));
+        $decodedSnapshot = $snapshotData;
         if ($this->getConfig()->isRefreshTokenRotation()
-            && is_array($decodedSnapshot)
             && is_string($decodedSnapshot['loginId'] ?? null)
             && is_string($decodedSnapshot['loginType'] ?? null)
             && is_string($decodedSnapshot['accessToken'] ?? null)) {
@@ -1611,7 +1622,9 @@ class TokenManager
             return null;
         }
         $data = SaFoxUtil::fromJson($this->decryptValue($raw));
-        if (!is_array($data)) {
+        if (!is_array($data)
+            || !is_string($data['refreshToken'] ?? null)
+            || !hash_equals($refreshToken, $data['refreshToken'])) {
             return null;
         }
 
@@ -1650,7 +1663,9 @@ class TokenManager
             return null;
         }
         $data = SaFoxUtil::fromJson($this->decryptValue($value));
-        if (!is_array($data)) {
+        if (!is_array($data)
+            || !is_string($data['refreshToken'] ?? null)
+            || !hash_equals($refreshToken, $data['refreshToken'])) {
             return null;
         }
         /** @var array<string, mixed> $data */

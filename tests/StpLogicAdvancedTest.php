@@ -148,6 +148,26 @@ class StpLogicAdvancedTest extends TestCase
         self::assertNull($this->logic->getTokenManager()->getLoginIdByToken($other));
     }
 
+    public function testEncryptedRefreshTokenRecordCannotBeCopiedToAnotherTokenKey(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenEncrypt' => true,
+            'tokenEncryptKey' => str_repeat('r', 32),
+            'aesKey' => str_repeat('r', 32),
+        ]));
+        $victimAccessToken = $this->logic->login('victim')->getAccessToken();
+        $victimRefreshToken = $this->logic->createRefreshToken($victimAccessToken, 3600);
+        $attackerAccessToken = $this->logic->login('attacker')->getAccessToken();
+        $attackerRefreshToken = $this->logic->createRefreshToken($attackerAccessToken, 3600);
+        $victimRecord = $this->dao->get(TokenManager::REFRESH_TOKEN_PREFIX . $victimRefreshToken);
+        self::assertNotNull($victimRecord);
+        $this->dao->set(TokenManager::REFRESH_TOKEN_PREFIX . $attackerRefreshToken, $victimRecord);
+
+        self::assertNull($this->logic->getTokenManager()->getRefreshTokenData($attackerRefreshToken));
+        $this->expectException(\SaToken\Exception\SaTokenException::class);
+        $this->logic->refreshToken($attackerRefreshToken);
+    }
+
     public function testLoginWithTokenEncryptSmCryptoType(): void
     {
         if (!class_exists(\CryptoSm\SM4\Sm4::class)) {
