@@ -400,6 +400,9 @@ class StpLogicIntegrationTest extends TestCase
         $deviceTypes = array_map(fn ($t) => $t->getDeviceType(), $terminals);
         $this->assertContains('PC', $deviceTypes);
         $this->assertContains('APP', $deviceTypes);
+        foreach ($terminals as $terminal) {
+            self::assertSame('', $terminal->getTokenValue(), '终端元数据查询不得泄露可重放的 Bearer Token');
+        }
     }
 
     public function testGetTerminalListByLoginIdEmpty(): void

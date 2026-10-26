@@ -383,11 +383,12 @@ trait StpLogicSecurityTrait
         $result = [];
         foreach ($tokens as $item) {
             $deviceType = $item['deviceType'] ?? '';
-            $itemTokenValue = $item['tokenValue'] ?? '';
             $createTime = $item['createTime'] ?? 0;
             $result[] = new SaTerminalInfo([
                 'deviceType' => is_string($deviceType) ? $deviceType : '',
-                'tokenValue' => is_string($itemTokenValue) ? $itemTokenValue : '',
+                // A loginId may be supplied by an untrusted caller. Never turn
+                // this metadata query into a bearer-token disclosure endpoint.
+                'tokenValue' => '',
                 'createTime' => is_int($createTime) ? $createTime : 0,
             ]);
         }

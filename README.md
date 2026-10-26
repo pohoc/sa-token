@@ -360,6 +360,8 @@ $device = StpUtil::getLoginDeviceType();
 $terminals = StpUtil::getTerminalListByLoginId(10001);
 ```
 
+`getTerminalListByLoginId()` 返回终端元数据，不包含可用于认证的 Token。该方法和按 loginId 查询的设备管理接口不会验证调用者对目标账号的管理权限；面向用户提供时，应从已认证身份或服务端授权策略确定目标账号，并限制其可操作范围。
+
 ### 12. Refresh Token
 
 AccessToken + RefreshToken 双 Token 机制，AccessToken 短期有效，RefreshToken 长期有效，用于无感刷新：

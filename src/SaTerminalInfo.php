@@ -13,7 +13,6 @@ namespace SaToken;
  *   $terminals = StpUtil::getTerminalListByLoginId(10001);
  *   foreach ($terminals as $t) {
  *       echo $t->getDeviceType();
- *       echo $t->getTokenValue();
  *   }
  */
 class SaTerminalInfo
@@ -23,9 +22,7 @@ class SaTerminalInfo
      */
     protected string $deviceType = '';
 
-    /**
-     * Token 值
-     */
+    /** Bearer credential; terminal-list queries leave this empty to prevent disclosure. */
     protected string $tokenValue = '';
 
     /**
