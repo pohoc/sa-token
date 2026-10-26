@@ -1038,6 +1038,10 @@ Token 存储加密器 `SaTokenEncryptor::decrypt()` 同样默认拒绝旧版无�
 ```php
 StpUtil::checkAntiBrute('user@example.com');
 
+// 凭据验证成功后释放并发槽位，并清理该账号在当前来源的失败状态。
+StpUtil::clearAntiBruteFailures('user@example.com');
+
+// 凭据验证失败后记录失败（不要同时调用成功清理）。
 StpUtil::recordAntiBruteFailure('user@example.com');
 
 $isLocked = StpUtil::isAccountLocked('user@example.com');

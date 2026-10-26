@@ -168,7 +168,8 @@ trait StpLogicSecurityTrait
         SaAntiBruteUtil::recordFailure($account, $this->loginType);
     }
 
-    protected function clearAntiBruteFailures(mixed $loginId): void
+    /** Release the reserved source slot and clear failures after credentials are accepted. */
+    public function clearAntiBruteFailures(mixed $loginId): void
     {
         $config = $this->getConfig();
         if ($config->getAntiBruteMaxFailures() <= 0 && $config->getAntiBruteIpMaxFailures() <= 0) {

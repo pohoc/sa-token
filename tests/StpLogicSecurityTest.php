@@ -11,6 +11,7 @@ use SaToken\Exception\NotSafeException;
 use SaToken\SaToken;
 use SaToken\Security\SaSensitiveVerify;
 use SaToken\StpLogic;
+use SaToken\StpUtil;
 use SaToken\TokenManager;
 use SaToken\Util\SaTokenContext;
 
@@ -111,6 +112,30 @@ class StpLogicSecurityTest extends TestCase
         $this->expectException(\SaToken\Exception\SaTokenException::class);
         $this->expectExceptionMessage('当前来源失败次数过多');
         $this->stp->checkAntiBrute('random-user-3');
+    }
+
+    public function testSuccessfulStandaloneAntiBruteCheckReleasesItsSourceSlot(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'antiBruteMaxFailures' => 0,
+            'antiBruteIpMaxFailures' => 1,
+            'antiBruteLockDuration' => 600,
+        ]));
+        SaTokenContext::setRequest(new class () {
+            public function getClientIp(): string
+            {
+                return '192.0.2.78';
+            }
+        });
+
+        StpUtil::checkAntiBrute('external-user');
+        StpUtil::clearAntiBruteFailures('external-user');
+        StpUtil::checkAntiBrute('external-user');
+        StpUtil::recordAntiBruteFailure('external-user');
+
+        $this->expectException(\SaToken\Exception\SaTokenException::class);
+        $this->expectExceptionMessage('当前来源失败次数过多');
+        StpUtil::checkAntiBrute('another-user');
     }
 
     public function testGetTokenValueRejectsRepeatedFrameworkCredentialHeaders(): void
