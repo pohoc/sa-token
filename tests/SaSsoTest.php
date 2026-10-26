@@ -10,12 +10,21 @@ use SaToken\Dao\SaTokenDaoMemory;
 use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
 use SaToken\Sso\Mode\SsoModeCrossDomain;
+use SaToken\Sso\Mode\SsoModeNoSdk;
 use SaToken\Sso\Mode\SsoModeSameDomain;
 use SaToken\Sso\SaSsoConfig;
 use SaToken\Sso\SaSsoHandle;
 use SaToken\Sso\SaSsoManager;
 use SaToken\StpUtil;
 use SaToken\Util\SaTokenContext;
+
+class SaSsoNoSdkTestHandle extends SaSsoHandle
+{
+    protected function checkTicket(string $ticket): ?string
+    {
+        return $ticket === 'valid-ticket' ? 'no-sdk-user' : null;
+    }
+}
 
 /**
  * SSO 模块测试
@@ -257,6 +266,27 @@ class SaSsoTest extends TestCase
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('ticket 校验地址未配置', $e->getMessage());
         }
+    }
+
+    public function testNoSdkLoginByTicketPassesStateToCallbackValidation(): void
+    {
+        $state = 'no-sdk-state';
+        SaTokenContext::setRequest(new class ($state) {
+            public function __construct(private string $state)
+            {
+            }
+
+            public function cookie(string $name): ?string
+            {
+                return $name === '__Host-sso_params_state' ? $this->state : null;
+            }
+        });
+
+        $mode = new SsoModeNoSdk(new SaSsoNoSdkTestHandle(new SaSsoConfig()));
+        $result = $mode->doLoginByTicket('valid-ticket', $state);
+
+        self::assertSame('no-sdk-user', $result['loginId']);
+        self::assertSame('', $result['redirect']);
     }
 
     public function testSsoStateCanOnlyBeConsumedOnceAcrossCallbackRequests(): void
