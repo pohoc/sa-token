@@ -79,6 +79,51 @@ class SaTokenContextTest extends TestCase
         $this->assertSame('192.0.2.9', SaTokenContext::getClientIp());
     }
 
+    public function testTrustedProxyDoesNotTrustResolvedFrameworkIpWithoutRawPeerAddress(): void
+    {
+        SaTokenContext::setTrustedProxies(['198.51.100.1']);
+        SaTokenContext::setRequest(new class () {
+            public function getClientIp(): string
+            {
+                // A framework may trust a broader proxy set and resolve an
+                // attacker controlled X-Forwarded-For value here.
+                return '203.0.113.66';
+            }
+        });
+
+        $this->assertNull(SaTokenContext::getClientIp());
+    }
+
+    public function testTrustedProxyReadsRawPeerAddressFromFrameworkServerBag(): void
+    {
+        SaTokenContext::setTrustedProxies(['198.51.100.1']);
+        SaTokenContext::setRequest(new class () {
+            public object $server;
+
+            public function __construct()
+            {
+                $this->server = new class () {
+                    public function get(string $key): ?string
+                    {
+                        return $key === 'REMOTE_ADDR' ? '198.51.100.1' : null;
+                    }
+                };
+            }
+
+            public function getClientIp(): string
+            {
+                return '203.0.113.66';
+            }
+
+            public function getHeaderLine(string $name): string
+            {
+                return strcasecmp($name, 'X-Forwarded-For') === 0 ? '192.0.2.9' : '';
+            }
+        });
+
+        $this->assertSame('192.0.2.9', SaTokenContext::getClientIp());
+    }
+
     public function testGetClientIpFromPsr7ServerParams(): void
     {
         $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);

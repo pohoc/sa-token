@@ -222,12 +222,34 @@ class SaTokenContext
                 $serverParams = $request->getServerParams();
                 $addr = is_array($serverParams) ? ($serverParams['REMOTE_ADDR'] ?? null) : null;
                 $remoteAddr = is_string($addr) ? $addr : null;
+            } else {
+                // Symfony/Laravel request objects expose the raw peer address
+                // through their server ParameterBag instead of getServerParams().
+                $properties = get_object_vars($request);
+                $server = $properties['server'] ?? null;
+                if (is_array($server)) {
+                    $addr = $server['REMOTE_ADDR'] ?? null;
+                    $remoteAddr = is_string($addr) ? $addr : null;
+                } elseif (is_object($server)) {
+                    try {
+                        if (method_exists($server, 'get')) {
+                            $addr = $server->get('REMOTE_ADDR');
+                            $remoteAddr = is_string($addr) ? $addr : null;
+                        } elseif (method_exists($server, 'all')) {
+                            $serverParams = $server->all();
+                            $addr = is_array($serverParams) ? ($serverParams['REMOTE_ADDR'] ?? null) : null;
+                            $remoteAddr = is_string($addr) ? $addr : null;
+                        }
+                    } catch (\Throwable) {
+                        $remoteAddr = null;
+                    }
+                }
             }
 
             // Framework request wrappers commonly expose the resolved address
             // directly (Laravel/Symfony: getClientIp; ThinkPHP: ip). Prefer
             // that over forwarded headers, whose trust is adapter-specific.
-            if (empty(self::$trustedProxies) || $remoteAddr === null) {
+            if (empty(self::$trustedProxies)) {
                 foreach (['getClientIp', 'ip'] as $method) {
                     if (method_exists($request, $method)) {
                         $addr = $request->$method();
