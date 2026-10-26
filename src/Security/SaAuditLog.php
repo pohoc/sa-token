@@ -266,17 +266,38 @@ class SaAuditLog
         $dao = SaToken::getDao();
 
         if ($loginType === null) {
-            foreach (['login', 'admin'] as $type) {
-                self::clearLogs($type);
+            // Take one stable snapshot: deleting while offset-paginating can
+            // shift later keys and leave part of a large log set behind.
+            $keys = $dao->searchKeys(self::$keyPrefix, '', 0, PHP_INT_MAX);
+            foreach ($keys as $key) {
+                if (!is_string($key) || !str_starts_with($key, self::$keyPrefix)) {
+                    continue;
+                }
+                $value = $dao->get($key);
+                if ($value === null || $value === '') {
+                    continue;
+                }
+                $decoded = @json_decode($value, true);
+                if (!is_array($decoded) || !is_string($decoded['loginType'] ?? null) || !is_string($decoded['id'] ?? null)) {
+                    continue;
+                }
+                $ownedKey = self::$keyPrefix . $decoded['loginType'] . ':' . $decoded['id'];
+                if ($key === $ownedKey) {
+                    $dao->delete($key);
+                }
             }
             return;
         }
 
         $pattern = self::$keyPrefix . $loginType . ':';
-        $results = $dao->search($pattern, '', 0, self::$maxEntries * 10);
+        $keys = $dao->searchKeys($pattern, '', 0, PHP_INT_MAX);
 
-        foreach ($results as $value) {
-            if ($value === '') {
+        foreach ($keys as $key) {
+            if (!is_string($key) || !str_starts_with($key, $pattern)) {
+                continue;
+            }
+            $value = $dao->get($key);
+            if ($value === null || $value === '') {
                 continue;
             }
             $decoded = @json_decode($value, true);
@@ -287,8 +308,8 @@ class SaAuditLog
                 continue;
             }
             $id = $decoded['id'] ?? '';
-            if ($id !== '' && is_string($id)) {
-                $dao->delete(self::$keyPrefix . $loginType . ':' . $id);
+            if ($id !== '' && is_string($id) && $key === self::$keyPrefix . $loginType . ':' . $id) {
+                $dao->delete($key);
             }
         }
     }

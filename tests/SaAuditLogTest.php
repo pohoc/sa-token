@@ -214,6 +214,41 @@ class SaAuditLogTest extends TestCase
         $this->assertCount(0, $logs);
     }
 
+    public function testClearLogsWithoutLoginTypeClearsEveryType(): void
+    {
+        SaAuditLog::setEnabled(true);
+
+        SaAuditLog::logLogin(10001, 'login');
+        SaAuditLog::logLogin(20002, 'admin');
+        SaAuditLog::logLogin(30003, 'tenant:custom');
+
+        SaAuditLog::clearLogs();
+
+        $this->assertSame([], SaAuditLog::getRecentLogs('login'));
+        $this->assertSame([], SaAuditLog::getRecentLogs('admin'));
+        $this->assertSame([], SaAuditLog::getRecentLogs('tenant:custom'));
+    }
+
+    public function testClearLogsRemovesMoreThanConfiguredRetentionLimit(): void
+    {
+        SaAuditLog::setEnabled(true);
+        SaAuditLog::setMaxEntries(1);
+
+        $dao = SaToken::getDao();
+        foreach (range(1, 25) as $index) {
+            $id = str_pad((string) $index, 32, '0', STR_PAD_LEFT);
+            $dao->set('satoken:audit:custom:' . $id, json_encode([
+                'id' => $id,
+                'loginType' => 'custom',
+                'time' => time(),
+            ], JSON_THROW_ON_ERROR));
+        }
+
+        SaAuditLog::clearLogs('custom');
+
+        $this->assertSame([], SaAuditLog::getRecentLogs('custom', 100));
+    }
+
     public function testTokenValueIsRedactedFromAuditLog(): void
     {
         SaAuditLog::setEnabled(true);
