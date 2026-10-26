@@ -183,4 +183,19 @@ class SaSignTest extends TestCase
 
         $this->assertFalse($this->sign->verifySign($params));
     }
+
+    public function testVerifySignRejectsOversizedNonceBeforeReplayStore(): void
+    {
+        $params = $this->sign->signParams(['operation' => 'transfer', 'nonce' => str_repeat('n', 257)]);
+
+        $this->assertFalse($this->sign->verifySign($params));
+    }
+
+    public function testVerifySignRejectsOversizedSignedValueBeforeSignatureWork(): void
+    {
+        $params = $this->sign->signParams(['operation' => 'transfer']);
+        $params['payload'] = str_repeat('x', 65537);
+
+        $this->assertFalse($this->sign->verifySign($params));
+    }
 }

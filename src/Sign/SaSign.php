@@ -15,6 +15,11 @@ class SaSign
      */
     private const ALLOWED_ALGORITHMS = ['sha256'];
 
+    /** Prevent oversized signed values from consuming unbounded CPU/memory or DAO work. */
+    private const MAX_SIGNED_VALUE_BYTES = 65536;
+
+    private const MAX_NONCE_BYTES = 256;
+
     protected string $key = '';
 
     protected int $timestampGap = 600;
@@ -81,6 +86,12 @@ class SaSign
      */
     public function verifySign(array $params, ?string $method = null, ?string $path = null): bool
     {
+        foreach ($params as $value) {
+            if ((!is_string($value) && !is_int($value)) || strlen((string) $value) > self::MAX_SIGNED_VALUE_BYTES) {
+                return false;
+            }
+        }
+
         $sign = $params['sign'] ?? null;
         if ($sign === null || $sign === '') {
             return false;
@@ -95,7 +106,7 @@ class SaSign
         }
 
         $nonce = $params['nonce'] ?? null;
-        if (!is_string($nonce) || $nonce === '') {
+        if (!is_string($nonce) || $nonce === '' || strlen($nonce) > self::MAX_NONCE_BYTES) {
             return false;
         }
 
