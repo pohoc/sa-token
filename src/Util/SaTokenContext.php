@@ -960,7 +960,7 @@ class SaTokenContext
             // absolute timestamp. Round positive second-based TTLs up so the
             // client cookie cannot expire before the server-side token.
             $minutes = $timeout > 0 ? (int) ceil($timeout / 60) : $timeout;
-            $response->cookie($name, $value, $minutes, $path, $domain, $secure, $httpOnly);
+            $response->cookie($name, $value, $minutes, $path, $domain, $secure, $httpOnly, false, $sameSite !== '' ? $sameSite : null);
         }
 
         return $response;

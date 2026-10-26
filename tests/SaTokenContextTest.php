@@ -622,6 +622,33 @@ class SaTokenContextTest extends TestCase
             ],
         ], $cookieManager->lastSet);
     }
+
+    public function testLaravelStyleFallbackReceivesSameSiteCookieAttribute(): void
+    {
+        $response = new class () {
+            /** @var array<int, bool|int|string|null> */
+            public array $cookieCalls = [];
+
+            public function cookie(
+                string $name,
+                string $value,
+                int $minutes,
+                string $path,
+                string $domain,
+                bool $secure,
+                bool $httpOnly,
+                bool $raw = false,
+                ?string $sameSite = null
+            ): void {
+                $this->cookieCalls = [$name, $value, $minutes, $path, $domain, $secure, $httpOnly, $raw, $sameSite];
+            }
+        };
+        SaTokenContext::setResponse($response);
+
+        SaTokenContext::setCookie('satoken', 'laravel-fallback', 3600, '/', '', true, true, 'Strict');
+
+        $this->assertSame(['satoken', 'laravel-fallback', 60, '/', '', true, true, false, 'Strict'], $response->cookieCalls);
+    }
 }
 
 class ThinkPhpCookieManagerStub
