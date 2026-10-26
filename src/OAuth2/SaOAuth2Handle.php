@@ -453,20 +453,23 @@ class SaOAuth2Handle
         }
 
         $familyMarkerKey = $familyMarkerPrefix . hash('sha256', $familyId);
-        $familyMarkerSeed = $this->encryptValue(SaFoxUtil::toJson([
+        $familyMarkerSeed = $this->encryptValueForContext(SaFoxUtil::toJson([
             'tokens'    => [],
             'childRts'  => [],
             'clientId'  => $rtData->getClientId(),
+            'familyId'  => $familyId,
             'revokedAt' => time(),
-        ]));
+        ]), $familyMarkerKey);
         $this->getDao()->setIfNotExists($familyMarkerKey, $familyMarkerSeed, $markerTimeout);
         $familyMarkerJson = $this->getDao()->get($familyMarkerKey);
         $familyMarker = $familyMarkerJson !== null
-            ? SaFoxUtil::fromJson($this->decryptValue($familyMarkerJson))
+            ? SaFoxUtil::fromJson($this->decryptValueForContext($familyMarkerJson, $familyMarkerKey) ?? '')
             : null;
         if (!is_array($familyMarker)
             || !is_string($familyMarker['clientId'] ?? null)
-            || $familyMarker['clientId'] !== $rtData->getClientId()) {
+            || $familyMarker['clientId'] !== $rtData->getClientId()
+            || !is_string($familyMarker['familyId'] ?? null)
+            || $familyMarker['familyId'] !== $familyId) {
             throw new SaTokenException('刷新令牌客户端绑定无效');
         }
         if (($familyMarker['revoked'] ?? false) === true) {
@@ -587,7 +590,7 @@ class SaOAuth2Handle
         $familyMarkerKey = 'oauth2:family:' . hash('sha256', $familyId);
         $familyMarkerJson = $this->getDao()->get($familyMarkerKey);
         $familyMarker = $familyMarkerJson !== null
-            ? SaFoxUtil::fromJson($this->decryptValue($familyMarkerJson))
+            ? SaFoxUtil::fromJson($this->decryptValueForContext($familyMarkerJson, $familyMarkerKey) ?? '')
             : null;
         if (!is_array($familyMarker)
             || !is_string($familyMarker['clientId'] ?? null)
@@ -626,7 +629,7 @@ class SaOAuth2Handle
             if ($markerJson === null) {
                 return;
             }
-            $marker = SaFoxUtil::fromJson($this->decryptValue($markerJson));
+            $marker = SaFoxUtil::fromJson($this->decryptValueForContext($markerJson, $familyMarkerKey) ?? '');
             if (!is_array($marker)) {
                 return;
             }
@@ -643,7 +646,7 @@ class SaOAuth2Handle
             // atomic operation, preventing stale snapshots from winning.
             $marker['revoked'] = true;
             $marker['revokedAt'] = time();
-            $revokedMarkerJson = $this->encryptValue(SaFoxUtil::toJson($marker));
+            $revokedMarkerJson = $this->encryptValueForContext(SaFoxUtil::toJson($marker), $familyMarkerKey);
             if ($dao->compareAndSet(
                 $familyMarkerKey,
                 $markerJson,
@@ -698,7 +701,7 @@ class SaOAuth2Handle
         if ($markerJson === null) {
             return;
         }
-        $marker = SaFoxUtil::fromJson($this->decryptValue($markerJson));
+        $marker = SaFoxUtil::fromJson($this->decryptValueForContext($markerJson, $familyMarkerKey) ?? '');
         if (!is_array($marker)) {
             return;
         }
@@ -719,13 +722,14 @@ class SaOAuth2Handle
         // without bound; consumed-RT markers retain replay detection separately.
         $tokens = [$accessToken];
         $childRts = $childRefreshToken !== '' ? [$childRefreshToken] : [];
-        $newMarkerJson = $this->encryptValue(SaFoxUtil::toJson([
+        $newMarkerJson = $this->encryptValueForContext(SaFoxUtil::toJson([
             'tokens'    => $tokens,
             'childRts'  => $childRts,
             'clientId'  => is_string($marker['clientId'] ?? null) ? $marker['clientId'] : '',
+            'familyId'  => is_string($marker['familyId'] ?? null) ? $marker['familyId'] : '',
             'revokedAt' => $marker['revokedAt'] ?? time(),
             'revoked'   => false,
-        ]));
+        ]), $familyMarkerKey);
         $dao = $this->getDao();
         if (!$dao instanceof SaTokenDaoCompareAndUpdateInterface
             || !$dao instanceof SaTokenDaoCompareAndExpireInterface
@@ -748,7 +752,8 @@ class SaOAuth2Handle
         if ($markerJson === null) {
             return false;
         }
-        $marker = SaFoxUtil::fromJson($this->decryptValue($markerJson));
+        $key = 'oauth2:family:' . hash('sha256', $familyId);
+        $marker = SaFoxUtil::fromJson($this->decryptValueForContext($markerJson, $key) ?? '');
         return is_array($marker) && ($marker['revoked'] ?? false) === true;
     }
 
@@ -935,7 +940,7 @@ class SaOAuth2Handle
             $this->getDao()->delete($this->buildAccessTokenKey($accessToken));
             return null;
         }
-        $familyId = $this->getDao()->get($this->buildAccessTokenFamilyKey($accessToken));
+        $familyId = $this->getAccessTokenFamilyId($accessToken);
         if (is_string($familyId) && $familyId !== '' && $this->isTokenFamilyRevoked($familyId)) {
             return null;
         }
@@ -956,7 +961,7 @@ class SaOAuth2Handle
         $refreshToken = is_array($data) && is_string($data['refreshToken'] ?? null) ? $data['refreshToken'] : '';
 
         if ($refreshToken === '') {
-            $familyId = $this->getDao()->get($this->buildAccessTokenFamilyKey($accessToken));
+            $familyId = $this->getAccessTokenFamilyId($accessToken);
             if (!is_string($familyId) || $familyId === '') {
                 $this->getDao()->delete($accessTokenKey);
                 return;
@@ -984,7 +989,7 @@ class SaOAuth2Handle
         $this->acquireRefreshLock($tokenLockKey, $lockValue);
 
         try {
-            $familyId = $this->getDao()->get($this->buildAccessTokenFamilyKey($accessToken));
+            $familyId = $this->getAccessTokenFamilyId($accessToken);
             if (!is_string($familyId) || $familyId === '') {
                 $familyLockKey = 'oauth2:refresh:' . $this->getRefreshTokenFamilyLockIdentity($refreshToken);
             } else {
@@ -1198,9 +1203,10 @@ class SaOAuth2Handle
             $expiresIn
         );
         $accessTokenTimeout = $this->config->getAccessTokenTimeout();
+        $familyKey = $this->buildAccessTokenFamilyKey($accessToken);
         $this->getDao()->set(
-            $this->buildAccessTokenFamilyKey($accessToken),
-            $refreshToken->getFamilyId(),
+            $familyKey,
+            $this->encryptValueForContext($refreshToken->getFamilyId(), $familyKey),
             $accessTokenTimeout > 0 ? $accessTokenTimeout : null
         );
 
@@ -1640,6 +1646,26 @@ class SaOAuth2Handle
     protected function encryptValue(string $value): string
     {
         return $this->getEncryptor()->encrypt($value);
+    }
+
+    protected function encryptValueForContext(string $value, string $context): string
+    {
+        return $this->getEncryptor()->encryptForContext($value, $context);
+    }
+
+    protected function decryptValueForContext(string $value, string $context): ?string
+    {
+        return $this->getEncryptor()->decryptCheckedForContext($value, $context);
+    }
+
+    protected function getAccessTokenFamilyId(string $accessToken): ?string
+    {
+        $key = $this->buildAccessTokenFamilyKey($accessToken);
+        $value = $this->getDao()->get($key);
+        if ($value === null) {
+            return null;
+        }
+        return $this->decryptValueForContext($value, $key);
     }
 
     protected function decryptValue(string $value): string

@@ -1502,6 +1502,33 @@ class SaOAuth2Test extends TestCase
         self::assertNull(SaToken::getDao()->get('oauth2:rt:' . $rotated->getRefreshToken()));
     }
 
+    public function testCopiedAccessTokenFamilyIndexCannotRevokeAnotherFamily(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenEncrypt' => true,
+            'tokenEncryptKey' => str_repeat('f', 32),
+        ]));
+        $this->handle->registerClient($this->testClient);
+
+        $dao = SaToken::getDao();
+        $firstCode = $this->handle->generateAuthorizationCode('test-client', 'first-user', 'https://example.com/callback');
+        $first = $this->handle->exchangeTokenByCode($firstCode->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
+        $firstDescendant = $this->handle->refreshToken((string) $first->getRefreshToken(), 'test-client', $this->clientSecret);
+
+        $secondCode = $this->handle->generateAuthorizationCode('test-client', 'second-user', 'https://example.com/callback');
+        $second = $this->handle->exchangeTokenByCode($secondCode->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
+        $secondDescendant = $this->handle->refreshToken((string) $second->getRefreshToken(), 'test-client', $this->clientSecret);
+
+        $firstFamilyKey = 'oauth2:at:family:' . hash('sha256', $first->getAccessToken());
+        $secondFamilyKey = 'oauth2:at:family:' . hash('sha256', $second->getAccessToken());
+        $dao->set($firstFamilyKey, (string) $dao->get($secondFamilyKey), 3600);
+
+        $this->handle->revokeAccessToken($first->getAccessToken());
+
+        self::assertNotNull($this->handle->validateAccessToken($firstDescendant->getAccessToken()));
+        self::assertNotNull($this->handle->validateAccessToken($secondDescendant->getAccessToken()));
+    }
+
     public function testFamilyRevocationRetriesWhenRefreshUpdatesMarkerAfterSnapshotRead(): void
     {
         $dao = new class () extends SaTokenDaoMemory {
