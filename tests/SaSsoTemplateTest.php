@@ -125,4 +125,99 @@ class SaSsoTemplateTest extends TestCase
 
         $this->assertFalse($template->verifySign(['sign' => str_repeat('0', 64)], 'weak'));
     }
+
+    public function testCurlRequestRejectsOversizedResponse(): void
+    {
+        if (!function_exists('curl_init')) {
+            self::markTestSkipped('Curl extension is not installed.');
+        }
+
+        $this->withOversizedResponse(function (string $url): void {
+            try {
+                (new SaSsoTemplate())->get($url);
+                self::fail('Oversized cURL response must be rejected');
+            } catch (SaTokenException $exception) {
+                self::assertStringContainsString('1 MiB limit', $exception->getMessage());
+            }
+        });
+    }
+
+    public function testStreamRequestRejectsOversizedResponse(): void
+    {
+        $this->withOversizedResponse(function (string $url): void {
+            $template = new class () extends SaSsoTemplate {
+                public function requestWithStreams(string $url): string|false
+                {
+                    return $this->fileGetContentsRequest('GET', $url);
+                }
+
+                public function error(): ?string
+                {
+                    return $this->lastError;
+                }
+            };
+
+            self::assertFalse($template->requestWithStreams($url));
+            self::assertSame('SSO response exceeds the 1 MiB limit', $template->error());
+        });
+    }
+
+    private function withOversizedResponse(callable $request): void
+    {
+        if (!function_exists('pcntl_fork')) {
+            self::markTestSkipped('pcntl is required for the local HTTP response limit test.');
+        }
+
+        $server = @stream_socket_server('tcp://127.0.0.1:0', $errorCode, $errorMessage);
+        self::assertIsResource($server, "Unable to start local HTTP fixture: {$errorMessage} ({$errorCode})");
+        $address = stream_socket_get_name($server, false);
+        self::assertIsString($address);
+        $port = (int) substr($address, strrpos($address, ':') + 1);
+
+        $pid = pcntl_fork();
+        if ($pid === -1) {
+            fclose($server);
+            self::fail('Unable to fork local HTTP fixture');
+        }
+        if ($pid === 0) {
+            $client = @stream_socket_accept($server, 10);
+            fclose($server);
+            if ($client === false) {
+                exit(2);
+            }
+
+            stream_set_timeout($client, 3);
+            $requestHeaders = '';
+            while (!str_contains($requestHeaders, "\r\n\r\n")) {
+                $part = fread($client, 1024);
+                if ($part === false || $part === '') {
+                    break;
+                }
+                $requestHeaders .= $part;
+            }
+            fwrite($client, "HTTP/1.1 200 OK\r\nContent-Length: 2097152\r\nConnection: close\r\n\r\n");
+            $chunk = str_repeat('x', 8192);
+            for ($i = 0; $i < 256; $i++) {
+                if (@fwrite($client, $chunk) === false) {
+                    break;
+                }
+            }
+            fclose($client);
+            exit(0);
+        }
+
+        fclose($server);
+        $status = 0;
+        try {
+            $request("http://127.0.0.1:{$port}/oversized");
+        } finally {
+            pcntl_waitpid($pid, $status);
+        }
+
+        if (!is_int($status)) {
+            throw new \RuntimeException('Local HTTP fixture returned an invalid process status');
+        }
+        self::assertTrue(pcntl_wifexited($status));
+        self::assertSame(0, pcntl_wexitstatus($status));
+    }
 }

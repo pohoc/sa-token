@@ -10,6 +10,8 @@ use SaToken\SaToken;
 
 class SaSsoTemplate
 {
+    protected const MAX_RESPONSE_BYTES = 1_048_576;
+
     protected ?string $lastError = null;
 
     protected string $cryptoType = 'intl';
@@ -142,14 +144,31 @@ class SaSsoTemplate
     protected function curlRequest(string $method, string $url, array $data = []): string|false
     {
         $ch = curl_init();
+        if ($ch === false) {
+            $this->lastError = 'Unable to initialize Curl';
+            return false;
+        }
         $nonEmptyUrl = $url !== '' ? $url : 'http://localhost';
         curl_setopt($ch, CURLOPT_URL, $nonEmptyUrl);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        // Stream the body through a bounded callback instead of letting cURL
+        // buffer an untrusted endpoint response without a memory limit.
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, false);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
         curl_setopt($ch, CURLOPT_TIMEOUT, 10);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
         // 协议白名单：即使配置被注入 file:// 等伪协议，也不会触发本地文件读取
         curl_setopt($ch, CURLOPT_PROTOCOLS, CURLPROTO_HTTPS | CURLPROTO_HTTP);
         curl_setopt($ch, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTPS | CURLPROTO_HTTP);
+
+        $responseBody = '';
+        $responseTooLarge = false;
+        curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($handle, string $chunk) use (&$responseBody, &$responseTooLarge): int {
+            if (!$this->appendResponseChunk($responseBody, $chunk)) {
+                $responseTooLarge = true;
+                return 0;
+            }
+            return strlen($chunk);
+        });
 
         if ($method === 'POST') {
             curl_setopt($ch, CURLOPT_POST, true);
@@ -159,12 +178,15 @@ class SaSsoTemplate
             }
         }
 
-        /** @var string|false $response */
-        $response = curl_exec($ch);
+        $result = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
 
-        if ($response === false) {
+        if ($responseTooLarge) {
+            $this->lastError = 'SSO response exceeds the 1 MiB limit';
+            return false;
+        }
+        if ($result === false) {
             $this->lastError = 'Curl request failed';
             return false;
         }
@@ -174,7 +196,7 @@ class SaSsoTemplate
             return false;
         }
 
-        return $response;
+        return $responseBody;
     }
 
     /**
@@ -202,10 +224,25 @@ class SaSsoTemplate
             $context['http']['content'] = http_build_query($data);
         }
 
-        $result = @file_get_contents($url, false, stream_context_create($context));
+        // Read one byte beyond the accepted maximum so oversized responses can
+        // be rejected without loading their full body into memory.
+        $result = @file_get_contents($url, false, stream_context_create($context), 0, self::MAX_RESPONSE_BYTES + 1);
         if ($result === false) {
             $this->lastError = error_get_last()['message'] ?? 'file_get_contents failed';
+        } elseif (strlen($result) > self::MAX_RESPONSE_BYTES) {
+            $this->lastError = 'SSO response exceeds the 1 MiB limit';
+            return false;
         }
         return $result !== false ? $result : false;
+    }
+
+    protected function appendResponseChunk(string &$response, string $chunk): bool
+    {
+        if (strlen($chunk) > self::MAX_RESPONSE_BYTES - strlen($response)) {
+            return false;
+        }
+
+        $response .= $chunk;
+        return true;
     }
 }
