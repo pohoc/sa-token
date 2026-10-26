@@ -31,6 +31,33 @@ class SaTokenDaoPsr16Test extends TestCase
         $this->assertEquals('value1', $this->dao->get('key1'));
     }
 
+    public function testWriteDoesNotReportFailureWhileReadableCredentialRemainsAfterTtlSidecarFailure(): void
+    {
+        $cache = new class () extends ArrayPsr16Cache {
+            public function set(string $key, mixed $value, \DateInterval|int|null $ttl = null): bool
+            {
+                if (str_starts_with($key, 'sat_ttl_')) {
+                    return false;
+                }
+                return parent::set($key, $value, $ttl);
+            }
+
+            public function delete(string $key): bool
+            {
+                if (str_starts_with($key, 'sat_')) {
+                    return false;
+                }
+                return parent::delete($key);
+            }
+        };
+        $dao = new SaTokenDaoPsr16($cache);
+
+        $dao->set('partial-write-token', 'usable-secret', 60);
+
+        self::assertSame('usable-secret', $dao->get('partial-write-token'));
+        self::assertGreaterThan(0, $dao->getTimeout('partial-write-token'));
+    }
+
     public function testGetNonExistentKey(): void
     {
         $this->assertNull($this->dao->get('nonexistent'));

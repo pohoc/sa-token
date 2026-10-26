@@ -81,24 +81,58 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
 
     protected function writeCacheRecord(string $key, string $value, ?int $expiresAt, ?int $backendTimeout): bool
     {
+        $cacheKey = $this->normalizeKey($key);
+        $json = json_encode([
+            'value' => base64_encode($value),
+            'expiresAt' => $expiresAt,
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if (!is_string($json)) {
+            return false;
+        }
+        $encoded = self::RECORD_PREFIX . $json;
         try {
-            $json = json_encode([
-                'value' => base64_encode($value),
-                'expiresAt' => $expiresAt,
-            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-            if (!is_string($json)) {
-                return false;
-            }
-            $encoded = self::RECORD_PREFIX . $json;
-            if (!$this->cache->set($this->normalizeKey($key), $encoded, $backendTimeout)) {
-                return false;
-            }
-            $ttlMetadata = $expiresAt !== null ? (string) $expiresAt : 'permanent';
+            $written = $this->cache->set($cacheKey, $encoded, $backendTimeout);
+        } catch (InvalidArgumentException) {
+            return $this->isCacheRecordPresent($cacheKey, $encoded);
+        }
+        if (!$written) {
+            return $this->isCacheRecordPresent($cacheKey, $encoded);
+        }
+
+        $ttlMetadata = $expiresAt !== null ? (string) $expiresAt : 'permanent';
+        try {
             if (!$this->cache->set($this->normalizeTtlKey($key), $ttlMetadata, $backendTimeout)) {
-                $this->cache->delete($this->normalizeKey($key));
-                return false;
+                return $this->rollbackOrConfirmCacheRecord($cacheKey, $encoded);
             }
             return true;
+        } catch (InvalidArgumentException) {
+            return $this->rollbackOrConfirmCacheRecord($cacheKey, $encoded);
+        }
+    }
+
+    /**
+     * A new-format value carries its own absolute expiry; the TTL sidecar is
+     * only a compatibility index. If sidecar persistence fails, do not report
+     * failure while leaving the just-written credential readable. Remove it
+     * when possible, otherwise confirm that the self-contained record remains
+     * intact and report the write as successful.
+     */
+    protected function rollbackOrConfirmCacheRecord(string $cacheKey, string $encoded): bool
+    {
+        try {
+            $this->cache->delete($cacheKey);
+        } catch (InvalidArgumentException) {
+            // Confirm below; a failed delete must not be reported as a failed
+            // write if the credential remains active in the cache.
+        }
+
+        return $this->isCacheRecordPresent($cacheKey, $encoded);
+    }
+
+    protected function isCacheRecordPresent(string $cacheKey, string $encoded): bool
+    {
+        try {
+            return $this->cache->get($cacheKey) === $encoded;
         } catch (InvalidArgumentException) {
             return false;
         }
