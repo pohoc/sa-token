@@ -81,7 +81,7 @@ class SaTokenJwt
 
         // 身份与有效期声明只能由签发器生成；调用方扩展数据不得改变主体、
         // 登录类型、有效期或令牌唯一标识，避免 session/业务数据覆盖安全声明。
-        $reservedClaims = ['sub', 'type', 'exp', 'iat', 'jti', 'nbf', 'iss', 'aud'];
+        $reservedClaims = ['sub', 'type', 'exp', 'iat', 'jti', 'nbf', 'iss', 'aud', 'satoken_gen'];
         $safeExtraClaims = array_diff_key($extraClaims, array_flip($reservedClaims));
         $payload = array_merge($payload, $safeExtraClaims);
         if ($statelessGeneration !== null) {
@@ -248,7 +248,7 @@ class SaTokenJwt
     public function getExtraClaims(string $token): array
     {
         $payload = $this->parseToken($token);
-        $standardKeys = ['iat', 'jti', 'sub', 'type', 'exp'];
+        $standardKeys = ['iat', 'jti', 'sub', 'type', 'exp', 'satoken_gen'];
         return array_diff_key($payload, array_flip($standardKeys));
     }
 

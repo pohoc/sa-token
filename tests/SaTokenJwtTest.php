@@ -144,6 +144,7 @@ class SaTokenJwtTest extends TestCase
             'nbf' => 0,
             'iss' => 'untrusted-issuer',
             'aud' => 'untrusted-audience',
+            'satoken_gen' => 99,
             'custom' => 'kept',
         ]);
         $payload = $this->jwt->parseToken($token);
@@ -156,7 +157,17 @@ class SaTokenJwtTest extends TestCase
         $this->assertArrayNotHasKey('nbf', $payload);
         $this->assertArrayNotHasKey('iss', $payload);
         $this->assertArrayNotHasKey('aud', $payload);
+        $this->assertArrayNotHasKey('satoken_gen', $payload);
         $this->assertSame('kept', $payload['custom']);
+    }
+
+    public function testMixedTokenCannotInjectStatelessGenerationClaim(): void
+    {
+        $token = $this->jwt->createMixedToken(10001, 'login', null, ['satoken_gen' => 99]);
+        $payload = $this->jwt->parseToken($token);
+
+        $this->assertArrayNotHasKey('satoken_gen', $payload);
+        $this->assertArrayNotHasKey('satoken_gen', $this->jwt->getExtraClaims($token));
     }
 
     public function testCreateTokenRejectsClaimsThatCannotBeEncoded(): void
