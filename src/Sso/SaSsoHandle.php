@@ -373,6 +373,11 @@ class SaSsoHandle
 
     public function checkTicketCrossRedis(string $ticket): ?string
     {
+        $clientSecret = $this->config->getClientSecret();
+        if (strlen($clientSecret) < 32) {
+            throw new SaTokenException('跨 Redis ticket 校验必须配置至少 32 字节的 clientSecret');
+        }
+
         $checkUrl = $this->config->getCrossRedisCheckUrl();
         if ($checkUrl === '') {
             throw new SaTokenException('跨 Redis ticket 校验地址未配置');
@@ -387,10 +392,7 @@ class SaSsoHandle
             'nonce'     => $requestNonce,
         ];
 
-        $clientSecret = $this->config->getClientSecret();
-        if ($clientSecret !== '') {
-            $data = $this->template->signParams($data, $clientSecret);
-        }
+        $data = $this->template->signParams($data, $clientSecret);
 
         try {
             $response = $this->template->post($checkUrl, $data);
@@ -404,12 +406,10 @@ class SaSsoHandle
             return null;
         }
 
-        if ($clientSecret !== '') {
-            $scalarResult = self::normalizeScalarMap($result);
-            if (!isset($scalarResult['sign'])
-                || !$this->template->verifySign($scalarResult, $clientSecret, 300)) {
-                throw new SaTokenException('SSO check-ticket 响应签名验证失败（或已过期），拒绝信任该响应');
-            }
+        $scalarResult = self::normalizeScalarMap($result);
+        if (!isset($scalarResult['sign'])
+            || !$this->template->verifySign($scalarResult, $clientSecret, 300)) {
+            throw new SaTokenException('SSO check-ticket 响应签名验证失败（或已过期），拒绝信任该响应');
         }
         // 跨 Redis 响应同样绑定本次 ticket 与随机 nonce，防止同一票据的
         // 旧响应被再次提交，绕过认证中心的一次性消费。

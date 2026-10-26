@@ -16,6 +16,7 @@ use SaToken\OAuth2\SaOAuth2Handle;
 use SaToken\SaToken;
 use SaToken\Sso\SaSsoConfig;
 use SaToken\Sso\SaSsoHandle;
+use SaToken\Sso\SaSsoManager;
 use SaToken\Sso\SaSsoTemplate;
 use SaToken\StpLogic;
 use SaToken\StpUtil;
@@ -1705,6 +1706,59 @@ class SecurityRegressionTest extends TestCase
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('ticket', $e->getMessage());
         }
+    }
+
+    public function testCrossRedisSsoRequiresClientSecretBeforeSendingTicket(): void
+    {
+        $template = new class () extends SaSsoTemplate {
+            public bool $requested = false;
+
+            public function post(string $url, array $data = []): string
+            {
+                $this->requested = true;
+                return '{}';
+            }
+        };
+        $handle = new class (new SaSsoConfig([
+            'crossRedisCheckUrl' => 'https://auth.example.com/cross-check-ticket',
+        ]), $template) extends SaSsoHandle {
+            public function __construct(SaSsoConfig $config, SaSsoTemplate $template)
+            {
+                parent::__construct($config);
+                $this->template = $template;
+            }
+
+            public function checkRemote(string $ticket): ?string
+            {
+                return $this->checkTicketCrossRedis($ticket);
+            }
+        };
+
+        try {
+            $handle->checkRemote('ticket-without-shared-secret');
+            self::fail('跨 Redis SSO 必须在发出 ticket 前要求共享密钥');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('clientSecret', $exception->getMessage());
+        }
+
+        self::assertFalse($template->requested);
+    }
+
+    public function testCrossRedisSsoWithoutClientSecretCannotLogIn(): void
+    {
+        $manager = new SaSsoManager(new SaSsoConfig([
+            'crossRedis' => true,
+            'checkState' => false,
+        ]));
+
+        try {
+            $manager->doLoginCallback('ticket-without-shared-secret');
+            self::fail('无共享密钥的跨 Redis 响应不得建立登录会话');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('clientSecret', $exception->getMessage());
+        }
+
+        self::assertNull(StpUtil::getLoginId());
     }
 
     public function testSsoCheckTicketResponseCannotBeReplayedForTheSameTicket(): void
