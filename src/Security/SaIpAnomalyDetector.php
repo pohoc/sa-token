@@ -23,13 +23,13 @@ class SaIpAnomalyDetector
 
     public static function getKey(string $loginId, string $loginType = 'login'): string
     {
-        return self::$keyPrefix . $loginType . ':' . md5($loginId);
+        return self::$keyPrefix . 'v2:' . \SaToken\TokenManager::encodeKeyComponent($loginType) . ':' . hash('sha256', $loginId);
     }
 
     public static function getHistoryKey(mixed $loginId, string $loginType = 'login'): string
     {
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-        return self::$historyPrefix . $loginType . ':' . md5($loginIdStr);
+        return self::$historyPrefix . 'v2:' . \SaToken\TokenManager::encodeKeyComponent($loginType) . ':' . hash('sha256', $loginIdStr);
     }
 
     public static function recordLoginIp(mixed $loginId, string $ip, string $loginType = 'login'): void

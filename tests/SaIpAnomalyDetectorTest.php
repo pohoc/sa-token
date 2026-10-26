@@ -195,6 +195,18 @@ class SaIpAnomalyDetectorTest extends TestCase
         $this->assertStringStartsWith('custom:prefix:', $key);
     }
 
+    public function testIdentityKeysUseVersionedSha256Digests(): void
+    {
+        $loginId = 'test:user';
+        $loginType = 'admin:type';
+        $digest = hash('sha256', $loginId);
+        $encodedType = \SaToken\TokenManager::encodeKeyComponent($loginType);
+
+        self::assertSame('satoken:security:ip:v2:' . $encodedType . ':' . $digest, SaIpAnomalyDetector::getKey($loginId, $loginType));
+        self::assertSame('satoken:security:ip:history:v2:' . $encodedType . ':' . $digest, SaIpAnomalyDetector::getHistoryKey($loginId, $loginType));
+        self::assertNotSame(SaIpAnomalyDetector::getKey('test:user', 'admin:type'), SaIpAnomalyDetector::getKey('test:user', 'admin'));
+    }
+
     public function testAnomalyDetectionDisabledDoesNotTrack(): void
     {
         $config = SaToken::getConfig();
