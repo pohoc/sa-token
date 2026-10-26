@@ -318,7 +318,9 @@ class SaOAuth2Handle
         $json = $this->getDao()->get($this->buildRefreshTokenKey($refreshToken));
         if ($json !== null) {
             $data = SaFoxUtil::fromJson($this->decryptValue($json));
-            if (is_array($data) && is_string($data['familyId'] ?? null) && $data['familyId'] !== '') {
+            if (is_array($data)
+                && is_string($data['familyId'] ?? null)
+                && $data['familyId'] !== '') {
                 return 'family:' . hash('sha256', $data['familyId']);
             }
         }
@@ -343,13 +345,30 @@ class SaOAuth2Handle
         // 消费前预读取：scope 收紧等配置变更时，让失败发生在 RT 被消费之前，
         // 避免客户端因运维操作被迫整体重新授权
         $preJson = $this->getDao()->get($rtKey);
+        $preRtData = null;
         if ($preJson !== null) {
             $preData = SaFoxUtil::fromJson($this->decryptValue($preJson));
             if (is_array($preData)) {
                 /** @var array<string, mixed> $preData */
+                if (($preData['_state'] ?? null) === 'consumed') {
+                    $familyId = is_string($preData['familyId'] ?? null) ? $preData['familyId'] : '';
+                    $consumedClientId = is_string($preData['clientId'] ?? null) ? $preData['clientId'] : '';
+                    if ($familyId === '' || $consumedClientId === '') {
+                        throw new SaTokenException('刷新令牌客户端绑定无效');
+                    }
+                    if ($consumedClientId !== $clientId) {
+                        throw new SaTokenException('客户端 ID 不匹配');
+                    }
+                    $this->rejectConsumedRefreshTokenReplay(
+                        $clientId,
+                        $familyId,
+                        'oauth2:rt:consumed:' . hash('sha256', $refreshToken)
+                    );
+                }
                 if (!$this->isRefreshTokenRecordValid($preData)) {
                     throw new SaTokenException('刷新令牌数据无效或已过期');
                 }
+                $preRtData = new SaOAuth2RefreshToken($preData);
                 $markerTimeout = $this->extendTokenFamilyMarkerTimeout($markerTimeout, $preData);
                 $preClientId = is_string($preData['clientId'] ?? null) ? $preData['clientId'] : '';
                 if ($preClientId !== '' && $preClientId !== $clientId) {
@@ -367,42 +386,22 @@ class SaOAuth2Handle
         // 重用检测：familyId 贯穿整条刷新链，重放链上任一 RT 即撤销整个家族
         $familyMarkerPrefix = 'oauth2:family:';
         $preFamilyId = null;
-        if ($preJson !== null) {
-            $preDecoded = SaFoxUtil::fromJson($this->decryptValue($preJson));
-            if (is_array($preDecoded) && is_string($preDecoded['familyId'] ?? null) && $preDecoded['familyId'] !== '') {
-                $preFamilyId = $preDecoded['familyId'];
-                if ($this->isTokenFamilyRevoked($preFamilyId)) {
-                    throw new SaTokenException('刷新令牌家族已撤销');
-                }
+        if ($preRtData !== null && $preRtData->getFamilyId() !== '') {
+            $preFamilyId = $preRtData->getFamilyId();
+            if ($this->isTokenFamilyRevoked($preFamilyId)) {
+                throw new SaTokenException('刷新令牌家族已撤销');
             }
         }
 
-        $rtData = null;
-        $familyId = '';
+        $rtData = $preRtData;
+        $familyId = $preRtData?->getFamilyId() ?? '';
 
         // 消费标记（RT 哈希 -> familyId）是重放判定的唯一权威：
         // RT 记录本身消费后即删除，标记独立存在使重放请求仍能定位家族并触发整体撤销
         $consumedKey = 'oauth2:rt:consumed:' . hash('sha256', $refreshToken);
         $consumedFamily = $this->getDao()->get($consumedKey);
         if (is_string($consumedFamily) && $consumedFamily !== '') {
-            $familyMarkerKey = $familyMarkerPrefix . hash('sha256', $consumedFamily);
-            $familyMarkerJson = $this->getDao()->get($familyMarkerKey);
-            $familyMarker = $familyMarkerJson !== null
-                ? SaFoxUtil::fromJson($this->decryptValue($familyMarkerJson))
-                : null;
-            if (!is_array($familyMarker)
-                || !is_string($familyMarker['clientId'] ?? null)
-                || $familyMarker['clientId'] === '') {
-                throw new SaTokenException('刷新令牌客户端绑定无效');
-            }
-            if ($familyMarker['clientId'] !== $clientId) {
-                throw new SaTokenException('客户端 ID 不匹配');
-            }
-            if ($familyMarkerJson !== null) {
-                $this->revokeTokenFamily($familyMarkerKey);
-            }
-            $this->getDao()->delete($consumedKey);
-            throw new SaTokenException('刷新令牌已被使用，检测到可能的令牌泄露，相关令牌已全部撤销');
+            $this->rejectConsumedRefreshTokenReplay($clientId, $consumedFamily, $consumedKey);
         }
 
         // 旧版数据（无 familyId）回退到按 RT 哈希标记
@@ -413,45 +412,75 @@ class SaOAuth2Handle
             throw new SaTokenException('刷新令牌已被使用，检测到可能的令牌泄露，相关令牌已全部撤销');
         }
 
-        // 原子消费
-        $json = $this->getDao()->getAndDelete($rtKey);
-        if ($json === null) {
+        if ($preJson === null || $rtData === null) {
             throw new SaTokenException('无效的刷新令牌');
         }
-        $decoded = SaFoxUtil::fromJson($this->decryptValue($json));
-        if (!is_array($decoded)) {
-            throw new SaTokenException('无效的刷新令牌');
-        }
-        /** @var array<string, mixed> $decoded */
-        if (!$this->isRefreshTokenRecordValid($decoded)) {
-            throw new SaTokenException('刷新令牌数据无效或已过期');
-        }
-        $rtData = new SaOAuth2RefreshToken($decoded);
-        $familyId = $rtData->getFamilyId();
 
         // 将旧版无 familyId 的 RT 在首次轮换时迁移进家族模型。
-        // 后续重放依靠 consumedKey 找到此家族，才能撤销首次轮换签发的后代令牌。
+        // 后续重放依靠与 RT 同键的 tombstone 找到此家族，避免消费与标记
+        // 分成两次写入时出现可绕过的暂停窗口。
         if ($familyId === '') {
             $familyId = SaFoxUtil::randomString(32);
         }
 
-        if ($familyId !== '') {
-            // 家族标记仅是注册表（已签发 AT + 派生 RT），存在与否不代表重放
-            $familyMarkerKey = $familyMarkerPrefix . hash('sha256', $familyId);
-            if ($this->getDao()->get($familyMarkerKey) === null) {
-                $this->getDao()->set($familyMarkerKey, $this->encryptValue(SaFoxUtil::toJson([
-                    'tokens'    => [],
-                    'childRts'  => [],
-                    'clientId'  => $rtData->getClientId(),
-                    'revokedAt' => time(),
-                ])), $markerTimeout);
-            }
-            $this->getDao()->set($consumedKey, $familyId, $markerTimeout);
+        $familyMarkerKey = $familyMarkerPrefix . hash('sha256', $familyId);
+        $familyMarkerSeed = $this->encryptValue(SaFoxUtil::toJson([
+            'tokens'    => [],
+            'childRts'  => [],
+            'clientId'  => $rtData->getClientId(),
+            'revokedAt' => time(),
+        ]));
+        $this->getDao()->setIfNotExists($familyMarkerKey, $familyMarkerSeed, $markerTimeout);
+        $familyMarkerJson = $this->getDao()->get($familyMarkerKey);
+        $familyMarker = $familyMarkerJson !== null
+            ? SaFoxUtil::fromJson($this->decryptValue($familyMarkerJson))
+            : null;
+        if (!is_array($familyMarker)
+            || !is_string($familyMarker['clientId'] ?? null)
+            || $familyMarker['clientId'] !== $rtData->getClientId()) {
+            throw new SaTokenException('刷新令牌客户端绑定无效');
+        }
+        if (($familyMarker['revoked'] ?? false) === true) {
+            throw new SaTokenException('刷新令牌家族已撤销');
+        }
 
-            // 本次消费对应的旧 AT 登记进家族
-            if ($rtData->getAccessToken() !== '') {
-                $this->updateTokenFamilyCurrentDescendants($familyMarkerKey, $rtData->getAccessToken(), '', $markerTimeout);
+        // Record the currently valid access token before consumption so a
+        // replay that observes the tombstone can revoke it immediately.
+        if ($rtData->getAccessToken() !== '') {
+            $this->updateTokenFamilyCurrentDescendants($familyMarkerKey, $rtData->getAccessToken(), '', $markerTimeout);
+        }
+
+        $dao = $this->getDao();
+        if (!$dao instanceof SaTokenDaoCompareAndUpdateInterface) {
+            throw new SaTokenException('DAO 不支持刷新令牌的原子消费');
+        }
+        $consumedRecord = $this->encryptValue(SaFoxUtil::toJson([
+            '_state'   => 'consumed',
+            'familyId' => $familyId,
+            'clientId' => $rtData->getClientId(),
+        ]));
+        if (!$dao->compareAndUpdate($rtKey, $preJson, $consumedRecord)) {
+            // Another lock owner may have consumed this token after its lease
+            // expired. The same-key tombstone is authoritative even before
+            // the compatibility consumed-key index is written.
+            $latestJson = $dao->get($rtKey);
+            $latest = $latestJson !== null ? SaFoxUtil::fromJson($this->decryptValue($latestJson)) : null;
+            if (is_array($latest) && ($latest['_state'] ?? null) === 'consumed'
+                && is_string($latest['familyId'] ?? null) && $latest['familyId'] !== '') {
+                if (($latest['clientId'] ?? null) !== $clientId) {
+                    throw new SaTokenException('客户端 ID 不匹配');
+                }
+                $this->rejectConsumedRefreshTokenReplay($clientId, $latest['familyId'], $consumedKey);
             }
+            $latestConsumedFamily = $dao->get($consumedKey);
+            if (is_string($latestConsumedFamily) && $latestConsumedFamily !== '') {
+                $this->rejectConsumedRefreshTokenReplay($clientId, $latestConsumedFamily, $consumedKey);
+            }
+            throw new SaTokenException('刷新令牌状态已变更，拒绝刷新');
+        }
+        $dao->set($consumedKey, $familyId, $markerTimeout);
+        if ($this->isTokenFamilyRevoked($familyId)) {
+            throw new SaTokenException('刷新令牌家族已撤销');
         }
 
         if ($rtData->getClientId() !== $clientId) {
@@ -507,6 +536,29 @@ class SaOAuth2Handle
         }
 
         return !(new SaOAuth2RefreshToken($data))->isExpired();
+    }
+
+    /**
+     * Revoke the token family after a refresh-token replay and always fail the request.
+     */
+    protected function rejectConsumedRefreshTokenReplay(string $clientId, string $familyId, string $consumedKey): never
+    {
+        $familyMarkerKey = 'oauth2:family:' . hash('sha256', $familyId);
+        $familyMarkerJson = $this->getDao()->get($familyMarkerKey);
+        $familyMarker = $familyMarkerJson !== null
+            ? SaFoxUtil::fromJson($this->decryptValue($familyMarkerJson))
+            : null;
+        if (!is_array($familyMarker)
+            || !is_string($familyMarker['clientId'] ?? null)
+            || $familyMarker['clientId'] === '') {
+            throw new SaTokenException('刷新令牌客户端绑定无效');
+        }
+        if ($familyMarker['clientId'] !== $clientId) {
+            throw new SaTokenException('客户端 ID 不匹配');
+        }
+        $this->revokeTokenFamily($familyMarkerKey);
+        $this->getDao()->delete($consumedKey);
+        throw new SaTokenException('刷新令牌已被使用，检测到可能的令牌泄露，相关令牌已全部撤销');
     }
 
     /**

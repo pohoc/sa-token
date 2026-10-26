@@ -799,6 +799,80 @@ class SaOAuth2Test extends TestCase
         self::assertNull($dao->get($dao->newRefreshTokenKey));
     }
 
+    public function testRefreshTokenReplayAfterConsumeBeforeMarkerRevokesFamily(): void
+    {
+        $dao = new class () extends SaTokenDaoMemory {
+            public bool $pauseAfterRefreshConsume = false;
+            public ?\Closure $onRefreshConsumed = null;
+            public ?string $refreshTokenKey = null;
+            public ?string $newAccessTokenKey = null;
+            public ?string $newRefreshTokenKey = null;
+
+            public function compareAndUpdate(string $key, string $expectedValue, string $newValue): bool
+            {
+                $updated = parent::compareAndUpdate($key, $expectedValue, $newValue);
+                if ($updated && $this->pauseAfterRefreshConsume && $key === $this->refreshTokenKey) {
+                    $this->pauseAfterRefreshConsume = false;
+                    $this->onRefreshConsumed?->__invoke();
+                }
+                return $updated;
+            }
+
+            public function set(string $key, string $value, ?int $timeout = null): void
+            {
+                parent::set($key, $value, $timeout);
+                if (str_starts_with($key, 'oauth2:at:') && !str_starts_with($key, 'oauth2:at:family:')) {
+                    $this->newAccessTokenKey = $key;
+                }
+                if (str_starts_with($key, 'oauth2:rt:')
+                    && !str_starts_with($key, 'oauth2:rt:consumed:')
+                    && !str_starts_with($key, 'oauth2:rt:used:')) {
+                    $this->newRefreshTokenKey = $key;
+                }
+            }
+        };
+        SaToken::setDao($dao);
+        $this->handle->registerClient($this->testClient);
+
+        $code = $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback');
+        $initial = $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
+        $oldRefreshToken = (string) $initial->getRefreshToken();
+        $initialData = (new \ReflectionMethod($this->handle, 'getRefreshTokenData'))->invoke($this->handle, $oldRefreshToken);
+        self::assertInstanceOf(SaOAuth2RefreshToken::class, $initialData);
+        $dao->refreshTokenKey = 'oauth2:rt:' . $oldRefreshToken;
+        $dao->newAccessTokenKey = null;
+        $dao->newRefreshTokenKey = null;
+        $dao->pauseAfterRefreshConsume = true;
+        $dao->onRefreshConsumed = function () use ($dao, $oldRefreshToken, $initialData): void {
+            // Simulate a process pause after atomic consumption long enough for
+            // its refresh-lock lease to expire, then replay the same token.
+            $dao->delete('oauth2:refresh:token:' . hash('sha256', $oldRefreshToken));
+            $dao->delete('oauth2:refresh:family:' . hash('sha256', $initialData->getFamilyId()));
+            try {
+                $this->handle->refreshToken($oldRefreshToken, 'test-client', $this->clientSecret);
+            } catch (SaTokenException) {
+                // The replay is expected to fail; the original owner must also
+                // observe the replay tombstone before it can issue descendants.
+            }
+        };
+
+        try {
+            $this->handle->refreshToken($oldRefreshToken, 'test-client', $this->clientSecret);
+            self::fail('在重放标记建立前发生的刷新令牌重放必须撤销家族并阻止原请求签发');
+        } catch (SaTokenException $exception) {
+            self::assertTrue(
+                str_contains($exception->getMessage(), '家族已撤销')
+                || str_contains($exception->getMessage(), '家族状态已变更')
+                || str_contains($exception->getMessage(), '已被使用'),
+                $exception->getMessage()
+            );
+        }
+
+        self::assertNull($dao->newAccessTokenKey);
+        self::assertNull($dao->newRefreshTokenKey);
+        self::assertNull($this->handle->validateAccessToken($initial->getAccessToken()));
+    }
+
     public function testLegacyRefreshTokenReplayRevokesMigratedFamilyDescendants(): void
     {
         $code = $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback');
