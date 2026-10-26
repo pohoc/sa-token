@@ -1059,9 +1059,10 @@ class SaOAuth2Handle
         ?string $grantType = null
     ): SaOAuth2AccessToken {
         $client = $this->validateClient($clientId);
-        if ($grantType !== null) {
-            $this->validateGrantTypeForClient($client, $grantType);
+        if ($grantType === null || $grantType === '') {
+            throw new SaTokenException('访问令牌签发必须明确指定授权类型');
         }
+        $this->validateGrantTypeForClient($client, $grantType);
         $scope = $this->validateScopeForClient($client, $scope);
         $this->validateOidcNonce($idTokenNonce);
         if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {

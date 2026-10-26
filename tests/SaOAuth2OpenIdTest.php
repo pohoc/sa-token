@@ -179,7 +179,7 @@ class SaOAuth2OpenIdTest extends TestCase
         $before = SaToken::getDao()->size();
 
         try {
-            $handle->generateAccessToken('test-client', 10001, 'openid');
+            $handle->generateAccessToken('test-client', 10001, 'openid', '', true, '', false, 'authorization_code');
             self::fail('OIDC access token issuance must reject a missing issuer');
         } catch (SaTokenException $exception) {
             self::assertStringContainsString('HTTPS issuer URL', $exception->getMessage());
