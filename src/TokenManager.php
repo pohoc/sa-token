@@ -1606,6 +1606,12 @@ class TokenManager
         if ($value === null) {
             return null;
         }
+        return $this->decodeRefreshTokenRecord($refreshToken, $value);
+    }
+
+    /** @return array<string, mixed>|null */
+    protected function decodeRefreshTokenRecord(string $refreshToken, string $value): ?array
+    {
         $data = SaFoxUtil::fromJson($this->decryptValue($value));
         if (!is_array($data)) {
             return null;
@@ -1783,25 +1789,75 @@ class TokenManager
 
     public function deleteRefreshToken(string $refreshToken): void
     {
-        $data = $this->getRefreshTokenData($refreshToken);
-        $this->getDao()->delete(self::REFRESH_TOKEN_PREFIX . $refreshToken);
+        $credentialLockKey = 'refresh-credential:' . hash('sha256', $refreshToken);
+        if (!$this->acquireLock($credentialLockKey, 30)) {
+            throw new SaTokenException('RefreshToken 正在签发或消费，请稍后重试');
+        }
 
-        if ($data !== null) {
-            $loginId = is_string($data['loginId'] ?? null) ? $data['loginId'] : '';
-            $loginType = is_string($data['loginType'] ?? null) ? $data['loginType'] : '';
-            $accessToken = is_string($data['accessToken'] ?? null) ? $data['accessToken'] : '';
-            if ($loginId !== '' && $accessToken !== '') {
-                $dao = $this->getDao();
-                $mapKey = self::buildRefreshTokenMapKey($loginId, $loginType, $accessToken);
-                $mapped = $dao->get($mapKey);
-                if ($mapped !== null && $this->decryptValue($mapped) === $refreshToken
-                    && $dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface) {
-                    $dao->compareAndSet($mapKey, $mapped, null);
-                }
+        try {
+            $this->deleteRefreshTokenUnderLock($refreshToken);
+        } finally {
+            $this->releaseLock($credentialLockKey);
+        }
+    }
+
+    protected function deleteRefreshTokenIfOwned(string $refreshToken, string $loginId, string $loginType): void
+    {
+        $credentialLockKey = 'refresh-credential:' . hash('sha256', $refreshToken);
+        if (!$this->acquireLock($credentialLockKey, 30)) {
+            throw new SaTokenException('RefreshToken 正在签发或消费，请稍后重试');
+        }
+
+        try {
+            $this->deleteRefreshTokenUnderLock($refreshToken, $loginId, $loginType, false);
+        } finally {
+            $this->releaseLock($credentialLockKey);
+        }
+    }
+
+    protected function deleteRefreshTokenUnderLock(
+        string $refreshToken,
+        ?string $expectedLoginId = null,
+        ?string $expectedLoginType = null,
+        bool $removeAccountIndex = true
+    ): void {
+        $dao = $this->getDao();
+        if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
+            throw new SaTokenException('DAO 不支持 RefreshToken 的原子比较删除');
+        }
+        $refreshKey = self::REFRESH_TOKEN_PREFIX . $refreshToken;
+        $snapshot = $dao->get($refreshKey);
+        if ($snapshot === null) {
+            return;
+        }
+        $data = $this->decodeRefreshTokenRecord($refreshToken, $snapshot);
+        if ($expectedLoginId !== null && $expectedLoginType !== null
+            && (($data['loginId'] ?? null) !== $expectedLoginId || ($data['loginType'] ?? null) !== $expectedLoginType)) {
+            return;
+        }
+        if (!$dao->compareAndDelete($refreshKey, $snapshot)) {
+            return;
+        }
+        // A lease may expire during the conditional delete. Leave stale
+        // indexes behind rather than letting an old owner clean metadata
+        // belonging to a newly issued credential with the same value.
+        if (!$this->renewLock('refresh-credential:' . hash('sha256', $refreshToken), 30) || $data === null) {
+            return;
+        }
+
+        $loginId = is_string($data['loginId'] ?? null) ? $data['loginId'] : '';
+        $loginType = is_string($data['loginType'] ?? null) ? $data['loginType'] : '';
+        $accessToken = is_string($data['accessToken'] ?? null) ? $data['accessToken'] : '';
+        if ($loginId !== '' && $accessToken !== '') {
+            $mapKey = self::buildRefreshTokenMapKey($loginId, $loginType, $accessToken);
+            $mapped = $dao->get($mapKey);
+            if ($mapped !== null && $this->decryptValue($mapped) === $refreshToken
+                && $dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface) {
+                $dao->compareAndSet($mapKey, $mapped, null);
             }
-            if ($loginId !== '' && $loginType !== '') {
-                $this->removeRefreshTokenFromAccountIndex($loginId, $loginType, $refreshToken);
-            }
+        }
+        if ($removeAccountIndex && $loginId !== '' && $loginType !== '') {
+            $this->removeRefreshTokenFromAccountIndex($loginId, $loginType, $refreshToken);
         }
     }
 
@@ -1926,19 +1982,7 @@ class TokenManager
             if (!is_string($refreshToken) || $refreshToken === '') {
                 continue;
             }
-            $data = $this->getRefreshTokenData($refreshToken);
-            if (($data['loginId'] ?? null) === $loginId && ($data['loginType'] ?? null) === $loginType) {
-                $this->getDao()->delete(self::REFRESH_TOKEN_PREFIX . $refreshToken);
-                $accessToken = is_string($data['accessToken'] ?? null) ? $data['accessToken'] : '';
-                if ($accessToken !== '') {
-                    $mapKey = self::buildRefreshTokenMapKey($loginId, $loginType, $accessToken);
-                    $mapped = $dao->get($mapKey);
-                    if ($mapped !== null && $this->decryptValue($mapped) === $refreshToken
-                        && $dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface) {
-                        $dao->compareAndSet($mapKey, $mapped, null);
-                    }
-                }
-            }
+            $this->deleteRefreshTokenIfOwned($refreshToken, $loginId, $loginType);
         }
 
         if (!$this->renewLock($loginLockKey, 30)) {

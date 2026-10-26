@@ -75,6 +75,23 @@ class SaTokenDaoRecreatingRefreshDuringAccountCleanup extends SaTokenDaoMemory
     }
 }
 
+class SaTokenDaoPausingRefreshDelete extends SaTokenDaoMemory
+{
+    public ?\Closure $afterRefreshRead = null;
+
+    public function get(string $key): ?string
+    {
+        $value = parent::get($key);
+        if (str_starts_with($key, TokenManager::REFRESH_TOKEN_PREFIX) && $this->afterRefreshRead !== null) {
+            $callback = $this->afterRefreshRead;
+            $this->afterRefreshRead = null;
+            $callback($key, $value);
+        }
+
+        return $value;
+    }
+}
+
 class TokenManagerTest extends TestCase
 {
     protected TokenManager $manager;
@@ -99,6 +116,44 @@ class TokenManagerTest extends TestCase
     {
         SaTokenContext::setContextId('default');
         SaToken::reset();
+    }
+
+    public function testStaleRefreshTokenCleanupCannotDeleteReusedCredential(): void
+    {
+        $dao = new SaTokenDaoPausingRefreshDelete();
+        $this->dao = $dao;
+        SaToken::setDao($dao);
+        $ownerA = 'refresh-delete-owner-a';
+        $ownerB = 'refresh-delete-owner-b';
+        $accessA = 'refresh-delete-access-a';
+        $accessB = 'refresh-delete-access-b';
+        $refresh = 'refresh-delete-shared-value';
+        $this->manager->saveToken($accessA, $ownerA, 'login', 'PC', 3600);
+        $this->manager->saveToken($accessB, $ownerB, 'login', 'PC', 3600);
+        $this->manager->saveRefreshToken($refresh, $accessA, $ownerA, 'login', 3600);
+
+        $refreshKey = TokenManager::REFRESH_TOKEN_PREFIX . $refresh;
+        $credentialLockKey = TokenManager::LOCK_PREFIX . 'refresh-credential:' . hash('sha256', $refresh);
+        $dao->afterRefreshRead = function (string $key, ?string $snapshot) use ($dao, $refreshKey, $credentialLockKey, $refresh, $accessB, $ownerB): void {
+            if ($key !== $refreshKey || $snapshot === null) {
+                return;
+            }
+
+            // The stale cleanup has captured owner A's bytes. Expire its lease,
+            // consume/delete that generation, then let owner B reuse the value.
+            $dao->delete($credentialLockKey);
+            $dao->delete($refreshKey);
+            SaTokenContext::setContextId('refresh-reissue-worker');
+            try {
+                $this->manager->saveRefreshToken($refresh, $accessB, $ownerB, 'login', 3600);
+            } finally {
+                SaTokenContext::setContextId('default');
+            }
+        };
+
+        $this->manager->deleteRefreshToken($refresh);
+
+        self::assertSame($ownerB, $this->manager->getRefreshTokenData($refresh)['loginId'] ?? null);
     }
 
     public function testCreateTokenValue(): void
@@ -382,7 +437,10 @@ class TokenManagerTest extends TestCase
             $manager->saveRefreshToken($refreshToken, $accessToken, $loginId, $loginType, 3600);
             self::fail('失去账号锁租约后的 RefreshToken 保存必须失败');
         } catch (SaTokenException $exception) {
-            self::assertStringContainsString('已失效', $exception->getMessage());
+            self::assertTrue(
+                str_contains($exception->getMessage(), '已失效')
+                || str_contains($exception->getMessage(), '正在签发或消费')
+            );
         }
 
         self::assertFalse($manager->isRefreshTokenValid($refreshToken));
