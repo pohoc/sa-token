@@ -78,6 +78,9 @@ trait StpLogicRefreshTokenTrait
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
 
+        $newAccessToken = null;
+        $newRefreshToken = null;
+        $timeout = $config->getTimeout();
         try {
             // 与 disable() 共用账号锁后重查，避免被封禁前的预检查结果
             // 在等待锁期间继续签发新的 AccessToken。
@@ -172,7 +175,6 @@ trait StpLogicRefreshTokenTrait
                 }
             }
 
-            $timeout = $config->getTimeout();
             if ($config->isJwtStateless()) {
                 $newAccessToken = $this->getJwt()->createStatelessToken($loginId, $this->loginType, $timeout);
                 $newAccessClaims = $this->getJwt()->parseToken($newAccessToken);
@@ -224,9 +226,51 @@ trait StpLogicRefreshTokenTrait
                     ->setRefreshExpire($rtTimeout > 0 ? $rtTimeout : 0);
             }
 
+            $this->checkDisableForLogin($loginId);
+            if (!$this->tokenManager->renewLock($lockKey, 30)) {
+                throw new SaTokenException('账号会话锁已失效，拒绝签发刷新凭证');
+            }
+
             $this->writeTokenToResponse($newAccessToken, new SaLoginParameter());
 
             return $result;
+        } catch (\Throwable $exception) {
+            if ($newAccessToken !== null) {
+                try {
+                    if (!$this->revokeToken($newAccessToken)) {
+                        throw new SaTokenException('刷新失败后的 AccessToken 撤销未完成');
+                    }
+                } catch (\Throwable $cleanupException) {
+                    if ($config->isJwtStateless()) {
+                        $blacklistTimeout = $timeout > 0 ? $timeout : null;
+                        $this->tokenManager->addToBlacklist($newAccessToken, $blacklistTimeout);
+                    } else {
+                        $invalidated = $this->tokenManager->invalidateTokenIfOwnedByLoginType(
+                            $newAccessToken,
+                            $loginId,
+                            $this->loginType
+                        );
+                        if (!$invalidated) {
+                            throw $cleanupException;
+                        }
+
+                        try {
+                            $this->removeTokenAndRefreshToken($newAccessToken, $loginId);
+                        } catch (\Throwable) {
+                            // The exact bearer has been blacklisted if its
+                            // session index cannot be safely edited now.
+                        }
+                    }
+                }
+            }
+
+            if ($newRefreshToken !== null) {
+                $this->tokenManager->deleteRefreshToken($newRefreshToken);
+            } elseif (!$config->isRefreshTokenRotation()) {
+                $this->tokenManager->deleteRefreshToken($refreshToken);
+            }
+
+            throw $exception;
         } finally {
             $this->tokenManager->releaseLock($lockKey);
         }

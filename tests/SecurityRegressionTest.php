@@ -618,6 +618,59 @@ class SecurityRegressionTest extends TestCase
         self::assertSame([], $tokenManager->getTokenListByLoginId($loginId, 'login'));
     }
 
+    public function testRefreshCannotReturnNewTokenAfterDisableTakesOverExpiredAccountLock(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'refreshToken'         => true,
+            'refreshTokenRotation' => true,
+        ])));
+        $loginId = 'refresh-disable-lock-expiry';
+        $tokenManager = new class () extends TokenManager {
+            public ?\Closure $afterRefreshTokenSaved = null;
+
+            public string $refreshedAccessToken = '';
+
+            public function saveRefreshToken(
+                string $refreshToken,
+                string $accessToken,
+                mixed $loginId,
+                string $loginType,
+                int $timeout
+            ): void {
+                parent::saveRefreshToken($refreshToken, $accessToken, $loginId, $loginType, $timeout);
+                $this->refreshedAccessToken = $accessToken;
+                if ($this->afterRefreshTokenSaved !== null) {
+                    $callback = $this->afterRefreshTokenSaved;
+                    $this->afterRefreshTokenSaved = null;
+                    $callback($loginId);
+                }
+            }
+        };
+        $logic = new StpLogic('login', $tokenManager);
+        $login = $logic->login($loginId);
+        $tokenManager->afterRefreshTokenSaved = function () use ($loginId): void {
+            SaToken::getDao()->delete(
+                TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId)
+            );
+            SaTokenContext::setContextId('disable-admin');
+            try {
+                (new StpLogic('login', new TokenManager()))->disable($loginId, 'login', 1, 3600);
+            } finally {
+                SaTokenContext::setContextId('default');
+            }
+        };
+
+        try {
+            $logic->refreshToken($login->getRefreshToken());
+            self::fail('账号封禁完成后，刷新流程不能返回新的 AccessToken');
+        } catch (DisableServiceException) {
+            self::assertTrue($logic->isDisable($loginId, 'login'));
+        }
+
+        self::assertFalse($tokenManager->isTokenValid($tokenManager->refreshedAccessToken));
+        self::assertSame([], $tokenManager->getTokenListByLoginId($loginId, 'login'));
+    }
+
     // ======== C1: mixed JWT 模式下会话必须可终止 ========
 
     public function testMixedJwtModeLogoutInvalidatesToken(): void
