@@ -294,7 +294,6 @@ class SaSessionCleanerTest extends TestCase
             $this->fail('测试需要 LazyTtlDaoStub');
         }
         $ref = new \ReflectionProperty(SaTokenDaoMemory::class, 'dataMap');
-        $ref->setAccessible(true);
         /** @var array<string, array{value: string, expire_at: int|null}> $dataMap */
         $dataMap = $ref->getValue($dao);
         if (isset($dataMap[$key])) {

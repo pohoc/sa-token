@@ -30,11 +30,9 @@ class RedisDaoTest extends TestCase
 
         // 注入属性
         $clientProp = $reflection->getProperty('client');
-        $clientProp->setAccessible(true);
         $clientProp->setValue($this->dao, $this->mockRedis);
 
         $saRedisProp = $reflection->getProperty('saRedis');
-        $saRedisProp->setAccessible(true);
         $saRedisProp->setValue($this->dao, null);
     }
 

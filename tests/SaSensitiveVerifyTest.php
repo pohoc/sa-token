@@ -491,7 +491,6 @@ class SaSensitiveVerifyTest extends TestCase
         $token = SaSensitiveVerify::createSafeToken($scene, $loginId);
         $key = 'satoken:sensitive:login:safe-token:' . $scene . ':' . hash('sha256', $loginId) . ':' . substr($token, 0, 16);
         $encodeState = new \ReflectionMethod(SaSensitiveVerify::class, 'encodeSensitiveState');
-        $encodeState->setAccessible(true);
 
         $dao->afterNextGet(static function (string $readKey, ?string $ignoredValue) use ($dao, $key, $scene, $loginId, $token, $encodeState): void {
             if ($readKey !== $key) {

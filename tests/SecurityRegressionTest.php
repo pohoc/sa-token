@@ -1253,7 +1253,6 @@ class SecurityRegressionTest extends TestCase
         ]));
 
         $ref = new \ReflectionMethod(SaSsoHandle::class, 'validateDomain');
-        $ref->setAccessible(true);
 
         // javascript:// 伪协议 host 可以匹配白名单，但必须被 scheme 校验拒绝
         $this->assertFalse($ref->invoke($handle, 'javascript://app.example.com/%0aalert(1)'));
@@ -1280,7 +1279,6 @@ class SecurityRegressionTest extends TestCase
         ]));
 
         $ref = new \ReflectionMethod(SaSsoHandle::class, 'validateDomain');
-        $ref->setAccessible(true);
 
         $this->assertTrue($ref->invoke($handle, 'https://app.example.com/callback'));
         $this->assertTrue($ref->invoke($handle, 'https://deep.app.example.com/callback'));
@@ -1785,7 +1783,6 @@ class SecurityRegressionTest extends TestCase
         // 父类标注 #[SaCheckLogin]，子类未标注——继承式鉴权必须生效；
         // 未登录上下文调用子类方法应抛 NotLoginException
         $ref = new \ReflectionMethod(\SaToken\Annotation\SaAnnotationProcessor::class, 'process');
-        $ref->setAccessible(true);
 
         $child = new class () extends AnnotatedBaseController {
         };
@@ -2163,7 +2160,6 @@ class SecurityRegressionTest extends TestCase
         } else {
             // 非 PSR-7 环境：pending 值已被净化（无公开读取器，用反射断言）
             $ref = new \ReflectionProperty(\SaToken\Util\SaTokenContext::class, 'pendingHeadersMap');
-            $ref->setAccessible(true);
             /** @var array<string, array<int, array{name: string, value: string}>> $pending */
             $pending = $ref->getValue();
             $ctx = \SaToken\Util\SaTokenContext::getContextId();
@@ -2342,7 +2338,6 @@ class SecurityRegressionTest extends TestCase
 
         // PSR-7 不可变：最终 response 存于 context 的 responseMap 中
         $ref = new \ReflectionProperty(\SaToken\Util\SaTokenContext::class, 'responseMap');
-        $ref->setAccessible(true);
         /** @var array<string, mixed> $responseMap */
         $responseMap = $ref->getValue();
         $finalResponse = $responseMap[\SaToken\Util\SaTokenContext::getContextId()] ?? null;
