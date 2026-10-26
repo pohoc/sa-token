@@ -40,13 +40,18 @@ class SaRpcContext
         $headers = self::removeForwardedAuthHeaders($headers);
         $tokenValue = StpUtil::getTokenValue();
         if ($tokenValue !== null) {
+            self::assertSafeHeaderValue($tokenValue);
+        }
+        if ($tokenValue !== null) {
             $headers[self::$tokenHeaderName] = $tokenValue;
         }
         $loginId = StpUtil::getLoginId();
         if ($loginId !== null) {
             $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+            self::assertSafeHeaderValue($loginIdStr);
             $headers[self::$loginIdHeaderName] = $loginIdStr;
         }
+        self::assertSafeHeaderValue(StpUtil::TYPE);
         $headers[self::$loginTypeHeaderName] = StpUtil::TYPE;
         return $headers;
     }
@@ -59,15 +64,25 @@ class SaRpcContext
 
         $tokenValue = StpUtil::getTokenValue();
         if ($tokenValue !== null) {
+            self::assertSafeHeaderValue($tokenValue);
             $request = $request->withHeader(self::$tokenHeaderName, $tokenValue);
         }
         $loginId = StpUtil::getLoginId();
         if ($loginId !== null) {
             $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+            self::assertSafeHeaderValue($loginIdStr);
             $request = $request->withHeader(self::$loginIdHeaderName, $loginIdStr);
         }
+        self::assertSafeHeaderValue(StpUtil::TYPE);
         $request = $request->withHeader(self::$loginTypeHeaderName, StpUtil::TYPE);
         return $request;
+    }
+
+    protected static function assertSafeHeaderValue(string $value): void
+    {
+        if (preg_match('/[\x00-\x1F\x7F]/', $value) === 1) {
+            throw new SaTokenException('RPC 认证信息包含无效 Header 字符');
+        }
     }
 
     /** @param array<string, string> $headers

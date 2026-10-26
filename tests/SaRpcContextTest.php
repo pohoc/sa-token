@@ -81,6 +81,17 @@ class SaRpcContextTest extends TestCase
         $this->assertEquals('login', $headers['X-Sa-Login-Type']);
     }
 
+    public function testAttachToHeadersRejectsLoginIdWithHeaderControlCharacters(): void
+    {
+        $loginResult = StpUtil::login("user\r\nX-Injected: yes");
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'satoken' => $loginResult->getAccessToken(),
+        ]));
+
+        $this->expectException(SaTokenException::class);
+        SaRpcContext::attachToHeaders([]);
+    }
+
     public function testAttachToHeadersWithoutLogin(): void
     {
         $headers = SaRpcContext::attachToHeaders([]);
