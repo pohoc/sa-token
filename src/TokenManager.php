@@ -1056,10 +1056,10 @@ class TokenManager
 
         $raw = $dao->getAndDelete($refreshKey);
         if ($raw === null) {
-            if ($this->getConfig()->isRefreshTokenRotation()
-                && $dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
-                $dao->compareAndDelete($markerKey, $snapshot);
-            }
+            // A concurrent consumer may have won after our lease expired. The
+            // marker is the only evidence that lets the resumed request detect
+            // reuse and revoke the winner's descendant session; never erase it
+            // merely because this request did not consume the credential.
             return null;
         }
         $data = SaFoxUtil::fromJson($this->decryptValue($raw));

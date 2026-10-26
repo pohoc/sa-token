@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SaToken\Tests;
 
 use PHPUnit\Framework\TestCase;
+use SaToken\Dao\SaTokenDaoMemory;
 use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
 use SaToken\StpLogic;
@@ -206,6 +207,64 @@ class RefreshTokenTest extends TestCase
 
         $this->assertTrue(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($result->getAccessToken()));
         $this->assertFalse(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($accessToken));
+    }
+
+    public function testExpiredRefreshLeaseCannotEraseTheWinnerReplayMarker(): void
+    {
+        $loginId = 'refresh-lease-race-user';
+        $dao = new class () extends SaTokenDaoMemory {
+            public ?\Closure $beforeRefreshGetAndDelete = null;
+
+            public function getAndDelete(string $key): ?string
+            {
+                if ($this->beforeRefreshGetAndDelete !== null
+                    && str_starts_with($key, TokenManager::REFRESH_TOKEN_PREFIX)) {
+                    $callback = $this->beforeRefreshGetAndDelete;
+                    $this->beforeRefreshGetAndDelete = null;
+                    $callback($key);
+                }
+                return parent::getAndDelete($key);
+            }
+        };
+        SaToken::setDao($dao);
+
+        $oldAccessToken = StpUtil::login($loginId)->getAccessToken();
+        $oldRefreshToken = StpUtil::createRefreshToken($oldAccessToken);
+        $rotatedAccessToken = '';
+        $rotatedRefreshToken = '';
+        $dao->beforeRefreshGetAndDelete = function () use ($dao, $loginId, $oldRefreshToken, &$rotatedAccessToken, &$rotatedRefreshToken): void {
+            // Simulate a paused worker whose account and per-token lock leases
+            // expire while a second worker consumes the same RefreshToken.
+            $dao->delete(TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId));
+            $dao->delete(TokenManager::LOCK_PREFIX . 'refresh-token:' . hash('sha256', $oldRefreshToken));
+            $otherLogic = new StpLogic('login', new TokenManager());
+            $result = $otherLogic->refreshToken($oldRefreshToken);
+            $rotatedAccessToken = $result->getAccessToken();
+            $rotatedRefreshToken = (string) $result->getRefreshToken();
+        };
+
+        try {
+            StpUtil::refreshToken($oldRefreshToken);
+            self::fail('A refresh request that resumes after losing its lease must detect the consumed token');
+        } catch (SaTokenException) {
+            // Either replay-specific or invalid-token rejection is acceptable;
+            // the stale worker itself may no longer own the account lock.
+        }
+
+        self::assertNotSame('', $rotatedAccessToken);
+        $replayLogic = new StpLogic('login', new TokenManager());
+        try {
+            $replayLogic->refreshToken($oldRefreshToken);
+            self::fail('A later replay must still find the winner marker');
+        } catch (SaTokenException) {
+            // Expected whether the descendant is revoked immediately or the
+            // retained marker triggers account-wide revocation on this request.
+        }
+        self::assertFalse(
+            StpUtil::getStpLogic()->getTokenManager()->isTokenValid($rotatedAccessToken),
+            'Reusing the consumed token after a lock lease expires must revoke the winning descendant session'
+        );
+        self::assertFalse(StpUtil::isRefreshTokenValid($rotatedRefreshToken));
     }
 
     public function testRefreshingStatelessJwtReturnsUsableStatelessJwt(): void
