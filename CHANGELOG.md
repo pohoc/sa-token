@@ -3,6 +3,7 @@
 ## 未发布
 
 ### 安全修复
+- (security) API Key 请求探测现在将部分或重复凭据 Header 识别为认证尝试，避免调用方按完整性探测结果跳过 API Key 校验并回退到 bearer 认证。
 - (crypto) 将加密的 token 与 session 记录认证绑定到 DAO key，拒绝跨 key 密文替换；OAuth2 access token 同时校验记录令牌与查询令牌一致。升级后旧版未绑定的加密 token/session 记录会失效，需要重新登录或授权。
 - (oauth2) 校验客户端与刷新令牌记录中的凭据标识是否匹配 DAO key，拒绝跨 key 记录替换导致的客户端冒用或受害者身份刷新。
 - (security) 将 RefreshToken 标识写入凭据记录并校验其与 DAO key 一致，拒绝跨 key 密文替换导致的受害者身份刷新；升级后旧格式 RefreshToken 需要重新签发。

@@ -76,6 +76,35 @@ class SaApiKeyTest extends TestCase
         $this->assertFalse($api->isApiKeyRequest());
     }
 
+    public function testIsApiKeyRequestDetectsPartialCredentialHeaders(): void
+    {
+        SaTokenContext::setRequest($this->mockRequestWithHeaders(['api-secret' => 'partial-secret']));
+
+        self::assertTrue((new SaApiKey())->isApiKeyRequest());
+    }
+
+    public function testPartialApiKeyAttemptCannotFallBackToBearerAuthentication(): void
+    {
+        SaToken::setConfig(SaToken::getConfig()->setIsReadHeader(true));
+        $logic = SaToken::getStpLogic();
+        $bearerToken = $logic->login('bearer-account')->getAccessToken();
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'api-key' => 'partial-api-key-attempt',
+            'satoken' => $bearerToken,
+        ]));
+
+        $api = new SaApiKey();
+        if ($api->isApiKeyRequest()) {
+            try {
+                $api->checkApiKey();
+            } catch (SaTokenException) {
+                // The request is rejected as an API Key attempt.
+            }
+        }
+
+        self::assertNull($logic->getLoginId(), '部分 API Key 凭据不得降级成请求中的 bearer token');
+    }
+
     public function testSetConfigRotatesSingletonApiKeyHeadersAndPreservesValidator(): void
     {
         $validatorCalls = 0;
@@ -118,7 +147,7 @@ class SaApiKeyTest extends TestCase
         SaTokenContext::setRequest($request);
 
         $api = new SaApiKey();
-        $this->assertFalse($api->isApiKeyRequest());
+        $this->assertTrue($api->isApiKeyRequest());
         $this->expectException(SaTokenException::class);
         $api->checkApiKey();
     }
@@ -136,7 +165,7 @@ class SaApiKeyTest extends TestCase
             return 'api-user';
         });
 
-        self::assertFalse($api->isApiKeyRequest());
+        self::assertTrue($api->isApiKeyRequest());
         try {
             $api->checkApiKey();
             self::fail('合并的 Key/Secret Header 必须被拒绝');

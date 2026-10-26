@@ -162,16 +162,16 @@ class SaApiKey
         return $this;
     }
 
+    /** Detect any configured API Key credential header, including malformed attempts. */
     public function isApiKeyRequest(): bool
     {
-        if (SaTokenContext::hasMultipleHeaderValues($this->keyHeaderName, true)
-            || SaTokenContext::hasMultipleHeaderValues($this->secretHeaderName, true)) {
-            return false;
-        }
-
-        $apiKey = SaTokenContext::getHeader($this->keyHeaderName);
-        $apiSecret = SaTokenContext::getHeader($this->secretHeaderName);
-        return $apiKey !== null && $apiSecret !== null;
+        // Detect an authentication attempt, not a complete valid header pair.
+        // Returning false for partial or duplicated headers lets callers that
+        // branch on this method fall through to native bearer authentication.
+        return SaTokenContext::hasMultipleHeaderValues($this->keyHeaderName, true)
+            || SaTokenContext::hasMultipleHeaderValues($this->secretHeaderName, true)
+            || SaTokenContext::getHeader($this->keyHeaderName) !== null
+            || SaTokenContext::getHeader($this->secretHeaderName) !== null;
     }
 
     public function registerKey(string $apiKey, string $apiSecret, mixed $loginId = null): void
