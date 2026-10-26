@@ -1377,6 +1377,37 @@ class SaOAuth2Test extends TestCase
         $this->assertEquals('read', $accessToken->getScope());
     }
 
+    public function testClientCredentialsRejectsSecretRotationDuringValidation(): void
+    {
+        $dao = new class () extends SaTokenDaoMemory {
+            public ?\Closure $afterClientSnapshot = null;
+
+            public function get(string $key): ?string
+            {
+                $value = parent::get($key);
+                if ($key === 'oauth2:client:test-client' && $this->afterClientSnapshot !== null) {
+                    $callback = $this->afterClientSnapshot;
+                    $this->afterClientSnapshot = null;
+                    $callback();
+                }
+
+                return $value;
+            }
+        };
+        SaToken::setDao($dao);
+        $this->handle->registerClient($this->testClient);
+        $dao->afterClientSnapshot = function (): void {
+            $rotatedClient = new SaOAuth2Client(array_merge($this->testClient->toArray(), [
+                'clientSecret' => 'rotated-client-secret-with-at-least-32-bytes',
+            ]));
+            $this->handle->registerClient($rotatedClient);
+        };
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('客户端密钥错误');
+        $this->handle->tokenByClientCredentials('test-client', $this->clientSecret, 'read');
+    }
+
     public function testTokenByClientCredentialsUnsupportedGrantType(): void
     {
         $config = new SaOAuth2Config(['grantTypes' => ['authorization_code']]);
