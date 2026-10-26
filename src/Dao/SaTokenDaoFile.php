@@ -267,6 +267,15 @@ class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteI
         }
     }
 
+    /** Delete an existing record or fail closed when the filesystem rejects it. */
+    protected function removeRecordFile(string $key): void
+    {
+        $path = $this->dataFile($key);
+        if (!@unlink($path)) {
+            throw new SaTokenException("文件存储记录删除失败：{$path}");
+        }
+    }
+
     /**
      * 读取有效值：过期时惰性删除文件并返回 null
      */
@@ -370,7 +379,7 @@ class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteI
         return $this->withLock($key, function () use ($key): ?string {
             $value = $this->readValue($key);
             if ($value !== null) {
-                @unlink($this->dataFile($key));
+                $this->removeRecordFile($key);
             }
             return $value;
         });
@@ -417,7 +426,7 @@ class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteI
                 return false;
             }
             if ($newValue === null) {
-                @unlink($this->dataFile($key));
+                $this->removeRecordFile($key);
             } else {
                 $this->writeRecord($key, $newValue, ($timeout !== null && $timeout > 0) ? time() + $timeout : null);
             }

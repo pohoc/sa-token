@@ -241,6 +241,48 @@ class SaTokenDaoFileTest extends TestCase
         $this->assertNull($this->dao->getAndDelete('k:gd'));
     }
 
+    public function testGetAndDeleteFailsClosedWhenRecordCannotBeRemoved(): void
+    {
+        $key = 'k:gd-unlink-failure';
+        $this->dao->set($key, 'one-time-credential', 60);
+        $dao = new class (['path' => $this->basePath]) extends SaTokenDaoFile {
+            protected function removeRecordFile(string $key): void
+            {
+                throw new SaTokenException('simulated unlink failure');
+            }
+        };
+
+        try {
+            $dao->getAndDelete($key);
+            self::fail('A one-time credential must not be returned when deletion fails');
+        } catch (SaTokenException $exception) {
+            self::assertSame('simulated unlink failure', $exception->getMessage());
+        }
+
+        self::assertSame('one-time-credential', $this->dao->get($key));
+    }
+
+    public function testCompareAndSetDeleteFailsWhenRecordCannotBeRemoved(): void
+    {
+        $key = 'k:cas-delete-unlink-failure';
+        $this->dao->set($key, 'active-marker', 60);
+        $dao = new class (['path' => $this->basePath]) extends SaTokenDaoFile {
+            protected function removeRecordFile(string $key): void
+            {
+                throw new SaTokenException('simulated unlink failure');
+            }
+        };
+
+        try {
+            $dao->compareAndSet($key, 'active-marker', null);
+            self::fail('CAS deletion must not report success when unlink fails');
+        } catch (SaTokenException $exception) {
+            self::assertSame('simulated unlink failure', $exception->getMessage());
+        }
+
+        self::assertSame('active-marker', $this->dao->get($key));
+    }
+
     public function testExecuteAtomicallyHoldsLockUntilCallbackReturns(): void
     {
         if (!function_exists('pcntl_fork')) {
