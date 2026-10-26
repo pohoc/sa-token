@@ -31,7 +31,7 @@ class SaHealthCheckTest extends TestCase
         $report = SaHealthCheck::check();
 
         self::assertSame(SaHealthCheck::STATUS_FAIL, $report['checks']['dao']['status']);
-        self::assertSame('DAO check failed', $report['checks']['dao']['message']);
+        self::assertSame('DAO check failed', $report['checks']['dao']['message'] ?? null);
         self::assertStringNotContainsString($secretConnectionDetails, json_encode($report) ?: '');
     }
 }
