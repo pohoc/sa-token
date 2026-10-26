@@ -225,6 +225,20 @@ class SaOAuth2Handle
             $this->validateIdTokenIssuer();
         }
 
+        // Client policy and credentials are stored in the shared DAO and may
+        // be revoked while this request validates the code. Re-read one current
+        // client snapshot at the consumption boundary so an old redirect URI,
+        // secret, grant, or scope cannot authorize a code after revocation.
+        $currentClient = $isPublicClient
+            ? $this->validateClient($clientId)
+            : $this->validateClientWithSecret($clientId, $clientSecret);
+        $this->validateGrantTypeForClient($currentClient, 'authorization_code');
+        if (($currentClient->getClientSecret() === '') !== $isPublicClient) {
+            throw new SaTokenException('客户端认证配置已变更，请重新发起授权');
+        }
+        $this->validateRedirectUriForClient($currentClient, $redirectUri);
+        $scope = $this->validateScopeForClient($currentClient, $codeData->getScope());
+
         // 绑定校验成功后再原子消费；并发兑换时只有一个请求能继续签发令牌。
         $consumedCode = $this->consumeAuthorizationCode($code);
         if ($consumedCode === null || $consumedCode->getCode() !== $code
@@ -1441,8 +1455,11 @@ class SaOAuth2Handle
      */
     protected function validateRedirectUri(string $clientId, string $redirectUri): void
     {
-        $client = $this->validateClient($clientId);
+        $this->validateRedirectUriForClient($this->validateClient($clientId), $redirectUri);
+    }
 
+    protected function validateRedirectUriForClient(SaOAuth2Client $client, string $redirectUri): void
+    {
         if ($redirectUri === '') {
             throw new SaTokenException('回调地址不能为空');
         }
