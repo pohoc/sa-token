@@ -370,7 +370,10 @@ class SecurityRegressionTest extends TestCase
                 '全账号注销完成后，暂停中的旧登录请求不能返回仍可用的 JWT'
             );
         } catch (SaTokenException $exception) {
-            self::assertSame('账号会话已撤销，拒绝签发无效登录凭证', $exception->getMessage());
+            self::assertContains($exception->getMessage(), [
+                '账号会话已撤销，拒绝签发无效登录凭证',
+                '账号会话锁已失效，拒绝签发无状态登录凭证',
+            ]);
         }
     }
 
@@ -477,6 +480,48 @@ class SecurityRegressionTest extends TestCase
             $contextHeaders,
             '默认登录仍按配置向响应写入 JWT'
         );
+    }
+
+    public function testStatelessLoginCannotFinishAfterDisableTakesOverExpiredAccountLock(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ])));
+
+        $dao = new class () extends SaTokenDaoMemory {
+            public ?\Closure $afterDisableRead = null;
+
+            public function get(string $key): ?string
+            {
+                $value = parent::get($key);
+                if ($this->afterDisableRead !== null && str_starts_with($key, 'satoken:disable:')) {
+                    $callback = $this->afterDisableRead;
+                    $this->afterDisableRead = null;
+                    $callback();
+                }
+
+                return $value;
+            }
+        };
+        SaToken::setDao($dao);
+        $logic = new StpLogic('login');
+        $loginId = 'stateless-disable-lock-expiry';
+        $dao->afterDisableRead = function () use ($dao, $loginId): void {
+            // Simulate a paused login resuming after its account-lock lease
+            // expired and an administrator completed a disable operation.
+            $dao->delete(TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId));
+            (new StpLogic('login', new TokenManager()))->disable($loginId, 'login', 1, 3600);
+        };
+
+        try {
+            $logic->loginStateless($loginId);
+            self::fail('账号封禁完成后，丢失账号锁的无状态登录不能签发 Token');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('锁', $exception->getMessage());
+        }
+
+        self::assertTrue($logic->isDisable($loginId, 'login'));
     }
 
     // ======== C1: mixed JWT 模式下会话必须可终止 ========

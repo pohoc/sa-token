@@ -291,6 +291,13 @@ class StpLogic
         }
         try {
             $this->checkDisableForLogin($loginId);
+            // A lock is only a lease. If disable() takes over after this
+            // request pauses, the stale login must not continue as though its
+            // earlier check still authorized credential issuance.
+            if (!$this->tokenManager->renewLock($lockKey, 30)) {
+                throw new SaTokenException('账号会话锁已失效，拒绝签发无状态登录凭证');
+            }
+            $this->checkDisableForLogin($loginId);
 
             $claims = $jwt->parseToken($tokenValue);
             if (($claims['sub'] ?? null) !== $loginIdStr
@@ -313,6 +320,14 @@ class StpLogic
                 $this->registerLoginDevice($loginId, $parameter->getDeviceType(), $parameter, $tokenValue);
             }
             $this->recordLoginIpIfEnabled($loginId, $config);
+
+            // Storage or event adapters may stall beyond the lease. Renew and
+            // recheck immediately before exposing the stateless bearer so a
+            // completed disable cannot be followed by a stale login response.
+            if (!$this->tokenManager->renewLock($lockKey, 30)) {
+                throw new SaTokenException('账号会话锁已失效，拒绝签发无状态登录凭证');
+            }
+            $this->checkDisableForLogin($loginId);
 
             if ($parameter->shouldWriteResponseCredentials()) {
                 $this->writeTokenToResponse($tokenValue, $parameter);
