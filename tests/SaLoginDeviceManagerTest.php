@@ -507,6 +507,35 @@ class SaLoginDeviceManagerTest extends TestCase
         self::assertSame($loginId, $this->logic->getLoginIdByToken($secondToken));
     }
 
+    public function testStatelessKickoutAllDevicesRequiresDeviceTrackingWhenKeepingOneToken(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenName'       => 'satoken',
+            'timeout'         => 86400,
+            'activityTimeout' => -1,
+            'isReadHeader'    => false,
+            'isReadCookie'    => false,
+            'isWriteCookie'   => false,
+            'isWriteHeader'   => false,
+            'jwtStateless'    => true,
+            'jwtSecretKey'    => 'test-stateless-device-secret-32-bytes-long',
+        ]));
+
+        $loginId = 'stateless-device-untracked-kickout';
+        $firstToken = $this->logic->loginStateless($loginId);
+        $exceptToken = $this->logic->loginStateless($loginId);
+
+        try {
+            $this->logic->kickoutAllDevices($loginId, $exceptToken);
+            self::fail('未跟踪无状态令牌时不能静默成功执行保留令牌踢出');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('需要启用设备管理', $exception->getMessage());
+        }
+
+        self::assertSame($loginId, $this->logic->getLoginIdByToken($firstToken));
+        self::assertSame($loginId, $this->logic->getLoginIdByToken($exceptToken));
+    }
+
     public function testStatelessLoginRegistersDevicesForExceptTokenKickout(): void
     {
         SaToken::setConfig(new SaTokenConfig([

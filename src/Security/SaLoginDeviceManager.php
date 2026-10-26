@@ -237,6 +237,10 @@ class SaLoginDeviceManager
     public static function kickoutAllDevices(mixed $loginId, string $loginType = 'login', ?string $exceptToken = null): int
     {
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        if (SaToken::getConfig()->isJwtStateless() && $exceptToken !== null
+            && !SaToken::getConfig()->isDeviceManagement()) {
+            throw new SaTokenException('无状态 JWT 保留指定 Token 踢出需要启用设备管理，才能枚举并撤销其他令牌');
+        }
         $logic = SaToken::getStpLogic($loginType);
         $lockKey = 'login:' . $loginType . ':' . hash('sha256', $loginIdStr);
         $tokenManager = $logic->getTokenManager();

@@ -1122,6 +1122,8 @@ SaToken::init([
 ]);
 ```
 
+无状态 JWT 调用 `kickoutAllDevices($loginId, $exceptToken)` 时，必须启用设备管理来记录并枚举该账号的令牌；未启用时方法会抛出异常，避免静默跳过撤销。
+
 设备信息自动检测（User-Agent 解析）：设备类型（PC/Mobile/Tablet）、设备名称（微信/钉钉/支付宝/Web）、操作系统、浏览器。
 
 启用 `tokenEncrypt` 后，设备管理记录中的 Token 字段也会加密保存；未加密的历史记录会在更新时逐步迁移。
