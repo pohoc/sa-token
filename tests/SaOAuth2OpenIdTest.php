@@ -22,10 +22,24 @@ class SaOAuth2OpenIdTest extends TestCase
     protected SaOAuth2Config $config;
     protected SaOAuth2Client $testClient;
     protected string $clientSecret;
+    protected string $rsaPrivateKey;
+    protected string $rsaPublicKey;
 
     protected function setUp(): void
     {
         SaToken::reset();
+        $rsaKey = openssl_pkey_new(['private_key_type' => OPENSSL_KEYTYPE_RSA, 'private_key_bits' => 2048]);
+        self::assertInstanceOf(\OpenSSLAsymmetricKey::class, $rsaKey);
+        $rsaPrivateKey = '';
+        self::assertTrue(openssl_pkey_export($rsaKey, $rsaPrivateKey));
+        if (!is_string($rsaPrivateKey)) {
+            self::fail('RSA private key export did not return a string.');
+        }
+        $this->rsaPrivateKey = $rsaPrivateKey;
+        $rsaDetails = openssl_pkey_get_details($rsaKey);
+        self::assertIsArray($rsaDetails);
+        self::assertIsString($rsaDetails['key'] ?? null);
+        $this->rsaPublicKey = $rsaDetails['key'];
         SaToken::setConfig(new SaTokenConfig([
             'tokenName'       => 'satoken',
             'timeout'         => 86400,
@@ -36,6 +50,7 @@ class SaOAuth2OpenIdTest extends TestCase
             'isWriteCookie'   => false,
             'isWriteHeader'   => false,
             'jwtSecretKey'    => 'test-jwt-secret-key-for-oauth2-id-token-32b',
+            'rsaPrivateKey'   => $this->rsaPrivateKey,
         ]));
         SaToken::setDao(new SaTokenDaoMemory());
 
@@ -90,12 +105,12 @@ class SaOAuth2OpenIdTest extends TestCase
         $this->handle->generateIdToken('test-client', "invalid-\xB1-subject", 'openid');
     }
 
-    public function testGenerateIdTokenRejectsShortSigningKey(): void
+    public function testGenerateIdTokenRejectsMissingAsymmetricSigningKey(): void
     {
         SaToken::setConfig(new SaTokenConfig(['jwtSecretKey' => 'short-secret']));
 
         $this->expectException(SaTokenException::class);
-        $this->expectExceptionMessage('至少需要 32 字节');
+        $this->expectExceptionMessage('RSA 私钥未配置');
         $this->handle->generateIdToken('test-client', 10001, 'openid');
     }
 
@@ -182,7 +197,7 @@ class SaOAuth2OpenIdTest extends TestCase
         $header = json_decode($headerDecoded, true);
         $this->assertIsArray($header);
         $this->assertEquals('JWT', $header['typ']);
-        $this->assertEquals('HS256', $header['alg']);
+        $this->assertEquals('RS256', $header['alg']);
 
         $payloadDecoded = base64_decode(strtr($parts[1], '-_', '+/'), true);
         $this->assertNotFalse($payloadDecoded);
@@ -191,6 +206,9 @@ class SaOAuth2OpenIdTest extends TestCase
         $this->assertEquals('10001', $payload['sub']);
         $this->assertEquals('test-client', $payload['aud']);
         $this->assertEquals('https://my-app.example.com', $payload['iss']);
+        $signature = base64_decode(strtr($parts[2], '-_', '+/'), true);
+        $this->assertIsString($signature);
+        $this->assertSame(1, openssl_verify($parts[0] . '.' . $parts[1], $signature, $this->rsaPublicKey, OPENSSL_ALGO_SHA256));
     }
 
     public function testAccessTokenIncludesIdTokenWhenOpenIdMode(): void

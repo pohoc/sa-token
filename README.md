@@ -665,9 +665,9 @@ $sso->doSloCallback($loginId, $params);
 
 ```php
 SaToken::init([
-    // 签发 id_token（OpenID Connect）必需
-    // 通过密钥管理服务注入预生成的随机密钥，至少 32 字节
-    'jwtSecretKey' => getenv('SA_TOKEN_JWT_SECRET_KEY') ?: '',
+    // 签发 id_token（OpenID Connect）必需；仅服务端保存 RSA 私钥
+    // 将对应 RSA 公钥安全分发给客户端用于验签，最低 2048 位
+    'rsaPrivateKey' => getenv('SA_TOKEN_OIDC_RSA_PRIVATE_KEY') ?: '',
     'oauth2' => [
         'grantTypes'           => ['authorization_code'],
         'codeTimeout'          => 60,
@@ -730,7 +730,7 @@ $accessToken = $oauth2->exchangeTokenByCode($code, $clientId, $clientSecret, $re
 
 ### OpenID Connect
 
-配置 `openIdMode => true` 且请求 scope 必须包含 `openid` 时，响应中自动包含 `id_token`（依赖 `jwtSecretKey` 配置）；`issuer` 必须配置为无凭据、无查询参数和片段的 HTTPS URL：
+配置 `openIdMode => true` 且请求 scope 必须包含 `openid` 时，响应中自动包含使用 RS256 签名的 `id_token`（依赖至少 2048 位的 `rsaPrivateKey` 配置）。私钥只留在签发端，并将对应公钥分发给客户端验签；不要把签名私钥或全局对称密钥交给客户端。`issuer` 必须配置为无凭据、无查询参数和片段的 HTTPS URL：
 
 ```php
 $accessToken = $oauth2->exchangeTokenByCode($code, $clientId, $clientSecret, $redirectUri);

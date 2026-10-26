@@ -1283,7 +1283,7 @@ class SaOAuth2Handle
     {
         $header = [
             'typ' => 'JWT',
-            'alg' => 'HS256',
+            'alg' => 'RS256',
         ];
 
         try {
@@ -1297,28 +1297,15 @@ class SaOAuth2Handle
         $payloadB64 = $this->base64UrlEncode($payloadJson);
         $signingInput = $headerB64 . '.' . $payloadB64;
 
-        $secretKey = $this->getClientSecretForSigning();
-        $signature = hash_hmac('sha256', $signingInput, $secretKey);
-
-        $signatureBin = hex2bin($signature);
-        if ($signatureBin === false) {
+        $signature = (new \SaToken\Plugin\SaTokenCrypto([
+            'rsaPrivateKey' => SaToken::getConfig()->getRsaPrivateKey(),
+        ]))->rsaSign($signingInput);
+        $signatureBin = base64_decode($signature, true);
+        if ($signatureBin === false || $signatureBin === '') {
             throw new SaTokenException('JWT 签名失败');
         }
 
         return $signingInput . '.' . $this->base64UrlEncode($signatureBin);
-    }
-
-    protected function getClientSecretForSigning(): string
-    {
-        $jwtSecretKey = SaToken::getConfig()->getJwtSecretKey();
-        if ($jwtSecretKey === '') {
-            throw new SaTokenException('OAuth2 ID Token 签名需要配置 jwtSecretKey');
-        }
-        if (strlen($jwtSecretKey) < 32) {
-            throw new SaTokenException('OAuth2 ID Token 的 HS256 密钥长度不足，至少需要 32 字节');
-        }
-
-        return $jwtSecretKey;
     }
 
     protected function base64UrlEncode(string $data): string

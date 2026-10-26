@@ -1947,13 +1947,20 @@ class SecurityRegressionTest extends TestCase
 
     public function testOauth2IdTokenEchoesNonceAndHasJti(): void
     {
+        $rsaKey = openssl_pkey_new(['private_key_type' => OPENSSL_KEYTYPE_RSA, 'private_key_bits' => 2048]);
+        self::assertInstanceOf(\OpenSSLAsymmetricKey::class, $rsaKey);
+        $rsaPrivateKey = '';
+        self::assertTrue(openssl_pkey_export($rsaKey, $rsaPrivateKey));
+        if (!is_string($rsaPrivateKey)) {
+            self::fail('RSA private key export did not return a string.');
+        }
         $handle = new SaOAuth2Handle(new SaOAuth2Config([
             'grantTypes' => ['authorization_code'],
             'openIdMode' => true,
             'issuer'     => 'https://issuer.example.com',
         ]));
         SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
-            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'rsaPrivateKey' => $rsaPrivateKey,
         ])));
         $handle->registerClient(new SaOAuth2Client([
             'clientId'     => 'oidc-nonce',
