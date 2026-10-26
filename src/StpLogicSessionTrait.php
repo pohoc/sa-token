@@ -50,6 +50,12 @@ trait StpLogicSessionTrait
             return null;
         }
 
+        // Migrate any legacy refresh lineage metadata before touching the
+        // TokenSession storage key; both used to share the same DAO namespace.
+        if ($this->tokenManager->getTokenSessionId($tokenValue, $this->loginType) === null) {
+            return null;
+        }
+
         $sessionId = TokenManager::TOKEN_SESSION_PREFIX . $tokenValue;
         $session = SaSession::getBySessionId($sessionId);
 

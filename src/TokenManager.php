@@ -20,6 +20,7 @@ class TokenManager
     public const LAST_ACTIVE_PREFIX = 'satoken:login:lastActive:';
     public const SESSION_PREFIX = 'satoken:session:';
     public const TOKEN_SESSION_PREFIX = 'satoken:tokenSession:';
+    public const TOKEN_SESSION_LINEAGE_PREFIX = 'satoken:tokenSessionLineage:';
     public const DISABLE_PREFIX = 'satoken:disable:';
     public const SAFE_PREFIX = 'satoken:safe:';
     protected const SAFE_V2_PREFIX = 'satoken:safe:v2:';
@@ -373,7 +374,7 @@ class TokenManager
         }
 
         $dao->set(
-            self::TOKEN_SESSION_PREFIX . $tokenValue,
+            self::TOKEN_SESSION_LINEAGE_PREFIX . $tokenValue,
             $this->encryptValue(SaFoxUtil::toJson([
                 'loginId' => $loginIdStr,
                 'loginType' => $loginType,
@@ -396,6 +397,7 @@ class TokenManager
         $dao = $this->getDao();
         $dao->delete(self::LAST_ACTIVE_PREFIX . $tokenValue);
         $dao->delete(self::TOKEN_SESSION_PREFIX . $tokenValue);
+        $dao->delete(self::TOKEN_SESSION_LINEAGE_PREFIX . $tokenValue);
         $dao->delete(self::FINGERPRINT_PREFIX . $tokenValue);
         $this->clearSwitch($tokenValue, $loginType);
 
@@ -509,28 +511,43 @@ class TokenManager
         }
 
         $preCapturedSessionId = null;
-        $legacySessionId = null;
-        $sessionValue = $this->getDao()->get(self::TOKEN_SESSION_PREFIX . $tokenValue);
+        $sessionLineageKey = self::TOKEN_SESSION_LINEAGE_PREFIX . $tokenValue;
+        $sessionValue = $this->getDao()->get($sessionLineageKey);
+        $legacyBindingKey = self::TOKEN_SESSION_PREFIX . $tokenValue;
+        $legacyBindingValue = null;
         if ($sessionValue !== null) {
             try {
                 $sessionData = SaFoxUtil::fromJson($this->decryptValue($sessionValue));
-                if (is_array($sessionData)) {
-                    $boundLoginId = $sessionData['loginId'] ?? null;
-                    $boundLoginType = $sessionData['loginType'] ?? null;
-                    $boundSessionId = $sessionData['sessionId'] ?? null;
-                    if ($boundLoginId !== $loginId || $boundLoginType !== $loginType
-                        || !is_string($boundSessionId) || $boundSessionId === '') {
-                        return null;
-                    }
-                    $preCapturedSessionId = $boundSessionId;
-                } else {
-                    $legacySessionId = $this->decryptValue($sessionValue);
-                    if ($legacySessionId === '') {
-                        $legacySessionId = null;
-                    }
+                if (!is_array($sessionData)
+                    || ($sessionData['loginId'] ?? null) !== $loginId
+                    || ($sessionData['loginType'] ?? null) !== $loginType
+                    || !is_string($sessionData['sessionId'] ?? null)
+                    || $sessionData['sessionId'] === '') {
+                    return null;
                 }
+                $preCapturedSessionId = $sessionData['sessionId'];
             } catch (SaTokenException) {
                 return null;
+            }
+        } else {
+            // Previous releases placed lineage metadata in TOKEN_SESSION_PREFIX,
+            // which is also the public TokenSession data namespace. Migrate only
+            // the exact typed sidecar shape and leave user session records alone.
+            $legacyBindingValue = $this->getDao()->get($legacyBindingKey);
+            if ($legacyBindingValue !== null) {
+                try {
+                    $legacyData = SaFoxUtil::fromJson($this->decryptValue($legacyBindingValue));
+                    if (is_array($legacyData)
+                        && array_keys($legacyData) === ['loginId', 'loginType', 'sessionId']
+                        && ($legacyData['loginId'] ?? null) === $loginId
+                        && ($legacyData['loginType'] ?? null) === $loginType
+                        && is_string($legacyData['sessionId'] ?? null)
+                        && preg_match('/^[A-Za-z0-9]{32}$/D', $legacyData['sessionId']) === 1) {
+                        $preCapturedSessionId = $legacyData['sessionId'];
+                    }
+                } catch (SaTokenException) {
+                    // Do not let unrelated user-owned session data block auth.
+                }
             }
         }
 
@@ -577,10 +594,10 @@ class TokenManager
                     : null;
             }
 
-            $sessionId = $preCapturedSessionId ?? $legacySessionId ?? SaFoxUtil::randomString(32);
+            $sessionId = $preCapturedSessionId ?? SaFoxUtil::randomString(32);
             $tokenTimeout = $this->getDao()->getTimeout(self::TOKEN_PREFIX . $tokenValue);
             $this->getDao()->set(
-                self::TOKEN_SESSION_PREFIX . $tokenValue,
+                $sessionLineageKey,
                 $this->encryptValue(SaFoxUtil::toJson([
                     'loginId' => $loginId,
                     'loginType' => $loginType,
@@ -588,6 +605,10 @@ class TokenManager
                 ])),
                 $tokenTimeout > 0 ? $tokenTimeout : null
             );
+            if ($legacyBindingValue !== null && $preCapturedSessionId !== null
+                && $this->getDao() instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
+                $this->getDao()->compareAndDelete($legacyBindingKey, $legacyBindingValue);
+            }
 
             return ['loginId' => $loginId, 'sessionId' => $sessionId];
         } finally {
@@ -768,6 +789,7 @@ class TokenManager
                 $keysToDelete[] = self::TOKEN_PREFIX . $tokenValue;
                 $keysToDelete[] = self::LAST_ACTIVE_PREFIX . $tokenValue;
                 $keysToDelete[] = self::TOKEN_SESSION_PREFIX . $tokenValue;
+                $keysToDelete[] = self::TOKEN_SESSION_LINEAGE_PREFIX . $tokenValue;
                 $keysToDelete[] = self::FINGERPRINT_PREFIX . $tokenValue;
                 $refreshToken = $this->getRefreshTokenByAccessToken($loginId, $loginType, $tokenValue);
                 if ($refreshToken !== null) {

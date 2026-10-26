@@ -147,6 +147,53 @@ class RefreshTokenTest extends TestCase
         self::assertSame('logout-refresh-race', $logic->getLoginIdByToken($otherSession->getAccessToken()));
     }
 
+    public function testTokenSessionDataDoesNotCollideWithRefreshLineageMetadata(): void
+    {
+        $logic = new StpLogic('login');
+        $login = $logic->login('token-session-refresh');
+        SaTokenContext::setTokenOverride('login', $login->getAccessToken());
+
+        $tokenSession = $logic->getTokenSession();
+        self::assertNotNull($tokenSession);
+        $tokenSession->set('checkout-state', 'pending');
+        $sessionId = $logic->getTokenManager()->getTokenSessionId($login->getAccessToken(), 'login');
+        self::assertIsString($sessionId);
+
+        $reloadedSession = $logic->getTokenSession(false);
+        self::assertNotNull($reloadedSession);
+        self::assertSame('pending', $reloadedSession->get('checkout-state'));
+
+        $refreshed = $logic->refreshToken($login->getRefreshToken());
+        self::assertSame(
+            $sessionId,
+            $logic->getTokenManager()->getTokenSessionId($refreshed->getAccessToken(), 'login')
+        );
+        SaTokenContext::setTokenOverride('login', $refreshed->getAccessToken());
+        self::assertSame('token-session-refresh', $logic->getLoginId());
+    }
+
+    public function testLegacyTokenSessionLineageMigratesWithoutExposingMetadataAsSessionData(): void
+    {
+        $logic = new StpLogic('login');
+        $login = $logic->login('legacy-token-session-lineage');
+        $legacySessionId = str_repeat('a', 32);
+        $legacyKey = TokenManager::TOKEN_SESSION_PREFIX . $login->getAccessToken();
+        SaToken::getDao()->delete(TokenManager::TOKEN_SESSION_LINEAGE_PREFIX . $login->getAccessToken());
+        SaToken::getDao()->set($legacyKey, json_encode([
+            'loginId' => 'legacy-token-session-lineage',
+            'loginType' => 'login',
+            'sessionId' => $legacySessionId,
+        ], JSON_THROW_ON_ERROR), 7200);
+        SaTokenContext::setTokenOverride('login', $login->getAccessToken());
+
+        $session = $logic->getTokenSession();
+
+        self::assertNotNull($session);
+        self::assertSame($legacySessionId, $logic->getTokenManager()->getTokenSessionId($login->getAccessToken(), 'login'));
+        self::assertNull($session->get('sessionId'));
+        self::assertNull(SaToken::getDao()->get($legacyKey));
+    }
+
     public function testKickoutByLoginIdRevokesAllRefreshTokens(): void
     {
         $loginResult = StpUtil::login(10021);
