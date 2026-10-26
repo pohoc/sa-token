@@ -1308,6 +1308,58 @@ class SaOAuth2Test extends TestCase
         self::assertNull($this->handle->validateAccessToken($otherToken));
     }
 
+    public function testEncryptedRefreshTokenRecordCannotBeCopiedToAnotherTokenKey(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenEncrypt' => true,
+            'tokenEncryptKey' => str_repeat('r', 32),
+        ]));
+        $this->handle->registerClient($this->testClient);
+        $victimCode = $this->handle->generateAuthorizationCode('test-client', 'victim', 'https://example.com/callback');
+        $victim = $this->handle->exchangeTokenByCode($victimCode->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
+        $attackerCode = $this->handle->generateAuthorizationCode('test-client', 'attacker', 'https://example.com/callback');
+        $attacker = $this->handle->exchangeTokenByCode($attackerCode->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
+        $victimRefreshToken = $victim->getRefreshToken();
+        $attackerRefreshToken = $attacker->getRefreshToken();
+        self::assertNotSame('', $victimRefreshToken);
+        if ($attackerRefreshToken === null || $attackerRefreshToken === '') {
+            self::fail('Authorization code exchange did not issue an attacker refresh token');
+        }
+
+        $dao = SaToken::getDao();
+        $victimRecord = $dao->get('oauth2:rt:' . $victimRefreshToken);
+        self::assertNotNull($victimRecord);
+        $dao->set('oauth2:rt:' . $attackerRefreshToken, $victimRecord, 3600);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('存储记录与凭据不匹配');
+        $this->handle->refreshToken($attackerRefreshToken, 'test-client', $this->clientSecret);
+    }
+
+    public function testEncryptedClientRecordCannotBeCopiedToAnotherClientKey(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenEncrypt' => true,
+            'tokenEncryptKey' => str_repeat('c', 32),
+        ]));
+        $this->handle->registerClient($this->testClient);
+        $otherClientId = 'other-client';
+        $this->handle->registerClient(new SaOAuth2Client([
+            'clientId' => $otherClientId,
+            'clientSecret' => str_repeat('d', 32),
+            'redirectUris' => ['https://example.com/callback'],
+            'grantTypes' => ['authorization_code'],
+            'scopes' => ['read'],
+        ]));
+
+        $dao = SaToken::getDao();
+        $ownerRecord = $dao->get('oauth2:client:test-client');
+        self::assertNotNull($ownerRecord);
+        $dao->set('oauth2:client:' . $otherClientId, $ownerRecord);
+
+        self::assertNull($this->handle->getClient($otherClientId));
+    }
+
     public function testOAuth2HandleUsesRotatedStorageEncryptionKey(): void
     {
         $oldKey = 'old-oauth2-storage-encryption-key-32-bytes';

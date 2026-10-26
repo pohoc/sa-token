@@ -91,7 +91,8 @@ class SaOAuth2Handle
         }
         /** @var array<string, mixed> $data */
 
-        return new SaOAuth2Client($data);
+        $client = new SaOAuth2Client($data);
+        return $client->getClientId() === $clientId ? $client : null;
     }
 
     /**
@@ -381,6 +382,10 @@ class SaOAuth2Handle
                         $familyId,
                         'oauth2:rt:consumed:' . hash('sha256', $refreshToken)
                     );
+                }
+                if (!is_string($preData['refreshToken'] ?? null)
+                    || !hash_equals($refreshToken, $preData['refreshToken'])) {
+                    throw new SaTokenException('刷新令牌存储记录与凭据不匹配');
                 }
                 if (!$this->isRefreshTokenRecordValid($preData)) {
                     throw new SaTokenException('刷新令牌数据无效或已过期');
@@ -1244,6 +1249,10 @@ class SaOAuth2Handle
         }
 
         /** @var array<string, mixed> $data */
+        if (!is_string($data['refreshToken'] ?? null)
+            || !hash_equals($refreshToken, $data['refreshToken'])) {
+            return null;
+        }
         return new SaOAuth2RefreshToken($data);
     }
 

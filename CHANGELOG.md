@@ -4,6 +4,7 @@
 
 ### 安全修复
 - (crypto) 将加密的 token 与 session 记录认证绑定到 DAO key，拒绝跨 key 密文替换；OAuth2 access token 同时校验记录令牌与查询令牌一致。升级后旧版未绑定的加密 token/session 记录会失效，需要重新登录或授权。
+- (oauth2) 校验客户端与刷新令牌记录中的凭据标识是否匹配 DAO key，拒绝跨 key 记录替换导致的客户端冒用或受害者身份刷新。
 
 本文件由脚本自动生成，基于 git tag 和 commit 记录。
 
