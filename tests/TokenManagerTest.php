@@ -298,6 +298,24 @@ class TokenManagerTest extends TestCase
         self::assertSame('victim', $this->manager->getLoginIdByToken($token));
     }
 
+    public function testDeleteTokenCannotDeleteReusedBearerThroughStaleLoginTypeIndex(): void
+    {
+        $token = 'reused-cross-login-type-token';
+        $this->manager->saveToken($token, 'same-user', 'old', 'PC', 3600);
+        $this->manager->saveToken('old-type-keep-token', 'same-user', 'old', 'mobile', 3600);
+
+        // An expired bearer can disappear while another old-type session
+        // keeps its account index alive. Simulate its reuse by another type.
+        $this->dao->delete(TokenManager::TOKEN_PREFIX . $token);
+        $this->dao->delete(TokenManager::TOKEN_SESSION_LINEAGE_PREFIX . $token);
+        $this->manager->saveToken($token, 'same-user', 'new', 'PC', 3600);
+
+        $this->manager->deleteToken($token, 'same-user', 'old');
+
+        self::assertSame('same-user', $this->manager->getLoginIdByToken($token));
+        self::assertSame('new', $this->manager->getTokenSessionLoginType($token));
+    }
+
     public function testSaveRefreshTokenRejectsAccessTokenOwnedByAnotherAccount(): void
     {
         $accessToken = $this->manager->createTokenValue('victim', 'login');

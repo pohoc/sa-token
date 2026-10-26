@@ -807,6 +807,13 @@ class TokenManager
             if ($this->getLoginIdByToken($tokenValue) !== $loginIdStr) {
                 return;
             }
+            // Account indexes can outlive an expired token record. If the
+            // bearer value has since been issued to another login type, a
+            // stale index in the original type must not revoke the new owner.
+            $recordedLoginType = $this->getTokenSessionLoginType($tokenValue);
+            if ($recordedLoginType !== null && $recordedLoginType !== $loginType) {
+                return;
+            }
             $loginIdKey = self::buildLoginIdKey($loginType, $loginIdStr);
             $expectedList = $this->getDao()->get($loginIdKey);
             $existingTokens = $this->getTokenListByLoginId($loginId, $loginType);
