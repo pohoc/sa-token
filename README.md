@@ -909,7 +909,7 @@ use SaToken\SaToken;
 SaToken::setDao(new SaTokenDaoFile(['path' => __DIR__ . '/runtime/sa-token']));
 ```
 
-新建的存储目录仅当前用户可访问，数据文件和锁文件使用 `0600` 权限。
+新建的存储目录仅当前用户可访问，数据文件和锁文件使用 `0600` 权限。锁使用固定的 256 个条带，因此随机缺失 key 查询不会无限创建锁文件；不同 key 偶尔会共享一把锁。升级包含锁文件布局变化的版本时，需先停止旧 worker，再启动新 worker，避免新旧进程使用不同锁路径。
 
 ### Redis 存储
 

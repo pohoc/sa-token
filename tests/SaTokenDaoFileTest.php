@@ -17,6 +17,13 @@ class SaTokenDaoFileTest extends TestCase
 
     protected SaTokenDaoFile $dao;
 
+    protected function getLockPath(string $key): string
+    {
+        $path = (new \ReflectionMethod(SaTokenDaoFile::class, 'lockFile'))->invoke($this->dao, $key);
+        self::assertIsString($path);
+        return $path;
+    }
+
     protected function setUp(): void
     {
         $this->basePath = sys_get_temp_dir() . '/sa-token-test-' . bin2hex(random_bytes(4));
@@ -145,9 +152,21 @@ class SaTokenDaoFileTest extends TestCase
         $this->dao->setIfNotExists('k:private-lock', 'lock', 60);
 
         $dataFile = $this->basePath . '/data/' . hash('sha256', 'k:private') . '.dat';
-        $lockFile = $this->basePath . '/locks/' . hash('sha256', 'k:private-lock') . '.lock';
+        $lockFile = $this->getLockPath('k:private-lock');
         $this->assertSame(0600, fileperms($dataFile) & 0777);
         $this->assertSame(0600, fileperms($lockFile) & 0777);
+    }
+
+    public function testMissingKeyReadsUseABoundedLockFilePool(): void
+    {
+        foreach (range(1, 2000) as $index) {
+            self::assertNull($this->dao->get('untrusted-token-' . $index));
+        }
+
+        $lockFiles = glob($this->basePath . '/locks/*.lock') ?: [];
+        self::assertGreaterThan(0, count($lockFiles));
+        self::assertLessThanOrEqual(256, count($lockFiles));
+        self::assertLessThan(2000, count($lockFiles));
     }
 
     public function testDataRecordSymlinkIsRejected(): void
@@ -185,7 +204,7 @@ class SaTokenDaoFileTest extends TestCase
         $target = $this->basePath . '/external-lock-target';
         file_put_contents($target, 'unrelated file');
         chmod($target, 0644);
-        $link = $this->basePath . '/locks/' . hash('sha256', $key) . '.lock';
+        $link = $this->getLockPath($key);
         self::assertTrue(symlink($target, $link));
 
         try {
@@ -341,7 +360,7 @@ class SaTokenDaoFileTest extends TestCase
 
         $key = 'k:atomic-set';
         $resultPath = $this->basePath . '/set-result';
-        $lockPath = $this->basePath . '/locks/' . hash('sha256', $key) . '.lock';
+        $lockPath = $this->getLockPath($key);
         $lock = fopen($lockPath, 'c');
         $this->assertNotFalse($lock);
         flock($lock, LOCK_EX);

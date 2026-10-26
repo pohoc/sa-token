@@ -26,6 +26,9 @@ use SaToken\Exception\SaTokenException;
  */
 class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface, SaTokenDaoCompareAndExpireInterface, SaTokenDaoCompareAndSetInterface, SaTokenDaoCompareAndUpdateInterface, SaTokenDaoDeleteIfExpiredInterface
 {
+    /** A fixed lock pool prevents unauthenticated lookups from creating unbounded files. */
+    private const LOCK_STRIPE_COUNT = 256;
+
     protected string $dataDir;
 
     protected string $lockDir;
@@ -92,7 +95,8 @@ class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteI
 
     protected function lockFile(string $key): string
     {
-        return $this->lockDir . '/' . hash('sha256', $key) . '.lock';
+        $stripe = hexdec(substr(hash('sha256', $key), 0, 2)) % self::LOCK_STRIPE_COUNT;
+        return $this->lockDir . '/stripe-' . str_pad((string) $stripe, 3, '0', STR_PAD_LEFT) . '.lock';
     }
 
     /**
