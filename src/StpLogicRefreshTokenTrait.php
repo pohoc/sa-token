@@ -20,12 +20,16 @@ trait StpLogicRefreshTokenTrait
             throw new SaTokenException('AccessToken 无效，无法创建 RefreshToken');
         }
 
+        $this->checkDisableForLogin($loginId);
+
         // 与刷新、登出和踢出使用同一账号锁；一个 AccessToken 只保留一个有效 RefreshToken。
         $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', (string) $loginId);
         if (!$this->tokenManager->acquireLock($lockKey, 30)) {
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
+        $refreshToken = null;
         try {
+            $this->checkDisableForLogin($loginId);
             $currentLoginId = $this->getLoginIdByToken($accessToken);
             if ($currentLoginId === null || $currentLoginId !== (string) $loginId
                 || $this->tokenManager->isBlacklisted($accessToken)) {
@@ -39,6 +43,16 @@ trait StpLogicRefreshTokenTrait
 
             $refreshToken = $this->tokenManager->createTokenValue($loginId, $this->loginType, 'srt_');
             $this->tokenManager->saveRefreshToken($refreshToken, $accessToken, $loginId, $this->loginType, $timeout);
+            $this->checkDisableForLogin($loginId);
+            if (!$this->tokenManager->renewLock($lockKey, 30)) {
+                throw new SaTokenException('账号会话锁已失效，拒绝签发 RefreshToken');
+            }
+        } catch (\Throwable $exception) {
+            if ($refreshToken !== null) {
+                $this->tokenManager->deleteRefreshToken($refreshToken);
+            }
+
+            throw $exception;
         } finally {
             $this->tokenManager->releaseLock($lockKey);
         }

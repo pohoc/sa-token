@@ -671,6 +671,69 @@ class SecurityRegressionTest extends TestCase
         self::assertSame([], $tokenManager->getTokenListByLoginId($loginId, 'login'));
     }
 
+    public function testDisabledAccountCannotCreateRefreshToken(): void
+    {
+        $loginId = 'disabled-refresh-token-creation';
+        $logic = new StpLogic('login');
+        $accessToken = $logic->login($loginId)->getAccessToken();
+        $logic->disable($loginId, 'login', 1, 3600);
+
+        try {
+            $logic->createRefreshToken($accessToken);
+            self::fail('封禁账号不能创建新的 RefreshToken');
+        } catch (DisableServiceException) {
+            self::assertTrue($logic->isDisable($loginId, 'login'));
+        }
+    }
+
+    public function testRefreshTokenCreationCannotFinishAfterDisableTakesOverExpiredAccountLock(): void
+    {
+        $loginId = 'refresh-create-disable-lock-expiry';
+        $tokenManager = new class () extends TokenManager {
+            public ?\Closure $afterRefreshTokenSaved = null;
+
+            public string $issuedRefreshToken = '';
+
+            public function saveRefreshToken(
+                string $refreshToken,
+                string $accessToken,
+                mixed $loginId,
+                string $loginType,
+                int $timeout
+            ): void {
+                parent::saveRefreshToken($refreshToken, $accessToken, $loginId, $loginType, $timeout);
+                $this->issuedRefreshToken = $refreshToken;
+                if ($this->afterRefreshTokenSaved !== null) {
+                    $callback = $this->afterRefreshTokenSaved;
+                    $this->afterRefreshTokenSaved = null;
+                    $callback();
+                }
+            }
+        };
+        $logic = new StpLogic('login', $tokenManager);
+        $accessToken = $logic->login($loginId)->getAccessToken();
+        $tokenManager->afterRefreshTokenSaved = function () use ($loginId): void {
+            SaToken::getDao()->delete(
+                TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId)
+            );
+            SaTokenContext::setContextId('disable-admin');
+            try {
+                (new StpLogic('login', new TokenManager()))->disable($loginId, 'login', 1, 3600);
+            } finally {
+                SaTokenContext::setContextId('default');
+            }
+        };
+
+        try {
+            $logic->createRefreshToken($accessToken);
+            self::fail('封禁完成后，RefreshToken 创建请求不能返回新凭证');
+        } catch (DisableServiceException) {
+            self::assertTrue($logic->isDisable($loginId, 'login'));
+        }
+
+        self::assertFalse($tokenManager->isRefreshTokenValid($tokenManager->issuedRefreshToken));
+    }
+
     // ======== C1: mixed JWT 模式下会话必须可终止 ========
 
     public function testMixedJwtModeLogoutInvalidatesToken(): void
