@@ -80,7 +80,7 @@ class StpLogicSecurityTest extends TestCase
         SaTokenContext::setRequest($request);
 
         $code = SaSensitiveVerify::generateCode('payment', $loginId);
-        self::assertTrue(SaSensitiveVerify::verifyCode('payment', $code, $loginId));
+        $this->stp->verifyOtpCode('payment', $code);
 
         $proof = $this->stp->openSensitiveVerify('payment');
         $this->stp->checkSensitiveVerify('payment', $proof);
@@ -88,6 +88,47 @@ class StpLogicSecurityTest extends TestCase
 
         $this->expectException(NotSafeException::class);
         $this->stp->openSensitiveVerify('payment');
+    }
+
+    public function testOtpVerificationCannotMintSensitiveProofForAnotherSession(): void
+    {
+        SaToken::getConfig()->setTokenFingerprint(false);
+        $loginId = 'cross-session-sensitive-user';
+        $tokenA = $this->manager->createTokenValue($loginId, 'login');
+        $this->manager->saveToken($tokenA, $loginId, 'login', 'PC', 3600);
+        $tokenB = $this->manager->createTokenValue($loginId, 'login');
+        $this->manager->saveToken($tokenB, $loginId, 'login', 'APP', 3600);
+
+        $requestA = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $requestA->method('getHeader')->willReturnCallback(static fn (string $name): array => strcasecmp($name, 'satoken') === 0 ? [$tokenA] : []);
+        SaTokenContext::setRequest($requestA);
+
+        $code = SaSensitiveVerify::generateCode('payment', $loginId);
+        $this->stp->verifyOtpCode('payment', $code);
+
+        $requestB = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $requestB->method('getHeader')->willReturnCallback(static fn (string $name): array => strcasecmp($name, 'satoken') === 0 ? [$tokenB] : []);
+        SaTokenContext::setRequest($requestB);
+
+        try {
+            $this->stp->openSensitiveVerify('payment');
+            self::fail('A second session must not mint a proof from another session OTP');
+        } catch (NotSafeException $exception) {
+            self::assertSame('请先完成该场景的一次性验证码验证', $exception->getMessage());
+        }
+
+        SaTokenContext::setRequest($requestA);
+        $proof = $this->stp->openSensitiveVerify('payment');
+        SaTokenContext::setRequest($requestB);
+        try {
+            $this->stp->checkSensitiveVerify('payment', $proof);
+            self::fail('A sensitive proof must not be usable from another session');
+        } catch (NotSafeException $exception) {
+            self::assertSame('安全验证令牌无效或已过期', $exception->getMessage());
+        }
+
+        SaTokenContext::setRequest($requestA);
+        $this->stp->checkSensitiveVerify('payment', $proof);
     }
 
     public function testSourceAntiBruteLimitRemainsEnabledWhenAccountLimitIsDisabled(): void

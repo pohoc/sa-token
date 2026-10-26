@@ -188,7 +188,7 @@ class SaSensitiveVerify
         }
     }
 
-    public static function verifyCode(string $scene, string $code, mixed $loginId, string $loginType = 'login'): bool
+    public static function verifyCode(string $scene, string $code, mixed $loginId, string $loginType = 'login', ?string $tokenBinding = null): bool
     {
         $dao = SaToken::getDao();
         if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndUpdateInterface
@@ -263,6 +263,11 @@ class SaSensitiveVerify
 
                     $current['verified'] = true;
                     $current['verifiedAt'] = time();
+                    if ($tokenBinding !== null) {
+                        $current['verifiedTokenHash'] = hash('sha256', $tokenBinding);
+                    } else {
+                        unset($current['verifiedTokenHash']);
+                    }
                     if ($dao->compareAndUpdate($key, $currentRecord, self::encodeSensitiveState($current, $key))) {
                         $dao->delete($key . ':att');
                         $dao->delete($key . ':verified');
@@ -279,14 +284,14 @@ class SaSensitiveVerify
         }
     }
 
-    public static function verifyCodeAndThrow(string $scene, string $code, mixed $loginId, string $loginType = 'login'): void
+    public static function verifyCodeAndThrow(string $scene, string $code, mixed $loginId, string $loginType = 'login', ?string $tokenBinding = null): void
     {
-        if (!self::verifyCode($scene, $code, $loginId, $loginType)) {
+        if (!self::verifyCode($scene, $code, $loginId, $loginType, $tokenBinding)) {
             throw new NotSafeException('敏感操作验证失败');
         }
     }
 
-    public static function isVerified(string $scene, mixed $loginId, string $loginType = 'login'): bool
+    public static function isVerified(string $scene, mixed $loginId, string $loginType = 'login', ?string $tokenBinding = null): bool
     {
         $dao = SaToken::getDao();
         $key = self::getKey($scene, $loginId, $loginType);
@@ -302,33 +307,41 @@ class SaSensitiveVerify
         }
 
         $expiresAt = $info['expiresAt'] ?? null;
+        $verifiedTokenHash = $info['verifiedTokenHash'] ?? null;
+        $expectedTokenHash = $tokenBinding !== null ? hash('sha256', $tokenBinding) : null;
+
         return ($info['verified'] ?? false) === true
             && is_int($expiresAt)
-            && $expiresAt > time();
+            && $expiresAt > time()
+            && $verifiedTokenHash === $expectedTokenHash;
     }
 
     /** Issue a one-time safe token only after consuming a successful OTP verification. */
-    public static function createSafeTokenAfterVerified(string $scene, mixed $loginId, string $loginType = 'login', int $validSeconds = 600): string
+    public static function createSafeTokenAfterVerified(string $scene, mixed $loginId, string $loginType = 'login', int $validSeconds = 600, ?string $tokenBinding = null): string
     {
         self::validateLifetime($validSeconds);
-        if (!self::consumeVerified($scene, $loginId, $loginType)) {
+        if (!self::consumeVerified($scene, $loginId, $loginType, $tokenBinding)) {
             throw new NotSafeException('请先完成该场景的一次性验证码验证');
         }
 
-        return self::createSafeToken($scene, $loginId, $loginType, $validSeconds);
+        return self::createSafeToken($scene, $loginId, $loginType, $validSeconds, $tokenBinding);
     }
 
     /** Atomically consume a successful OTP verification before issuing a safe token. */
-    protected static function consumeVerified(string $scene, mixed $loginId, string $loginType): bool
+    protected static function consumeVerified(string $scene, mixed $loginId, string $loginType, ?string $tokenBinding = null): bool
     {
         $dao = SaToken::getDao();
+        if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
+            throw new SaTokenException('DAO 必须实现原子比较删除接口才能消费验证码');
+        }
         $key = self::getKey($scene, $loginId, $loginType);
         $lockValue = self::acquireStateLock($key);
         try {
             // The distributed lock is a lease and can expire while storage is
-            // stalled. Consume the proof atomically so an old lock owner cannot
-            // issue a second safe token after another worker consumes it.
-            $data = $dao->getAndDelete($key);
+            // stalled. Compare-and-delete the validated snapshot so an old
+            // lock owner cannot consume a newer OTP generation or issue a
+            // second safe token after another worker consumes it.
+            $data = $dao->get($key);
             if ($data === null) {
                 return false;
             }
@@ -339,6 +352,13 @@ class SaSensitiveVerify
                 || ($info['verified'] ?? false) !== true
                 || !is_int($expiresAt)
                 || $expiresAt <= time()) {
+                return false;
+            }
+            $expectedTokenHash = $tokenBinding !== null ? hash('sha256', $tokenBinding) : null;
+            if (($info['verifiedTokenHash'] ?? null) !== $expectedTokenHash) {
+                return false;
+            }
+            if (!$dao->compareAndDelete($key, $data)) {
                 return false;
             }
 
@@ -475,14 +495,12 @@ class SaSensitiveVerify
         return hash_hkdf('sha256', $signKey, 32, 'sa-token-sensitive-verify-state', '');
     }
 
-    public static function createSafeToken(string $scene, mixed $loginId, string $loginType = 'login', int $validSeconds = 600): string
+    public static function createSafeToken(string $scene, mixed $loginId, string $loginType = 'login', int $validSeconds = 600, ?string $tokenBinding = null): string
     {
         self::validateLifetime($validSeconds);
         $token = bin2hex(random_bytes(32));
         $loginIdStr = self::normalizeLoginId($loginId);
-        $key = self::$keyPrefix . \SaToken\TokenManager::encodeKeyComponent($loginType)
-            . ':safe-token:' . \SaToken\TokenManager::encodeKeyComponent($scene)
-            . ':' . hash('sha256', $loginIdStr) . ':' . substr($token, 0, 16);
+        $key = self::getSafeTokenKey($scene, $loginIdStr, $loginType, $token, $tokenBinding);
 
         $dao = SaToken::getDao();
         $data = [
@@ -492,6 +510,7 @@ class SaSensitiveVerify
             'createdAt' => time(),
             'expiresAt' => time() + $validSeconds,
             'tokenHash' => hash('sha256', $token),
+            'tokenBindingHash' => $tokenBinding !== null ? hash('sha256', $tokenBinding) : null,
         ];
 
         $dao->set($key, self::encodeSensitiveState($data, $key), $validSeconds + 60);
@@ -499,12 +518,10 @@ class SaSensitiveVerify
         return $token;
     }
 
-    public static function verifySafeToken(string $scene, string $token, mixed $loginId, string $loginType = 'login'): bool
+    public static function verifySafeToken(string $scene, string $token, mixed $loginId, string $loginType = 'login', ?string $tokenBinding = null): bool
     {
         $loginIdStr = self::normalizeLoginId($loginId);
-        $key = self::$keyPrefix . \SaToken\TokenManager::encodeKeyComponent($loginType)
-            . ':safe-token:' . \SaToken\TokenManager::encodeKeyComponent($scene)
-            . ':' . hash('sha256', $loginIdStr) . ':' . substr($token, 0, 16);
+        $key = self::getSafeTokenKey($scene, $loginIdStr, $loginType, $token, $tokenBinding);
         $dao = SaToken::getDao();
         $data = $dao->get($key);
 
@@ -520,6 +537,10 @@ class SaSensitiveVerify
         if (($info['scene'] ?? null) !== $scene
             || ($info['loginId'] ?? null) !== $loginIdStr
             || ($info['loginType'] ?? null) !== $loginType) {
+            return false;
+        }
+        $expectedTokenBindingHash = $tokenBinding !== null ? hash('sha256', $tokenBinding) : null;
+        if (($info['tokenBindingHash'] ?? null) !== $expectedTokenBindingHash) {
             return false;
         }
 
@@ -546,6 +567,7 @@ class SaSensitiveVerify
             || ($consumedInfo['scene'] ?? null) !== $scene
             || ($consumedInfo['loginId'] ?? null) !== $loginIdStr
             || ($consumedInfo['loginType'] ?? null) !== $loginType
+            || ($consumedInfo['tokenBindingHash'] ?? null) !== $expectedTokenBindingHash
             || !is_int($consumedInfo['expiresAt'] ?? null)
             || $consumedInfo['expiresAt'] <= time()) {
             return false;
@@ -554,9 +576,18 @@ class SaSensitiveVerify
         return is_string($consumedHash) && hash_equals($consumedHash, hash('sha256', $token));
     }
 
-    public static function verifySafeTokenAndThrow(string $scene, string $token, mixed $loginId, string $loginType = 'login'): void
+    protected static function getSafeTokenKey(string $scene, string $loginId, string $loginType, string $token, ?string $tokenBinding): string
     {
-        if (!self::verifySafeToken($scene, $token, $loginId, $loginType)) {
+        $key = self::$keyPrefix . \SaToken\TokenManager::encodeKeyComponent($loginType)
+            . ':safe-token:' . \SaToken\TokenManager::encodeKeyComponent($scene)
+            . ':' . hash('sha256', $loginId) . ':' . substr($token, 0, 16);
+
+        return $tokenBinding !== null ? $key . ':binding:' . hash('sha256', $tokenBinding) : $key;
+    }
+
+    public static function verifySafeTokenAndThrow(string $scene, string $token, mixed $loginId, string $loginType = 'login', ?string $tokenBinding = null): void
+    {
+        if (!self::verifySafeToken($scene, $token, $loginId, $loginType, $tokenBinding)) {
             throw new NotSafeException('安全验证令牌无效或已过期');
         }
     }

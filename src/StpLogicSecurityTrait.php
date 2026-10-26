@@ -234,13 +234,21 @@ trait StpLogicSecurityTrait
     public function openSensitiveVerify(string $scene, int $validSeconds = 600): string
     {
         $loginId = $this->getLoginIdAsNotNull();
-        return SaSensitiveVerify::createSafeTokenAfterVerified($scene, $loginId, $this->loginType, $validSeconds);
+        $tokenValue = $this->getTokenValue();
+        if ($tokenValue === null) {
+            throw new NotLoginException('未登录，请先登录', NotLoginException::NOT_LOGIN);
+        }
+        return SaSensitiveVerify::createSafeTokenAfterVerified($scene, $loginId, $this->loginType, $validSeconds, $tokenValue);
     }
 
     public function checkSensitiveVerify(string $scene, string $token): void
     {
         $loginId = $this->getLoginIdAsNotNull();
-        SaSensitiveVerify::verifySafeTokenAndThrow($scene, $token, $loginId, $this->loginType);
+        $tokenValue = $this->getTokenValue();
+        if ($tokenValue === null) {
+            throw new NotLoginException('未登录，请先登录', NotLoginException::NOT_LOGIN);
+        }
+        SaSensitiveVerify::verifySafeTokenAndThrow($scene, $token, $loginId, $this->loginType, $tokenValue);
     }
 
     public function generateOtpCode(string $scene): string
@@ -258,7 +266,11 @@ trait StpLogicSecurityTrait
     public function verifyOtpCode(string $scene, string $code): void
     {
         $loginId = $this->getLoginIdAsNotNull();
-        SaSensitiveVerify::verifyCodeAndThrow($scene, $code, $loginId, $this->loginType);
+        $tokenValue = $this->getTokenValue();
+        if ($tokenValue === null) {
+            throw new NotLoginException('未登录，请先登录', NotLoginException::NOT_LOGIN);
+        }
+        SaSensitiveVerify::verifyCodeAndThrow($scene, $code, $loginId, $this->loginType, $tokenValue);
 
         // 验证成功后同步打开 token 级二级认证窗口（默认 60 秒）：
         // 否则 #[SaCheckSafe('otp')] 永远失败（checkSafe 只认 openSafe 状态），
@@ -269,10 +281,11 @@ trait StpLogicSecurityTrait
     public function isSensitiveVerified(string $scene): bool
     {
         $loginId = $this->getLoginId();
-        if ($loginId === null) {
+        $tokenValue = $this->getTokenValue();
+        if ($loginId === null || $tokenValue === null) {
             return false;
         }
-        return SaSensitiveVerify::isVerified($scene, $loginId, $this->loginType);
+        return SaSensitiveVerify::isVerified($scene, $loginId, $this->loginType, $tokenValue);
     }
 
     public function clearSensitiveVerify(string $scene): void
