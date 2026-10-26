@@ -373,6 +373,12 @@ class SaToken
         return self::$stpLogicMap[$type];
     }
 
+    /** Check whether a login type has already been registered in this process. */
+    public static function hasStpLogic(string $type): bool
+    {
+        return isset(self::$stpLogicMap[$type]);
+    }
+
     /**
      * 注册 StpLogic 实例
      *

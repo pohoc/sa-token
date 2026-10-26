@@ -195,6 +195,40 @@ class SaRpcContextTest extends TestCase
         SaRpcContext::extractAndValidate();
     }
 
+    public function testExtractAndValidateDoesNotRegisterUntrustedLoginTypes(): void
+    {
+        $loginType = 'untrusted-' . bin2hex(random_bytes(8));
+        self::assertFalse(SaToken::hasStpLogic($loginType));
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token' => 'invalid-token-value',
+            'X-Sa-Login-Type' => $loginType,
+        ]));
+
+        try {
+            SaRpcContext::extractAndValidate();
+            self::fail('未注册的 RPC LoginType 必须在实例化 StpLogic 前拒绝');
+        } catch (SaTokenException $exception) {
+            self::assertSame('RPC LoginType 未注册', $exception->getMessage());
+        }
+
+        self::assertFalse(SaToken::hasStpLogic($loginType));
+    }
+
+    public function testExtractAndValidateAcceptsPreviouslyRegisteredLoginType(): void
+    {
+        $logic = SaToken::getStpLogic('registered-rpc-user');
+        $token = $logic->login(10021)->getAccessToken();
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token' => $token,
+            'X-Sa-Login-Id' => '10021',
+            'X-Sa-Login-Type' => 'registered-rpc-user',
+        ]));
+
+        SaRpcContext::extractAndValidate();
+
+        self::assertSame('10021', $logic->getLoginIdByToken($token));
+    }
+
     public function testExtractAndValidateRejectsDuplicateCredentialHeaders(): void
     {
         $token = StpUtil::login(10007)->getAccessToken();

@@ -117,6 +117,13 @@ class SaRpcContext
         if ($expectedLoginType !== null && $forwardedLoginType !== null && $forwardedLoginType !== $expectedLoginType) {
             throw new SaTokenException('RPC LoginType 与拦截器配置不匹配');
         }
+        if ($expectedLoginType === null && $forwardedLoginType !== null
+            && !SaToken::hasStpLogic($forwardedLoginType)) {
+            // A login type from the network must not allocate a new StpLogic
+            // before token validation. Otherwise arbitrary invalid RPC calls
+            // can grow the long-lived process registry without bound.
+            throw new SaTokenException('RPC LoginType 未注册');
+        }
         $loginType = $expectedLoginType ?? $forwardedLoginType ?? 'login';
         $stpLogic = SaToken::getStpLogic($loginType);
 
