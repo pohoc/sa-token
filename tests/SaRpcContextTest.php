@@ -209,6 +209,21 @@ class SaRpcContextTest extends TestCase
         SaRpcContext::extractAndValidate();
     }
 
+    public function testExtractAndValidateRejectsProxyCombinedTokenHeader(): void
+    {
+        $firstToken = StpUtil::login(10008)->getAccessToken();
+        $secondToken = StpUtil::login(10009)->getAccessToken();
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token' => $firstToken . ', ' . $secondToken,
+        ]));
+
+        self::assertFalse(SaRpcContext::isRpcRequest());
+        self::assertNull(SaRpcContext::getForwardedToken());
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('RPC 认证 Header 存在多个值');
+        SaRpcContext::extractAndValidate();
+    }
+
     public function testIsRpcRequestReturnsTrue(): void
     {
         $request = $this->mockRequestWithHeaders(['X-Sa-Token' => 'some-token']);
