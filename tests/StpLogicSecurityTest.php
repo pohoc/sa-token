@@ -314,6 +314,55 @@ class StpLogicSecurityTest extends TestCase
         $this->assertTrue($this->stp->isTokenRevoked($token));
     }
 
+    public function testRevokedStatefulAccessTokenCannotBeReactivatedByRefreshTokenAfterCleanupFailure(): void
+    {
+        $dao = new class () extends SaTokenDaoMemory {
+            public bool $failNextRefreshDelete = false;
+
+            public function delete(string $key): void
+            {
+                if ($this->failNextRefreshDelete && str_starts_with($key, TokenManager::REFRESH_TOKEN_PREFIX)) {
+                    $this->failNextRefreshDelete = false;
+                    throw new \SaToken\Exception\SaTokenException('simulated refresh cleanup failure');
+                }
+
+                parent::delete($key);
+            }
+        };
+        $this->dao = $dao;
+        SaToken::setDao($dao);
+        SaToken::getConfig()
+            ->setRefreshToken(true)
+            ->setRefreshTokenTimeout(3600)
+            ->setRefreshTokenRotation(false);
+
+        $accessToken = $this->stp->login('revoked-with-orphan-refresh')->getAccessToken();
+        $refreshToken = $this->stp->createRefreshToken($accessToken, 3600);
+        $dao->failNextRefreshDelete = true;
+
+        try {
+            $this->stp->revokeToken($accessToken);
+            self::fail('Token cleanup failure should be surfaced');
+        } catch (\SaToken\Exception\SaTokenException) {
+            self::assertTrue($this->manager->isBlacklisted($accessToken));
+            self::assertNotNull($this->manager->getLoginIdByToken($accessToken));
+            self::assertTrue($this->manager->isRefreshTokenValid($refreshToken));
+        }
+
+        try {
+            $this->stp->refreshToken($refreshToken);
+            self::fail('A revoked AccessToken must not be reactivated by its orphaned RefreshToken');
+        } catch (\SaToken\Exception\SaTokenException $exception) {
+            self::assertNotNull($this->manager->getLoginIdByToken($accessToken), $exception->getMessage());
+        }
+
+        // Retrying revoke is idempotent, and must finish cleanup instead of
+        // treating the blacklist marker as proof that the session is gone.
+        self::assertTrue($this->stp->revokeToken($accessToken));
+        self::assertNull($this->manager->getLoginIdByToken($accessToken));
+        self::assertFalse($this->manager->isRefreshTokenValid($refreshToken));
+    }
+
     public function testRevokeTokenUsesTokenTimeout(): void
     {
         $token = 'sat_token-with-timeout';

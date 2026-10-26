@@ -1013,14 +1013,15 @@ class StpLogic
 
     public function revokeToken(string $tokenValue): bool
     {
-        if ($this->tokenManager->isBlacklisted($tokenValue)) {
+        $alreadyBlacklisted = $this->tokenManager->isBlacklisted($tokenValue);
+        if ($alreadyBlacklisted && $this->getConfig()->isJwtStateless()) {
             return true;
         }
 
         $loginId = $this->tokenManager->getLoginIdByToken($tokenValue);
         if (!$this->getConfig()->isJwtStateless()
             && ($loginId === null || !$this->isTokenOwnedByLoginType($tokenValue, $loginId))) {
-            return false;
+            return $alreadyBlacklisted;
         }
 
         $daoTimeout = $this->tokenManager->getTokenTimeout($tokenValue);
