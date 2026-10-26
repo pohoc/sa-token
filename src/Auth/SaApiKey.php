@@ -72,7 +72,10 @@ class SaApiKey
         for ($attempt = 0; $attempt < 3; $attempt++) {
             $reuseToken = $this->findReusableToken($loginId, $apiKey);
             if ($reuseToken !== null) {
-                StpUtil::getStpLogic()->writeTokenToResponse($reuseToken, new \SaToken\SaLoginParameter());
+                StpUtil::getStpLogic()->writeTokenToResponse(
+                    $reuseToken,
+                    (new \SaToken\SaLoginParameter())->setWriteResponseCredentials(false)
+                );
                 SaTokenContext::setTokenOverride(StpUtil::getStpLogic()->getLoginType(), $reuseToken);
                 return;
             }
