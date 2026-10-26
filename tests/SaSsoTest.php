@@ -579,6 +579,20 @@ class SaSsoTest extends TestCase
         $this->assertStringContainsString('client_id=app-1', $url);
     }
 
+    public function testBuildSloUrlRejectsInsecureOrUnsupportedEndpoint(): void
+    {
+        foreach (['http://auth.example.com/slo', 'javascript://auth.example.com/slo'] as $sloUrl) {
+            $handle = new SaSsoHandle(new SaSsoConfig(['sloUrl' => $sloUrl]));
+
+            try {
+                $handle->buildSloUrl();
+                $this->fail('SSO 单点注销端点必须使用 HTTPS');
+            } catch (SaTokenException $exception) {
+                $this->assertStringContainsString('sloUrl', $exception->getMessage());
+            }
+        }
+    }
+
     // ======== doLoginCallback 错误场景 ========
 
     public function testDoLoginCallbackWithEmptyTicket(): void

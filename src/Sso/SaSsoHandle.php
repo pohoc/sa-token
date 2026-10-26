@@ -516,6 +516,7 @@ class SaSsoHandle
     public function buildSloUrl(?string $redirect = null): string
     {
         $sloUrl = $this->config->getSloUrl();
+        $this->validateHttpsEndpoint($sloUrl, 'sloUrl');
 
         if ($redirect !== null && $redirect !== '' && !$this->validateDomain($redirect)) {
             throw new SaTokenException('SSO 注销回调域名不在允许列表中');
