@@ -184,6 +184,12 @@ class SaOAuth2Handle
             throw new SaTokenException('换token请求必须携带 redirect_uri，且与授权请求时完全一致');
         }
 
+        // A redirect URI may have been removed from the client's live
+        // allowlist after this code was issued. Revalidate current policy
+        // before reading or consuming the code so administrative revocation
+        // takes effect immediately without burning codes on rejected requests.
+        $this->validateRedirectUri($clientId, $redirectUri);
+
         // 绑定校验完成前只读取，不消费授权码；否则错误客户端、redirect_uri 或
         // PKCE verifier 可烧毁合法授权码，造成拒绝服务。
         $codeData = $this->getAuthorizationCode($code);

@@ -567,6 +567,41 @@ class SaOAuth2Test extends TestCase
         $this->assertNotNull($accessToken->getRefreshToken());
     }
 
+    public function testRemovingRedirectUriRevokesPendingAuthorizationCodesWithoutConsumingThem(): void
+    {
+        $oldRedirectUri = 'https://example.com/callback';
+        $code = $this->handle->generateAuthorizationCode('test-client', 10001, $oldRedirectUri);
+        $this->testClient->setRedirectUris(['https://new.example.com/callback']);
+        $this->handle->registerClient($this->testClient);
+
+        try {
+            $this->handle->exchangeTokenByCode(
+                $code->getCode(),
+                'test-client',
+                $this->clientSecret,
+                $oldRedirectUri
+            );
+            self::fail('客户端移除的 redirect_uri 不得继续兑换待处理授权码');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('未注册的回调地址', $exception->getMessage());
+        }
+
+        $codeKey = 'oauth2:code:' . $code->getCode();
+        self::assertNotNull(SaToken::getDao()->get($codeKey), '被拒绝的回调地址不得消费授权码');
+
+        // Restoring the allowlist demonstrates that rejection above did not
+        // burn the code; the current policy remains authoritative at exchange.
+        $this->testClient->setRedirectUris([$oldRedirectUri]);
+        $this->handle->registerClient($this->testClient);
+        $token = $this->handle->exchangeTokenByCode(
+            $code->getCode(),
+            'test-client',
+            $this->clientSecret,
+            $oldRedirectUri
+        );
+        self::assertNotEmpty($token->getAccessToken());
+    }
+
     public function testExchangeTokenByCodeWithInvalidCode(): void
     {
         $this->expectException(SaTokenException::class);
