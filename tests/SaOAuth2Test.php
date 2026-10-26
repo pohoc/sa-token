@@ -1056,6 +1056,29 @@ class SaOAuth2Test extends TestCase
         $this->assertEquals('read', $accessToken->getScope());
     }
 
+    public function testTokenByPasswordRejectsScopesOutsideClientAllowlist(): void
+    {
+        $client = new SaOAuth2Client([
+            'clientId' => 'password-scope-client',
+            'clientSecret' => 'password-scope-client-secret-32-bytes',
+            'grantTypes' => ['password'],
+            'scopes' => ['read'],
+        ]);
+        $this->handle->registerClient($client);
+        $this->handle->setUserCredentialsValidator(static fn (): int => 10001);
+        SaTokenContext::setRequest($this->requestFromIp('192.0.2.31'));
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('未授予的 scope');
+        $this->handle->tokenByPassword(
+            'password-scope-client',
+            'password-scope-client-secret-32-bytes',
+            'user',
+            'valid-password',
+            'admin'
+        );
+    }
+
     public function testTokenByPasswordWithWrongCredentials(): void
     {
         $this->handle->setUserCredentialsValidator(function (string $username, string $password): ?int {
