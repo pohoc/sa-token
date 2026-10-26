@@ -12,6 +12,7 @@ use SaToken\SaLoginParameter;
 use SaToken\SaToken;
 use SaToken\StpLogic;
 use SaToken\TokenManager;
+use SaToken\Util\SaTokenContext;
 
 class StpLogicTest extends TestCase
 {
@@ -75,6 +76,24 @@ class StpLogicTest extends TestCase
         // 结束切换
         $this->tokenManager->clearSwitch($token, 'login');
         $this->assertNull($this->tokenManager->getSwitchTo($token, 'login'));
+    }
+
+    public function testConflictingQueryAndBodyTokensFailClosed(): void
+    {
+        SaToken::getConfig()->setIsReadBody(true);
+        $queryToken = $this->logic->login('query-user')->getAccessToken();
+        $bodyToken = $this->logic->login('body-user')->getAccessToken();
+
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $uri = $this->createMock(\Psr\Http\Message\UriInterface::class);
+        $uri->method('getQuery')->willReturn('satoken=' . rawurlencode($queryToken));
+        $request->method('getUri')->willReturn($uri);
+        $request->method('getQueryParams')->willReturn(['satoken' => $queryToken]);
+        $request->method('getParsedBody')->willReturn(['satoken' => $bodyToken]);
+        SaTokenContext::setRequest($request);
+
+        self::assertNull($this->logic->getTokenValue());
+        self::assertFalse($this->logic->isLogin());
     }
 
     public function testDisableWithLevel(): void

@@ -530,6 +530,49 @@ class SaTokenContext
         return null;
     }
 
+    /** Reject ambiguous credentials supplied more than once through PSR-7 parameters. */
+    public static function hasConflictingParamValues(string $name): bool
+    {
+        $request = self::getRequest();
+        if (!$request instanceof \Psr\Http\Message\ServerRequestInterface) {
+            return false;
+        }
+
+        $queryParams = $request->getQueryParams();
+        $body = $request->getParsedBody();
+        $hasQueryValue = array_key_exists($name, $queryParams);
+        $hasBodyValue = is_array($body) && array_key_exists($name, $body);
+
+        if (($hasQueryValue && !is_string($queryParams[$name]))
+            || ($hasBodyValue && !is_string($body[$name]))) {
+            return true;
+        }
+        if ($hasQueryValue && $hasBodyValue && $queryParams[$name] !== $body[$name]) {
+            return true;
+        }
+
+        // PSR-7 query parsing may collapse repeated keys to one value. Inspect
+        // the raw query so `?token=a&token=b` cannot silently select a bearer.
+        $rawQuery = $request->getUri()->getQuery();
+        if ($rawQuery === '') {
+            return false;
+        }
+
+        $queryValueCount = 0;
+        foreach (preg_split('/[&;]/', $rawQuery) ?: [] as $pair) {
+            $separator = strpos($pair, '=');
+            $rawName = $separator === false ? $pair : substr($pair, 0, $separator);
+            $parameterName = urldecode($rawName);
+            if ($parameterName === $name || str_starts_with($parameterName, $name . '[')) {
+                if (++$queryValueCount > 1 || $parameterName !== $name) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     /**
      * 将 Token 值写入响应头
      *

@@ -225,7 +225,7 @@ class SaTokenContextTest extends TestCase
 
     public function testDetectsRepeatedHeaderValuesFromFrameworkHeaderBag(): void
     {
-        $headerBag = new class {
+        $headerBag = new class () {
             /** @return array<int, string> */
             public function all(?string $name = null): array
             {
@@ -292,6 +292,19 @@ class SaTokenContextTest extends TestCase
         SaTokenContext::setRequest($request);
 
         $this->assertEquals('body-token', SaTokenContext::getParam('token'));
+    }
+
+    public function testConflictingParameterValuesAreRejected(): void
+    {
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $uri = $this->createMock(\Psr\Http\Message\UriInterface::class);
+        $uri->method('getQuery')->willReturn('token=first&token=second');
+        $request->method('getUri')->willReturn($uri);
+        $request->method('getQueryParams')->willReturn(['token' => 'second']);
+        $request->method('getParsedBody')->willReturn(null);
+        SaTokenContext::setRequest($request);
+
+        self::assertTrue(SaTokenContext::hasConflictingParamValues('token'));
     }
 
     public function testGetParamWhenNoRequest(): void

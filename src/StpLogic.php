@@ -594,6 +594,9 @@ class StpLogic
 
         // 3. 从请求参数读取
         if ($config->isReadBody()) {
+            if (SaTokenContext::hasConflictingParamValues($tokenName)) {
+                return null;
+            }
             $tokenValue = SaTokenContext::getParam($tokenName);
             if ($tokenValue !== null && SaFoxUtil::isNotEmpty($tokenValue)) {
                 $contentType = SaTokenContext::getHeader('Content-Type');
