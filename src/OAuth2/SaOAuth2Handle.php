@@ -1480,6 +1480,13 @@ class SaOAuth2Handle
             throw new SaTokenException('回调地址不能为空');
         }
 
+        // parse_url() accepts characters that browsers and HTTP clients may
+        // reinterpret while resolving an authority. Keep redirect validation
+        // aligned with the URL actually consumed by those clients.
+        if (preg_match('/[\\\\\x00-\x20\x7f]/', $redirectUri) === 1) {
+            throw new SaTokenException('回调地址包含歧义字符');
+        }
+
         $parsed = parse_url($redirectUri);
         if ($parsed === false || !isset($parsed['scheme']) || !isset($parsed['host']) || $parsed['host'] === '') {
             throw new SaTokenException('回调地址必须是绝对 URL');

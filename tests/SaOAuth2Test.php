@@ -599,6 +599,26 @@ class SaOAuth2Test extends TestCase
         }
     }
 
+    public function testRedirectUriRejectsBackslashesAndControlCharactersEvenWhenRegistered(): void
+    {
+        foreach ([
+            "https://example.com/callback\\@evil.example/",
+            "https://example.com/callback\t",
+            "https://example.com/callback\n",
+            "https://example.com/callback\x7f",
+        ] as $redirectUri) {
+            $this->testClient->setRedirectUris([$redirectUri]);
+            $this->handle->registerClient($this->testClient);
+
+            try {
+                $this->handle->generateAuthorizationCode('test-client', 10001, $redirectUri);
+                $this->fail('歧义回调地址必须拒绝，即使已配置在客户端 allowlist 中');
+            } catch (SaTokenException $e) {
+                $this->assertSame('回调地址包含歧义字符', $e->getMessage());
+            }
+        }
+    }
+
     public function testRedirectUriRejectsNonHttpSchemesOnLocalhost(): void
     {
         $redirectUri = 'javascript://localhost/callback';
