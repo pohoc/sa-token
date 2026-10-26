@@ -81,14 +81,14 @@ class SaAntiBruteUtil
         return self::getKey($account, $loginType) . ':ip-lock:';
     }
 
-    protected static function getIpCountKey(string $account, string $loginType = 'login'): string
+    protected static function getIpCountKey(string $account, string $loginType = 'login', ?int $epoch = null): string
     {
-        return self::getIpCountPrefix($account, $loginType) . self::getEpoch($account, $loginType) . ':' . self::getIpSuffix();
+        return self::getIpCountPrefix($account, $loginType) . ($epoch ?? self::getEpoch($account, $loginType)) . ':' . self::getIpSuffix();
     }
 
-    protected static function getIpLockKey(string $account, string $loginType = 'login'): string
+    protected static function getIpLockKey(string $account, string $loginType = 'login', ?int $epoch = null): string
     {
-        return self::getIpLockPrefix($account, $loginType) . self::getEpoch($account, $loginType) . ':' . self::getIpSuffix();
+        return self::getIpLockPrefix($account, $loginType) . ($epoch ?? self::getEpoch($account, $loginType)) . ':' . self::getIpSuffix();
     }
 
     protected static function getLockUntil(string $key): int
@@ -122,6 +122,10 @@ class SaAntiBruteUtil
         $config = SaToken::getConfig();
         $maxFailures = $config->getAntiBruteMaxFailures();
         $lockDuration = $config->getAntiBruteLockDuration();
+        // Keep one generation for the whole failure operation. If an admin
+        // unlocks while the counter write is in flight, this stale operation
+        // may only write its lock into the old generation, never the fresh one.
+        $epoch = self::getEpoch($account, $loginType);
 
         $sourceIdentity = self::getSourceIdentity($loginType);
         $sourceMax = $config->getAntiBruteIpMaxFailures();
@@ -152,11 +156,11 @@ class SaAntiBruteUtil
         // Limit account+source-IP counters to avoid letting one known account
         // be locked from unrelated source addresses. Distributed protection
         // still requires a shared DAO and any global rate limits at the edge.
-        $failCount = $dao->increment(self::getIpCountKey($account, $loginType), 1, 86400);
+        $failCount = $dao->increment(self::getIpCountKey($account, $loginType, $epoch), 1, 86400);
 
         if ($maxFailures > 0 && $lockDuration > 0 && $failCount >= $maxFailures) {
             $dao->set(
-                self::getIpLockKey($account, $loginType),
+                self::getIpLockKey($account, $loginType, $epoch),
                 (string) (time() + $lockDuration),
                 $lockDuration + 60
             );
@@ -219,8 +223,9 @@ class SaAntiBruteUtil
     public static function clearCurrentSourceFailures(string $account, string $loginType = 'login'): void
     {
         $dao = SaToken::getDao();
-        $dao->delete(self::getIpCountKey($account, $loginType));
-        $dao->delete(self::getIpLockKey($account, $loginType));
+        $epoch = self::getEpoch($account, $loginType);
+        $dao->delete(self::getIpCountKey($account, $loginType, $epoch));
+        $dao->delete(self::getIpLockKey($account, $loginType, $epoch));
     }
 
     public static function getFailCount(string $account, string $loginType = 'login'): int

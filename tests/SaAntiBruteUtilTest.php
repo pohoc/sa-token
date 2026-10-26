@@ -79,6 +79,35 @@ class SaAntiBruteUtilTest extends TestCase
         $this->assertSame(0, SaAntiBruteUtil::getFailCount('known-account'));
     }
 
+    public function testStaleFailureCannotRelockAccountAfterConcurrentUnlock(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'antiBruteMaxFailures' => 1,
+            'antiBruteIpMaxFailures' => 0,
+            'antiBruteLockDuration' => 600,
+        ]));
+
+        $dao = new class () extends SaTokenDaoMemory {
+            public bool $unlockAfterFailureIncrement = false;
+
+            public function increment(string $key, int $amount = 1, ?int $timeout = null): int
+            {
+                $value = parent::increment($key, $amount, $timeout);
+                if ($this->unlockAfterFailureIncrement && str_contains($key, ':ip-count:')) {
+                    $this->unlockAfterFailureIncrement = false;
+                    SaAntiBruteUtil::unlock('unlock-race-account');
+                }
+                return $value;
+            }
+        };
+        SaToken::setDao($dao);
+        $dao->unlockAfterFailureIncrement = true;
+
+        SaAntiBruteUtil::recordFailure('unlock-race-account');
+
+        self::assertFalse(SaAntiBruteUtil::isAccountLocked('unlock-race-account'));
+    }
+
     public function testSourceFailureLimitBoundsCountersAcrossRandomAccounts(): void
     {
         SaToken::setConfig(new SaTokenConfig([
