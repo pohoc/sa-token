@@ -722,6 +722,27 @@ class TokenManagerTest extends TestCase
         $this->assertFalse($this->manager->isSafe($token, 'transfer', 'login'));
     }
 
+    public function testCopiedRefreshTokenMapRecordCannotExposeAnotherAccountsCredential(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenEncrypt' => true,
+            'tokenEncryptKey' => str_repeat('p', 32),
+            'aesKey' => str_repeat('p', 32),
+        ]));
+        $logic = new StpLogic('login', $this->manager);
+        $ownerAccess = $logic->login('owner')->getAccessToken();
+        $ownerRefresh = $logic->createRefreshToken($ownerAccess, 3600);
+        $otherAccess = $logic->login('other')->getAccessToken();
+        $logic->createRefreshToken($otherAccess, 3600);
+        $ownerMapKey = TokenManager::REFRESH_TOKEN_MAP_PREFIX . 'login:owner:' . $ownerAccess;
+        $otherMapKey = TokenManager::REFRESH_TOKEN_MAP_PREFIX . 'login:other:' . $otherAccess;
+        $otherMapRecord = $this->dao->get($otherMapKey);
+        self::assertNotNull($otherMapRecord);
+        $this->dao->set($ownerMapKey, $otherMapRecord);
+
+        self::assertNull($this->manager->getRefreshTokenByAccessToken('owner', 'login', $ownerAccess));
+    }
+
     public function testOpenSafeRejectsNonPositiveWindow(): void
     {
         $token = $this->manager->createTokenValue(10001, 'login');

@@ -1734,7 +1734,18 @@ class TokenManager
         if ($value === null) {
             return null;
         }
-        return $this->decryptValue($value);
+        try {
+            $refreshToken = $this->decryptValue($value);
+        } catch (SaTokenException) {
+            return null;
+        }
+        $data = $this->getRefreshTokenData($refreshToken);
+        if (($data['loginId'] ?? null) !== $loginIdStr
+            || ($data['loginType'] ?? null) !== $loginType
+            || ($data['accessToken'] ?? null) !== $accessToken) {
+            return null;
+        }
+        return $refreshToken;
     }
 
     public function deleteRefreshToken(string $refreshToken): void
