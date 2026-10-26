@@ -1136,17 +1136,19 @@ class TokenManager
         }
 
         $markerKey = self::REFRESH_TOKEN_USED_PREFIX . hash('sha256', $refreshToken);
+        $markerTimeout = 86400;
         $decodedSnapshot = SaFoxUtil::fromJson($this->decryptValue($snapshot));
         if ($this->getConfig()->isRefreshTokenRotation()
             && is_array($decodedSnapshot)
             && is_string($decodedSnapshot['loginId'] ?? null)
             && is_string($decodedSnapshot['loginType'] ?? null)
             && is_string($decodedSnapshot['accessToken'] ?? null)) {
-            // Retain the consumed token's owner until its original expiry. A
-            // permanent or sub-second remaining TTL gets a bounded 24-hour
-            // replay window so rotated credentials cannot grow storage forever.
+            // Retain the consumed token's owner until its original expiry.
+            // Permanent credentials need a permanent marker so replay can still
+            // revoke their live descendants; only an already-missing/near-expiry
+            // TTL falls back to a bounded 24-hour replay window.
             $timeout = $dao->getTimeout($refreshKey);
-            $markerTimeout = $timeout > 0 ? $timeout : 86400;
+            $markerTimeout = $timeout === -1 ? null : ($timeout > 0 ? $timeout : 86400);
             $dao->set($markerKey, $snapshot, $markerTimeout);
         }
 
@@ -1167,7 +1169,7 @@ class TokenManager
             && is_string($data['loginId'] ?? null)
             && is_string($data['loginType'] ?? null)
             && is_string($data['accessToken'] ?? null)) {
-            $dao->set($markerKey, $raw, 86400);
+            $dao->set($markerKey, $raw, $markerTimeout);
         }
         /** @var array<string, mixed> $data */
         $loginId = is_string($data['loginId'] ?? null) ? $data['loginId'] : '';

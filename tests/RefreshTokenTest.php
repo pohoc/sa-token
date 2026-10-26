@@ -483,6 +483,30 @@ class RefreshTokenTest extends TestCase
         $this->assertTrue(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($newLogin->getAccessToken()));
     }
 
+    public function testPermanentRefreshTokenReplayMarkerDoesNotExpire(): void
+    {
+        SaToken::getConfig()
+            ->setTimeout(-1)
+            ->setRefreshTokenTimeout(-1);
+
+        $accessToken = StpUtil::login('permanent-refresh-replay-user')->getAccessToken();
+        $refreshToken = StpUtil::createRefreshToken($accessToken);
+        $rotated = StpUtil::refreshToken($refreshToken);
+        $markerKey = TokenManager::REFRESH_TOKEN_USED_PREFIX . hash('sha256', $refreshToken);
+
+        self::assertSame(-1, SaToken::getDao()->getTimeout($markerKey));
+
+        try {
+            StpUtil::refreshToken($refreshToken);
+            self::fail('永久 RefreshToken 的重放标记不得过期');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('重放', $exception->getMessage());
+        }
+
+        self::assertFalse(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($rotated->getAccessToken()));
+        self::assertFalse(StpUtil::isRefreshTokenValid((string) $rotated->getRefreshToken()));
+    }
+
     public function testConcurrentRotatedRefreshReplayRevokesWinningDescendants(): void
     {
         $dao = new class () extends \SaToken\Dao\SaTokenDaoMemory {
