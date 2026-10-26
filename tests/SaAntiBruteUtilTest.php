@@ -108,6 +108,50 @@ class SaAntiBruteUtilTest extends TestCase
         self::assertFalse(SaAntiBruteUtil::isAccountLocked('unlock-race-account'));
     }
 
+    public function testStaleFailureCannotRelockAccountAfterSuccessfulSourceCleanup(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'antiBruteMaxFailures' => 1,
+            'antiBruteIpMaxFailures' => 0,
+            'antiBruteLockDuration' => 600,
+        ]));
+
+        $dao = new class () extends SaTokenDaoMemory {
+            public bool $pauseAfterFailureIncrement = false;
+
+            public function increment(string $key, int $amount = 1, ?int $timeout = null): int
+            {
+                $value = parent::increment($key, $amount, $timeout);
+                if ($this->pauseAfterFailureIncrement && str_contains($key, ':ip-count:')) {
+                    $this->pauseAfterFailureIncrement = false;
+                    \Fiber::suspend();
+                }
+
+                return $value;
+            }
+        };
+        SaToken::setDao($dao);
+        $makeRequest = fn (): object => $this->requestFromIp('192.0.2.77');
+        $fiber = new \Fiber(function () use ($makeRequest): void {
+            SaTokenContext::setRequest($makeRequest());
+            SaAntiBruteUtil::recordFailure('source-cleanup-race');
+        });
+        $dao->pauseAfterFailureIncrement = true;
+
+        $fiber->start();
+        self::assertTrue($fiber->isSuspended());
+
+        // Successful authentication clears the current account+source state
+        // while an earlier failed request is paused before writing its lock.
+        SaTokenContext::setRequest($makeRequest());
+        SaAntiBruteUtil::clearCurrentSourceFailures('source-cleanup-race');
+        $fiber->resume();
+
+        self::assertTrue($fiber->isTerminated());
+        self::assertFalse(SaAntiBruteUtil::isAccountLocked('source-cleanup-race'));
+        self::assertSame(0, SaAntiBruteUtil::getFailCount('source-cleanup-race'));
+    }
+
     public function testSourceFailureLimitBoundsCountersAcrossRandomAccounts(): void
     {
         SaToken::setConfig(new SaTokenConfig([
