@@ -198,13 +198,18 @@ class SaLoginDeviceManager
             // A caller-supplied device ID can contain delimiters and address a
             // nested login type's key. Verify the stored owner before revoking
             // any tokens or deleting the record.
-            if (self::loadDevice($loginId, $deviceId, $loginType, false) === null) {
+            $expectedRecord = $dao->get($key);
+            if ($expectedRecord === null) {
+                return;
+            }
+            $deviceData = @json_decode($expectedRecord, true);
+            if (!is_array($deviceData) || ($deviceData['loginType'] ?? 'login') !== $loginType) {
                 return;
             }
 
             // 同一设备标识可能在 isShare=false 时关联多个有效登录 Token。
             // 全部撤销后再删除记录，避免只踢掉最近一次登录而留下旧会话。
-            foreach (self::loadDeviceTokenValues($key) as $tokenValue) {
+            foreach (self::loadDeviceTokenValues($key, $expectedRecord) as $tokenValue) {
                 if (hrtime(true) - $lastRenewal >= 10_000_000_000) {
                     if (!$tokenManager->renewLock($lockKey, 30)) {
                         throw new SaTokenException('账号会话锁租约已失效，请重试');
@@ -220,7 +225,10 @@ class SaLoginDeviceManager
                 }
             }
 
-            $dao->delete($key);
+            if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface
+                || !$dao->compareAndSet($key, $expectedRecord, null)) {
+                throw new SaTokenException('设备记录已并发变更或 DAO 不支持原子条件写入，请重试');
+            }
         } finally {
             $tokenManager->releaseLock($lockKey);
             foreach ($kickoutEvents as [$eventLoginId, $tokenValue]) {

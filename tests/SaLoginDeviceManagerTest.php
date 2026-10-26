@@ -92,6 +92,21 @@ class SaLoginDevicePausingSetDao extends SaTokenDaoMemory
     }
 }
 
+class SaLoginDeviceKickoutPausingDao extends SaTokenDaoMemory
+{
+    public ?string $pauseCompareAndSetKey = null;
+
+    public function compareAndSet(string $key, ?string $expectedValue, ?string $newValue, ?int $timeout = null): bool
+    {
+        if ($key === $this->pauseCompareAndSetKey) {
+            $this->pauseCompareAndSetKey = null;
+            \Fiber::suspend();
+        }
+
+        return parent::compareAndSet($key, $expectedValue, $newValue, $timeout);
+    }
+}
+
 class SaLoginFailingResponseStpLogic extends StpLogic
 {
     public ?SaTokenDaoMemory $failureDao = null;
@@ -876,6 +891,43 @@ class SaLoginDeviceManagerTest extends TestCase
         self::assertFalse($this->logic->getTokenManager()->isTokenValid($firstToken));
         self::assertFalse($this->logic->getTokenManager()->isTokenValid($newerToken));
         self::assertFalse($this->logic->getTokenManager()->isTokenValid($staleToken));
+    }
+
+    public function testExpiredDeviceKickoutCannotDeleteReplacementDeviceRecord(): void
+    {
+        $loginId = 'expired-device-kickout';
+        $this->dao = new SaLoginDeviceKickoutPausingDao();
+        SaToken::setDao($this->dao);
+        $device = new SaLoginDevice(['deviceType' => 'pc', 'deviceName' => 'same device']);
+        $oldToken = $this->logic->login($loginId, (new SaLoginParameter())->setDevice($device))->getAccessToken();
+        $deviceKey = SaLoginDeviceManager::getKey($loginId, 'login') . ':' . $device->getDeviceId();
+        $originalDeviceRecord = $this->dao->get($deviceKey);
+        $this->dao->pauseCompareAndSetKey = $deviceKey;
+
+        $staleKickout = new \Fiber(fn () => $this->logic->kickoutDevice($loginId, $device->getDeviceId()));
+        $staleKickout->start();
+        self::assertTrue($staleKickout->isSuspended());
+
+        // Let a newer owner replace the device after the stale kickout has
+        // captured its record and token list but before it removes the record.
+        $accountLockKey = TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId);
+        $this->dao->delete($accountLockKey);
+        $newerLogic = new StpLogic('login');
+        $newerLogic->kickoutDevice($loginId, $device->getDeviceId());
+        self::assertFalse($this->logic->getTokenManager()->isTokenValid($oldToken));
+        $newToken = $newerLogic->login($loginId, (new SaLoginParameter())->setDevice($device))->getAccessToken();
+        self::assertNotSame($originalDeviceRecord, $this->dao->get($deviceKey));
+
+        try {
+            $staleKickout->resume();
+            self::fail('过期的踢出请求不能删除后来重新创建的设备记录');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('设备记录已并发变更', $exception->getMessage());
+        }
+
+        self::assertTrue($this->logic->getTokenManager()->isTokenValid($newToken));
+        self::assertCount(1, $newerLogic->getTokenManager()->getTokenListByLoginId($loginId, 'login'));
+        self::assertCount(1, $newerLogic->getDeviceList($loginId));
     }
 
     public function testDeviceManagerCannotAssociateOrKickoutAnotherAccountsToken(): void
