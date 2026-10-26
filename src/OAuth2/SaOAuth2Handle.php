@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SaToken\OAuth2;
 
+use SaToken\Dao\SaTokenDaoCompareAndSetInterface;
 use SaToken\Dao\SaTokenDaoInterface;
 use SaToken\Exception\SaTokenException;
 use SaToken\OAuth2\Data\SaOAuth2AccessToken;
@@ -362,6 +363,9 @@ class SaOAuth2Handle
             $preDecoded = SaFoxUtil::fromJson($this->decryptValue($preJson));
             if (is_array($preDecoded) && is_string($preDecoded['familyId'] ?? null) && $preDecoded['familyId'] !== '') {
                 $preFamilyId = $preDecoded['familyId'];
+                if ($this->isTokenFamilyRevoked($preFamilyId)) {
+                    throw new SaTokenException('刷新令牌家族已撤销');
+                }
             }
         }
 
@@ -510,13 +514,27 @@ class SaOAuth2Handle
         if (!is_array($marker)) {
             return;
         }
+        if (($marker['revoked'] ?? false) === true) {
+            return;
+        }
         $tokens = is_array($marker['tokens'] ?? null) ? $marker['tokens'] : [];
+        $childRts = is_array($marker['childRts'] ?? null) ? $marker['childRts'] : [];
+
+        // Refresh locks are leases. Keep a tombstone for the maximum lifetime
+        // of family credentials so a paused lock owner cannot resurrect them.
+        $marker['revoked'] = true;
+        $marker['revokedAt'] = time();
+        $this->getDao()->set(
+            $familyMarkerKey,
+            $this->encryptValue(SaFoxUtil::toJson($marker)),
+            $this->getTokenFamilyMarkerTimeout($tokens, $childRts)
+        );
+
         foreach ($tokens as $familyToken) {
             if (is_string($familyToken) && $familyToken !== '') {
                 $this->revokeAccessTokenUnlocked($familyToken);
             }
         }
-        $childRts = is_array($marker['childRts'] ?? null) ? $marker['childRts'] : [];
         $rtKeys = [];
         foreach ($childRts as $childRt) {
             if (is_string($childRt) && $childRt !== '') {
@@ -526,7 +544,6 @@ class SaOAuth2Handle
         if ($rtKeys !== []) {
             $this->getDao()->deleteMultiple($rtKeys);
         }
-        $this->getDao()->delete($familyMarkerKey);
     }
 
     protected function revokeLegacyMarkerTokens(string $markerKey): void
@@ -556,18 +573,97 @@ class SaOAuth2Handle
         if (!is_array($marker)) {
             return;
         }
+        if (($marker['revoked'] ?? false) === true) {
+            // The refresh lock lease may have expired while this request was
+            // paused. Do not attach its newly written credentials to a revoked
+            // family, and remove them before returning.
+            $this->revokeAccessTokenUnlocked($accessToken);
+            $this->getDao()->delete($this->buildAccessTokenFamilyKey($accessToken));
+            if ($childRefreshToken !== '') {
+                $this->getDao()->delete($this->buildRefreshTokenKey($childRefreshToken));
+            }
+            throw new SaTokenException('刷新令牌家族已撤销');
+        }
         // Refresh rotation has a single active descendant: the previous AT is
         // deleted before its replacement is registered, and the consumed RT is
         // already unavailable. Keeping history here makes an active family grow
         // without bound; consumed-RT markers retain replay detection separately.
         $tokens = [$accessToken];
         $childRts = $childRefreshToken !== '' ? [$childRefreshToken] : [];
-        $this->getDao()->set($familyMarkerKey, $this->encryptValue(SaFoxUtil::toJson([
+        $newMarkerJson = $this->encryptValue(SaFoxUtil::toJson([
             'tokens'    => $tokens,
             'childRts'  => $childRts,
             'clientId'  => is_string($marker['clientId'] ?? null) ? $marker['clientId'] : '',
             'revokedAt' => $marker['revokedAt'] ?? time(),
-        ])), $markerTimeout);
+            'revoked'   => false,
+        ]));
+        $dao = $this->getDao();
+        if (!$dao instanceof SaTokenDaoCompareAndSetInterface
+            || !$dao->compareAndSet($familyMarkerKey, $markerJson, $newMarkerJson, $markerTimeout)) {
+            // Never overwrite a marker changed by a newer owner after our lock
+            // lease expired. The issued credentials are not safe to keep.
+            $this->revokeAccessTokenUnlocked($accessToken);
+            $this->getDao()->delete($this->buildAccessTokenFamilyKey($accessToken));
+            if ($childRefreshToken !== '') {
+                $this->getDao()->delete($this->buildRefreshTokenKey($childRefreshToken));
+            }
+            throw new SaTokenException('刷新令牌家族状态已变更，拒绝签发令牌');
+        }
+    }
+
+    protected function isTokenFamilyRevoked(string $familyId): bool
+    {
+        $markerJson = $this->getDao()->get('oauth2:family:' . hash('sha256', $familyId));
+        if ($markerJson === null) {
+            return false;
+        }
+        $marker = SaFoxUtil::fromJson($this->decryptValue($markerJson));
+        return is_array($marker) && ($marker['revoked'] ?? false) === true;
+    }
+
+    /** @param array<mixed> $tokens
+     * @param array<mixed> $childRefreshTokens
+     */
+    protected function getTokenFamilyMarkerTimeout(array $tokens, array $childRefreshTokens): int
+    {
+        $timeout = max(1, $this->config->getAccessTokenTimeout(), $this->config->getRefreshTokenTimeout());
+        $now = time();
+        foreach ($tokens as $token) {
+            if (!is_string($token) || $token === '') {
+                continue;
+            }
+            $json = $this->getDao()->get($this->buildAccessTokenKey($token));
+            $data = $json !== null ? SaFoxUtil::fromJson($this->decryptValue($json)) : null;
+            if (is_array($data)) {
+                $expiresIn = $data['expiresIn'] ?? null;
+                $createTime = $data['createTime'] ?? null;
+                if (!is_int($expiresIn) || !is_int($createTime)) {
+                    continue;
+                }
+                if ($expiresIn > 0 && $createTime > 0 && $createTime <= PHP_INT_MAX - $expiresIn - 60) {
+                    $timeout = max($timeout, $createTime + $expiresIn - $now);
+                }
+            }
+        }
+        foreach ($childRefreshTokens as $token) {
+            if (!is_string($token) || $token === '') {
+                continue;
+            }
+            $json = $this->getDao()->get($this->buildRefreshTokenKey($token));
+            $data = $json !== null ? SaFoxUtil::fromJson($this->decryptValue($json)) : null;
+            if (is_array($data)) {
+                $expiresIn = $data['expiresIn'] ?? null;
+                $createTime = $data['createTime'] ?? null;
+                if (!is_int($expiresIn) || !is_int($createTime)) {
+                    continue;
+                }
+                if ($expiresIn > 0 && $createTime > 0 && $createTime <= PHP_INT_MAX - $expiresIn - 60) {
+                    $timeout = max($timeout, $createTime + $expiresIn - $now);
+                }
+            }
+        }
+
+        return max(1, $timeout);
     }
 
     /**
@@ -677,6 +773,10 @@ class SaOAuth2Handle
         $tokenData = new SaOAuth2AccessToken($data);
         if ($tokenData->isExpired()) {
             $this->getDao()->delete($this->buildAccessTokenKey($accessToken));
+            return null;
+        }
+        $familyId = $this->getDao()->get($this->buildAccessTokenFamilyKey($accessToken));
+        if (is_string($familyId) && $familyId !== '' && $this->isTokenFamilyRevoked($familyId)) {
             return null;
         }
         return $tokenData;

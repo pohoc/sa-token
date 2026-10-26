@@ -685,6 +685,76 @@ class SaOAuth2Test extends TestCase
         }
     }
 
+    public function testRefreshTokenLeaseExpiryCannotResurrectARevokedFamily(): void
+    {
+        $dao = new class () extends SaTokenDaoMemory {
+            public bool $trackRefreshWrites = false;
+            public bool $refreshWritten = false;
+            public ?\Closure $onFamilyReadAfterRefreshWrite = null;
+            public ?string $newAccessTokenKey = null;
+            public ?string $newRefreshTokenKey = null;
+
+            public function set(string $key, string $value, ?int $timeout = null): void
+            {
+                parent::set($key, $value, $timeout);
+                if ($this->trackRefreshWrites && str_starts_with($key, 'oauth2:at:')) {
+                    $this->newAccessTokenKey = $key;
+                }
+                if ($this->trackRefreshWrites && str_starts_with($key, 'oauth2:rt:')) {
+                    if (!str_starts_with($key, 'oauth2:rt:consumed:') && !str_starts_with($key, 'oauth2:rt:used:')) {
+                        $this->refreshWritten = true;
+                        $this->newRefreshTokenKey = $key;
+                    }
+                }
+            }
+
+            public function get(string $key): ?string
+            {
+                $value = parent::get($key);
+                if ($this->refreshWritten && str_starts_with($key, 'oauth2:family:')
+                    && $this->onFamilyReadAfterRefreshWrite !== null) {
+                    $callback = $this->onFamilyReadAfterRefreshWrite;
+                    $this->onFamilyReadAfterRefreshWrite = null;
+                    $callback();
+                }
+                return $value;
+            }
+        };
+        SaToken::setDao($dao);
+        $this->handle->registerClient($this->testClient);
+
+        $code = $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback');
+        $initial = $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
+        $oldRefreshToken = (string) $initial->getRefreshToken();
+        $dao->trackRefreshWrites = true;
+        $dao->onFamilyReadAfterRefreshWrite = function () use ($dao, $oldRefreshToken): void {
+            // Model the 120-second distributed lock lease expiring while its
+            // original owner is paused after persisting the rotated credentials.
+            $dao->delete('oauth2:refresh:token:' . hash('sha256', $oldRefreshToken));
+            $consumedFamily = $dao->get('oauth2:rt:consumed:' . hash('sha256', $oldRefreshToken));
+            self::assertIsString($consumedFamily);
+            $dao->delete('oauth2:refresh:family:' . hash('sha256', $consumedFamily));
+            try {
+                $this->handle->refreshToken($oldRefreshToken, 'test-client', $this->clientSecret);
+                self::fail('重放旧刷新令牌必须撤销家族');
+            } catch (SaTokenException $exception) {
+                self::assertStringContainsString('已被使用', $exception->getMessage());
+            }
+        };
+
+        try {
+            $this->handle->refreshToken($oldRefreshToken, 'test-client', $this->clientSecret);
+            self::fail('租约过期后发现家族撤销，刷新必须失败关闭');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('家族状态已变更', $exception->getMessage());
+        }
+
+        self::assertNotNull($dao->newAccessTokenKey);
+        self::assertNotNull($dao->newRefreshTokenKey);
+        self::assertNull($dao->get($dao->newAccessTokenKey));
+        self::assertNull($dao->get($dao->newRefreshTokenKey));
+    }
+
     public function testLegacyRefreshTokenReplayRevokesMigratedFamilyDescendants(): void
     {
         $code = $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback');

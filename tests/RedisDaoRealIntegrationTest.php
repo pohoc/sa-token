@@ -590,6 +590,18 @@ class RedisDaoRealIntegrationTest extends TestCase
         $this->assertNull($this->dao->get($key));
     }
 
+    public function testCompareAndSetDoesNotOverwriteAChangedRedisFamilyMarker(): void
+    {
+        $key = $this->prefix . 'family-marker';
+        $this->dao->set($key, 'active-marker', 60);
+
+        self::assertFalse($this->dao->compareAndSet($key, 'stale-marker', 'active-descendant', 60));
+        self::assertSame('active-marker', $this->dao->get($key));
+        self::assertTrue($this->dao->compareAndSet($key, 'active-marker', 'revoked-marker', 120));
+        self::assertSame('revoked-marker', $this->dao->get($key));
+        self::assertGreaterThan(0, $this->dao->getTimeout($key));
+    }
+
     public function testCompareAndExpireOnlyRenewsTheCurrentRedisLockOwner(): void
     {
         $key = $this->prefix . 'renew-lock';
