@@ -72,8 +72,8 @@ class SaHttpAuth
             throw new SaTokenException('Basic 认证失败');
         }
 
-        SaAntiBruteUtil::clearCurrentSourceFailures($username);
         $result = StpUtil::login($loginId);
+        SaAntiBruteUtil::clearCurrentSourceFailures($username);
         SaTokenContext::setTokenOverride(StpUtil::getStpLogic()->getLoginType(), $result->getAccessToken());
     }
 
@@ -174,8 +174,8 @@ class SaHttpAuth
             throw new SaTokenException('Digest nonce 已使用，可能遭受重放攻击');
         }
 
-        SaAntiBruteUtil::clearCurrentSourceFailures($username);
         $result = StpUtil::login($username);
+        SaAntiBruteUtil::clearCurrentSourceFailures($username);
         SaTokenContext::setTokenOverride(StpUtil::getStpLogic()->getLoginType(), $result->getAccessToken());
     }
 

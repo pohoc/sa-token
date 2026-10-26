@@ -75,8 +75,6 @@ class SaApiKey
             throw new SaTokenException('API Key 验证失败');
         }
 
-        SaAntiBruteUtil::clearCurrentSourceFailures($apiKey, 'api-key');
-
         // 同一 Key 已存在有效会话时直接复用：每次请求全量 login() 会触发
         // 账号级分布式锁竞争、反复触发 onLogin 事件、并在多实例部署下互相踢线
         $deviceType = 'apikey:' . hash('sha256', $apiKey);
@@ -88,6 +86,7 @@ class SaApiKey
                     (new \SaToken\SaLoginParameter())->setWriteResponseCredentials(false)
                 );
                 SaTokenContext::setTokenOverride(StpUtil::getStpLogic()->getLoginType(), $reuseToken);
+                SaAntiBruteUtil::clearCurrentSourceFailures($apiKey, 'api-key');
                 return;
             }
 
@@ -97,6 +96,7 @@ class SaApiKey
                     StpUtil::getStpLogic()->getLoginType(),
                     $result->getAccessToken()
                 );
+                SaAntiBruteUtil::clearCurrentSourceFailures($apiKey, 'api-key');
                 return;
             } catch (SaTokenException $e) {
                 // 冷启动并发：多个请求同时发现无可复用会话时，只有一个能拿到

@@ -819,9 +819,10 @@ class SaOAuth2Handle
             throw new SaTokenException('用户名或密码错误');
         }
 
+        $accessToken = $this->generateAccessToken($clientId, $loginId, $scope, '', true, '', false, 'password');
         SaAntiBruteUtil::clearCurrentSourceFailures($username);
 
-        return $this->generateAccessToken($clientId, $loginId, $scope, '', true, '', false, 'password');
+        return $accessToken;
     }
 
     /**

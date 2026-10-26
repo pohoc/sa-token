@@ -13,6 +13,7 @@ use SaToken\Exception\SaTokenException;
 use SaToken\Listener\SaTokenListenerInterface;
 use SaToken\SaLoginParameter;
 use SaToken\SaToken;
+use SaToken\Security\SaAntiBruteUtil;
 use SaToken\Security\SaLoginDeviceManager;
 use SaToken\StpLogic;
 use SaToken\TokenManager;
@@ -208,6 +209,40 @@ class SaLoginDeviceManagerTest extends TestCase
 
         self::assertSame([], $this->logic->getTokenManager()->getTokenListByLoginId('failed-login', 'login'));
         self::assertSame(0, SaLoginDeviceManager::getDeviceCount('failed-login', 'login'));
+    }
+
+    public function testFailedLoginSetupDoesNotClearAntiBruteFailures(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'deviceManagement' => true,
+            'antiBruteMaxFailures' => 2,
+            'antiBruteIpMaxFailures' => 0,
+            'antiBruteLockDuration' => 600,
+        ]));
+        $this->dao = new SaLoginDeviceFailingDao();
+        SaToken::setDao($this->dao);
+        SaTokenContext::setRequest(new class () {
+            public function getClientIp(): string
+            {
+                return '192.0.2.88';
+            }
+        });
+
+        SaAntiBruteUtil::recordFailure('failed-login');
+        self::assertFalse(SaAntiBruteUtil::isAccountLocked('failed-login'));
+
+        self::assertInstanceOf(SaLoginDeviceFailingDao::class, $this->dao);
+        $this->dao->failDeviceRecordWrite = true;
+        try {
+            $this->logic->login('failed-login');
+            self::fail('设备记录写入失败时登录应失败');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('simulated device storage failure', $exception->getMessage());
+        }
+
+        self::assertSame(1, SaAntiBruteUtil::getFailCount('failed-login'));
+        SaAntiBruteUtil::recordFailure('failed-login');
+        self::assertTrue(SaAntiBruteUtil::isAccountLocked('failed-login'));
     }
 
     public function testFailedLoginInvalidatesTokenWhenCleanupLockWasTakenOver(): void

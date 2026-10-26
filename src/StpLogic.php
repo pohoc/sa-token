@@ -139,8 +139,6 @@ class StpLogic
                 $this->tokenManager->saveFingerprint($tokenValue, $fingerprint, $timeout);
             }
 
-            $this->clearAntiBruteFailures($loginId);
-
             if ($config->isDeviceManagement()) {
                 $this->registerLoginDevice($loginId, $deviceType, $parameter, $tokenValue);
             }
@@ -165,6 +163,12 @@ class StpLogic
                     SaTokenContext::setHeader('satoken-refresh', $refreshToken);
                 }
             }
+
+            // Clear failed-login state only after all session persistence and
+            // response credential writes have succeeded. Otherwise a valid
+            // password followed by a storage/response failure can erase prior
+            // lockout state even though login() reports failure.
+            $this->clearAntiBruteFailures($loginId);
         } catch (\Throwable $exception) {
             // Login setup spans token persistence, device metadata, response
             // credentials and optional refresh-token creation. If any later
