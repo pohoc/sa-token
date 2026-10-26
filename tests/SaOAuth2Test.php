@@ -715,6 +715,48 @@ class SaOAuth2Test extends TestCase
         $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
     }
 
+    public function testAuthorizationCodeExchangeRejectsRedirectRevokedDuringValidation(): void
+    {
+        $dao = new class () extends SaTokenDaoMemory {
+            public int $clientReadCount = 0;
+            public ?\Closure $afterValidatedClientRead = null;
+
+            public function get(string $key): ?string
+            {
+                $value = parent::get($key);
+                if ($key === 'oauth2:client:test-client') {
+                    $this->clientReadCount++;
+                    if ($this->afterValidatedClientRead !== null && $this->clientReadCount === 3) {
+                        $callback = $this->afterValidatedClientRead;
+                        $this->afterValidatedClientRead = null;
+                        $callback();
+                    }
+                }
+
+                return $value;
+            }
+        };
+        SaToken::setDao($dao);
+        $this->handle->registerClient($this->testClient);
+        $code = $this->handle->generateAuthorizationCode('test-client', 'redirect-revocation-race', 'https://example.com/callback');
+        $dao->clientReadCount = 0;
+        $dao->afterValidatedClientRead = function (): void {
+            $revokedClient = new SaOAuth2Client(array_merge($this->testClient->toArray(), [
+                'redirectUris' => ['https://other.example/callback'],
+            ]));
+            $this->handle->registerClient($revokedClient);
+        };
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('未注册的回调地址');
+        $this->handle->exchangeTokenByCode(
+            $code->getCode(),
+            'test-client',
+            $this->clientSecret,
+            'https://example.com/callback'
+        );
+    }
+
     // ======== 刷新令牌 ========
 
     public function testRefreshToken(): void
