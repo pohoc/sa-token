@@ -524,6 +524,46 @@ class SecurityRegressionTest extends TestCase
         self::assertTrue($logic->isDisable($loginId, 'login'));
     }
 
+    public function testStatefulLoginCannotFinishAfterDisableTakesOverExpiredAccountLock(): void
+    {
+        $loginId = 'stateful-disable-lock-expiry';
+        $logic = new class ('login') extends StpLogic {
+            public int $disableChecks = 0;
+
+            public string $raceLoginId = '';
+
+            protected function checkDisableForLogin(mixed $loginId): void
+            {
+                parent::checkDisableForLogin($loginId);
+                ++$this->disableChecks;
+                if ($this->disableChecks === 3) {
+                    // Simulate the account-lock lease expiring while the
+                    // request is paused, then let an administrator finish.
+                    SaToken::getDao()->delete(
+                        TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $this->raceLoginId)
+                    );
+                    SaTokenContext::setContextId('disable-admin');
+                    try {
+                        (new StpLogic('login', new TokenManager()))->disable($loginId, 'login', 1, 3600);
+                    } finally {
+                        SaTokenContext::setContextId('default');
+                    }
+                }
+            }
+        };
+        $logic->raceLoginId = $loginId;
+
+        try {
+            $logic->login($loginId);
+            self::fail('账号封禁完成后，丢失账号锁的有状态登录不能签发 Token');
+        } catch (SaTokenException $exception) {
+            self::assertNotSame('', $exception->getMessage());
+        }
+
+        self::assertTrue($logic->isDisable($loginId, 'login'));
+        self::assertSame([], (new TokenManager())->getTokenListByLoginId($loginId, 'login'));
+    }
+
     // ======== C1: mixed JWT 模式下会话必须可终止 ========
 
     public function testMixedJwtModeLogoutInvalidatesToken(): void

@@ -145,6 +145,14 @@ class StpLogic
 
             $this->recordLoginIpIfEnabled($loginId, $config);
 
+            // The account lock is a lease. Storage/device adapters can stall
+            // long enough for disable() to take over and finish; verify that
+            // this request still owns the lease before publishing credentials.
+            $this->checkDisableForLogin($loginId);
+            if (!$this->tokenManager->renewLock($lockKey, 30)) {
+                throw new SaTokenException('账号会话锁已失效，拒绝签发登录凭证');
+            }
+
             $result = $this->buildLoginResult(
                 $tokenValue,
                 $timeout,
