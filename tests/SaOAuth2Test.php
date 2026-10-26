@@ -183,6 +183,33 @@ class SaOAuth2Test extends TestCase
         }
     }
 
+    public function testAccessTokenIssuanceEnforcesExplicitClientGrantType(): void
+    {
+        $client = new SaOAuth2Client([
+            'clientId' => 'authorization-code-only-client',
+            'clientSecret' => 'authorization-code-only-secret-32-bytes',
+            'grantTypes' => ['authorization_code'],
+            'scopes' => ['read'],
+        ]);
+        $this->handle->registerClient($client);
+
+        try {
+            $this->handle->generateAccessToken(
+                'authorization-code-only-client',
+                10001,
+                'read',
+                '',
+                false,
+                '',
+                false,
+                'implicit'
+            );
+            self::fail('直接签发入口不得绕过客户端的授权类型白名单');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('未被授权', $exception->getMessage());
+        }
+    }
+
     public function testOAuth2CredentialsExpireAtTheirExactExpirySecond(): void
     {
         $expiry = time();

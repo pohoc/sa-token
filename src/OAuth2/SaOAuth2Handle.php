@@ -230,7 +230,9 @@ class SaOAuth2Handle
             $scope,
             '',
             true,
-            $nonce
+            $nonce,
+            false,
+            'authorization_code'
         );
     }
 
@@ -502,7 +504,16 @@ class SaOAuth2Handle
         }
 
         // 刷新时先签发不带 RT 的访问令牌，随后按轮换配置创建唯一 RT 并与 AT 一起持久化。
-        $accessToken = $this->generateAccessToken($clientId, $rtData->getLoginId(), $rtData->getScope(), $familyId, false);
+        $accessToken = $this->generateAccessToken(
+            $clientId,
+            $rtData->getLoginId(),
+            $rtData->getScope(),
+            $familyId,
+            false,
+            '',
+            false,
+            'refresh_token'
+        );
         $newRefreshTokenValue = '';
         if ($this->config->isNewRefreshToken() && $this->config->getRefreshTokenTimeout() > 0) {
             $newRefreshToken = $this->createRefreshToken(
@@ -810,7 +821,7 @@ class SaOAuth2Handle
 
         SaAntiBruteUtil::clearCurrentSourceFailures($username);
 
-        return $this->generateAccessToken($clientId, $loginId, $scope);
+        return $this->generateAccessToken($clientId, $loginId, $scope, '', true, '', false, 'password');
     }
 
     /**
@@ -837,7 +848,7 @@ class SaOAuth2Handle
 
         // Client credentials authenticate the client, not a resource owner;
         // they therefore cannot issue refresh credentials for later delegation.
-        return $this->generateAccessToken($clientId, 'client:' . $clientId, $scope, '', false);
+        return $this->generateAccessToken($clientId, 'client:' . $clientId, $scope, '', false, '', false, 'client_credentials');
     }
 
     public function isOpenIdMode(): bool
@@ -1044,9 +1055,13 @@ class SaOAuth2Handle
         string $refreshFamilyId = '',
         bool $includeRefreshToken = true,
         string $idTokenNonce = '',
-        bool $includeAtHash = false
+        bool $includeAtHash = false,
+        ?string $grantType = null
     ): SaOAuth2AccessToken {
         $client = $this->validateClient($clientId);
+        if ($grantType !== null) {
+            $this->validateGrantTypeForClient($client, $grantType);
+        }
         $scope = $this->validateScopeForClient($client, $scope);
         $this->validateOidcNonce($idTokenNonce);
         if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {

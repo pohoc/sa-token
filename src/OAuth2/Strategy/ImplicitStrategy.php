@@ -88,7 +88,8 @@ class ImplicitStrategy
             '',
             false,
             $nonce,
-            $isOpenIdRequest
+            $isOpenIdRequest,
+            'implicit'
         );
     }
 }
