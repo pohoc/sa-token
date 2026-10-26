@@ -234,8 +234,16 @@ class SaToken
      */
     public static function setConfig(SaTokenConfig $config): void
     {
+        $previousStorage = self::$config?->getStorage() ?? ['type' => 'memory'];
+        $storageChanged = $previousStorage !== $config->getStorage();
         self::$config = $config;
         self::invalidateConfigDependentCaches();
+        if (!self::$daoExplicitlySet && (self::$dao === null || $storageChanged)) {
+            // Do not leave authentication state on an old auto-managed DAO
+            // after the application changes its storage configuration.
+            self::$dao = null;
+            self::$dao = self::buildDaoFromStorageConfig($config);
+        }
         self::$apiKey?->setHeaderNames($config->getApiKeyHeader(), $config->getApiSecretHeader());
     }
 

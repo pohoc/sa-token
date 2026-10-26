@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SaToken\Tests;
 
 use PHPUnit\Framework\TestCase;
+use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoFile;
 use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
@@ -585,6 +586,46 @@ class SaTokenDaoFileTest extends TestCase
                     SaToken::reset();
                 }
             }
+        }
+    }
+
+    public function testSetConfigReassemblesAutoManagedStorage(): void
+    {
+        SaToken::reset();
+        try {
+            SaToken::init(['storage' => ['type' => 'memory']]);
+            self::assertInstanceOf(\SaToken\Dao\SaTokenDaoMemory::class, SaToken::getDao());
+
+            SaToken::setConfig(new SaTokenConfig([
+                'storage' => ['type' => 'file', 'path' => $this->basePath],
+            ]));
+
+            self::assertInstanceOf(SaTokenDaoFile::class, SaToken::getDao());
+        } finally {
+            SaToken::reset();
+        }
+    }
+
+    public function testFailedStorageReconfigurationCannotKeepUsingPreviousDao(): void
+    {
+        SaToken::reset();
+        try {
+            SaToken::init(['storage' => ['type' => 'memory']]);
+            try {
+                SaToken::setConfig(new SaTokenConfig(['storage' => ['type' => 'invalid']]));
+                self::fail('无效的存储重配置必须失败');
+            } catch (SaTokenException $exception) {
+                self::assertStringContainsString('storage.type', $exception->getMessage());
+            }
+
+            try {
+                SaToken::getDao();
+                self::fail('存储重配置失败后不能继续使用旧 DAO');
+            } catch (SaTokenException $exception) {
+                self::assertStringContainsString('storage.type', $exception->getMessage());
+            }
+        } finally {
+            SaToken::reset();
         }
     }
 }
