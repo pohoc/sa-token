@@ -150,6 +150,74 @@ class SaOAuth2Test extends TestCase
         $this->assertSame(1, SaAntiBruteUtil::getFailCount('throwing-user'));
     }
 
+    public function testPasswordGrantRechecksClientSecretAfterCredentialValidation(): void
+    {
+        SaTokenContext::setRequest($this->requestFromIp('192.0.2.44'));
+        $this->handle->setUserCredentialsValidator(function (): string {
+            $rotatedClient = new SaOAuth2Client(array_merge($this->testClient->toArray(), [
+                'clientSecret' => 'rotated-oauth-client-secret-32-bytes',
+            ]));
+            $this->handle->registerClient($rotatedClient);
+
+            return 'password-rotation-user';
+        });
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('客户端密钥错误');
+        $this->handle->tokenByPassword('test-client', $this->clientSecret, 'user', 'password');
+    }
+
+    public function testImplicitAuthorizationRejectsRedirectRevokedDuringScopeValidation(): void
+    {
+        $this->config->setGrantTypes(['authorization_code', 'implicit']);
+        $client = new SaOAuth2Client([
+            'clientId' => 'implicit-race-client',
+            'clientSecret' => 'implicit-race-client-secret-32-bytes',
+            'redirectUris' => ['https://example.com/callback'],
+            'grantTypes' => ['implicit'],
+            'scopes' => ['read'],
+        ]);
+        $this->handle->registerClient($client);
+        $dao = new class () extends SaTokenDaoMemory {
+            public int $clientReadCount = 0;
+            public ?\Closure $afterScopeRead = null;
+
+            public function get(string $key): ?string
+            {
+                $value = parent::get($key);
+                if ($key === 'oauth2:client:implicit-race-client') {
+                    $this->clientReadCount++;
+                    if ($this->afterScopeRead !== null && $this->clientReadCount === 3) {
+                        $callback = $this->afterScopeRead;
+                        $this->afterScopeRead = null;
+                        $callback();
+                    }
+                }
+
+                return $value;
+            }
+        };
+        SaToken::setDao($dao);
+        $this->handle->registerClient($client);
+        $dao->clientReadCount = 0;
+        $dao->afterScopeRead = function () use ($client): void {
+            $revokedClient = new SaOAuth2Client(array_merge($client->toArray(), [
+                'redirectUris' => ['https://other.example/callback'],
+            ]));
+            $this->handle->registerClient($revokedClient);
+        };
+
+        $strategy = new \SaToken\OAuth2\Strategy\ImplicitStrategy($this->handle);
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('未注册的回调地址');
+        $strategy->authorize(
+            'implicit-race-client',
+            'implicit-race-user',
+            'read',
+            'https://example.com/callback'
+        );
+    }
+
     public function testClientSecretRotationIsObservedByOtherHandleInstances(): void
     {
         $otherHandle = new SaOAuth2Handle($this->config);

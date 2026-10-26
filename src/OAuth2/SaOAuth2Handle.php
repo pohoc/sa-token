@@ -888,6 +888,12 @@ class SaOAuth2Handle
             throw new SaTokenException('用户名或密码错误');
         }
 
+        // 凭据验证回调可能耗时或触发客户端配置更新；签发前重新确认
+        // 当前密钥和授权策略，避免已轮换的密钥继续完成在途认证。
+        $client = $this->validateClientWithSecret($clientId, $clientSecret);
+        $this->validateGrantTypeForClient($client, 'password');
+        $scope = $this->validateScopeForClient($client, $scope);
+
         $accessToken = $this->generateAccessToken($clientId, $loginId, $scope, '', true, '', false, 'password');
         SaAntiBruteUtil::clearCurrentSourceFailures($username);
 
