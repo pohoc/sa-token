@@ -159,6 +159,27 @@ class SaApiKeyTest extends TestCase
         self::assertSame('api-key-account', $logic->getLoginId());
     }
 
+    public function testInvalidApiKeyCannotFallBackToAnUnrelatedBearerToken(): void
+    {
+        SaToken::setConfig(SaToken::getConfig()->setIsReadHeader(true));
+        $logic = SaToken::getStpLogic();
+        $bearerToken = $logic->login('bearer-account')->getAccessToken();
+        $api = new SaApiKey();
+        $api->registerKey('service-key', 'service-secret', 'api-key-account');
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'satoken' => $bearerToken,
+            'api-key' => 'service-key',
+            'api-secret' => 'wrong-secret',
+        ]));
+
+        try {
+            $api->checkApiKey();
+            self::fail('无效 API Key 必须拒绝认证');
+        } catch (SaTokenException) {
+            self::assertNull($logic->getLoginId(), 'API Key 认证失败后不得回退到请求携带的 bearer token');
+        }
+    }
+
     public function testApiKeySessionReuseDoesNotEmitBearerWhenResponseWritingIsDisabled(): void
     {
         $api = new SaApiKey();

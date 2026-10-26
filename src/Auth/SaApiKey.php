@@ -34,6 +34,11 @@ class SaApiKey
 
     public function checkApiKey(): void
     {
+        // A caller that catches the authentication exception must not fall
+        // through to an unrelated native bearer token from this request.
+        $loginType = StpUtil::getStpLogic()->getLoginType();
+        SaTokenContext::setTokenOverride($loginType, '');
+
         if (SaTokenContext::hasMultipleHeaderValues($this->keyHeaderName, true)
             || SaTokenContext::hasMultipleHeaderValues($this->secretHeaderName, true)) {
             throw new SaTokenException('API Key 或 Secret Header 存在多个值');
