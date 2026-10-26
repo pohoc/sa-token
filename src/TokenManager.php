@@ -734,6 +734,14 @@ class TokenManager
             }
             $newTokens = array_values(array_filter($existingTokens, fn ($item) => $item['tokenValue'] !== $tokenValue));
 
+            // A mixed JWT has no DAO-backed revocation state once this session
+            // is deleted. Advance the account generation before removal so a
+            // later switch to stateless mode cannot accept that old JWT via
+            // the legacy-token compatibility path.
+            if ($this->getConfig()->getJwtMode() === 'mixed') {
+                $this->advanceStatelessTokenGenerationLocked($loginIdStr, $loginType);
+            }
+
             if ($expectedList !== null) {
                 $dao = $this->getDao();
                 $timeout = $dao->getTimeout($loginIdKey);
@@ -824,6 +832,13 @@ class TokenManager
 
         $keysToDelete = [];
         try {
+            // Account-wide logout/kickout also invalidates mixed JWTs already
+            // missing from the session index before a future stateless-mode
+            // migration can reinterpret them as legacy stateless tokens.
+            if ($this->getConfig()->getJwtMode() === 'mixed') {
+                $this->advanceStatelessTokenGenerationLocked($loginIdStr, $loginType);
+            }
+
             foreach ($tokens as $item) {
                 $renewLocks();
                 $tokenValue = is_string($item['tokenValue'] ?? null) ? $item['tokenValue'] : '';
@@ -1859,11 +1874,7 @@ class TokenManager
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
         try {
-            $generationKey = self::buildStatelessTokenGenerationKey($loginId, $loginType);
-            $currentGeneration = $this->getStatelessTokenGeneration($loginId, $loginType);
-            if ($currentGeneration === PHP_INT_MAX || $this->getDao()->increment($generationKey) !== $currentGeneration + 1) {
-                throw new SaTokenException('无状态 JWT 账号会话版本更新失败');
-            }
+            $this->advanceStatelessTokenGenerationLocked($loginId, $loginType);
 
             // Keep the timestamp watermark for tokens issued by older versions;
             // current tokens use the monotonic generation and do not depend on
@@ -1879,6 +1890,17 @@ class TokenManager
             $this->deleteRefreshTokensByLoginIdLocked($loginId, $loginType);
         } finally {
             $this->releaseLock($lockKey);
+        }
+    }
+
+    /** Caller must hold the account login lock. */
+    protected function advanceStatelessTokenGenerationLocked(string $loginId, string $loginType): void
+    {
+        $generationKey = self::buildStatelessTokenGenerationKey($loginId, $loginType);
+        $currentGeneration = $this->getStatelessTokenGeneration($loginId, $loginType);
+        if ($currentGeneration === PHP_INT_MAX
+            || $this->getDao()->increment($generationKey) !== $currentGeneration + 1) {
+            throw new SaTokenException('无状态 JWT 账号会话版本更新失败');
         }
     }
 

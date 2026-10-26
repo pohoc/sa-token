@@ -469,6 +469,49 @@ class SecurityRegressionTest extends TestCase
         $this->assertFalse(StpUtil::getStpLogic()->isLogin());
     }
 
+    public function testMixedJwtAccountLogoutRemainsRevokedAfterSwitchToStatelessMode(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtMode'      => 'mixed',
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'isReadHeader' => true,
+        ]));
+        $logic = StpUtil::getStpLogic();
+        $loginId = 'mixed-to-stateless-account-logout';
+        $token = $logic->login($loginId)->getAccessToken();
+
+        $logic->logoutByLoginId($loginId);
+        self::assertNull($logic->getLoginIdByToken($token));
+
+        SaToken::getConfig()->setJwtStateless(true);
+        self::assertNull(
+            $logic->getLoginIdByToken($token),
+            '账号注销后的 mixed JWT 不得通过无状态遗留令牌兼容路径复活'
+        );
+    }
+
+    public function testMixedJwtSingleLogoutRemainsRevokedAfterSwitchToStatelessMode(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtMode'      => 'mixed',
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'isReadHeader' => true,
+        ]));
+        $logic = StpUtil::getStpLogic();
+        $loginId = 'mixed-to-stateless-single-logout';
+        $token = $logic->login($loginId)->getAccessToken();
+        $this->actAsToken($token);
+
+        $logic->logout();
+        self::assertNull($logic->getLoginIdByToken($token));
+
+        SaToken::getConfig()->setJwtStateless(true);
+        self::assertNull(
+            $logic->getLoginIdByToken($token),
+            '单 token 注销后的 mixed JWT 不得通过无状态遗留令牌兼容路径复活'
+        );
+    }
+
     public function testMixedJwtModeForgedJwtWithoutDaoRecordIsRejected(): void
     {
         SaToken::setConfig(new SaTokenConfig([
