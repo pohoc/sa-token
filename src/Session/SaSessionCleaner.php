@@ -36,6 +36,7 @@ class SaSessionCleaner
         'satoken:session:',
         'satoken:session:lock:',
         'satoken:tokenSession:',
+        'satoken:tokenSessionLineage:',
         'satoken:refresh:',
         'satoken:refreshMap:',
         'satoken:fingerprint:',

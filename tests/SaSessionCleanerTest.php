@@ -139,16 +139,19 @@ class SaSessionCleanerTest extends TestCase
 
         $dao->set('satoken:session:expired-session-1', 'data', 10);
         $dao->set('satoken:tokenSession:expired-token-session', 'data', 10);
+        $dao->set('satoken:tokenSessionLineage:expired-token-lineage', 'data', 10);
         $dao->set('satoken:session:valid-session', 'data', 1000);
 
         $this->backdate($dao, 'satoken:session:expired-session-1');
         $this->backdate($dao, 'satoken:tokenSession:expired-token-session');
+        $this->backdate($dao, 'satoken:tokenSessionLineage:expired-token-lineage');
 
         $cleaned = SaSessionCleaner::cleanOnce();
 
-        $this->assertSame(2, $cleaned);
+        $this->assertSame(3, $cleaned);
         $this->assertNull($dao->get('satoken:session:expired-session-1'));
         $this->assertNull($dao->get('satoken:tokenSession:expired-token-session'));
+        $this->assertNull($dao->get('satoken:tokenSessionLineage:expired-token-lineage'));
         $this->assertNotNull($dao->get('satoken:session:valid-session'));
     }
 
