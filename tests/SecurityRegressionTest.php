@@ -921,9 +921,14 @@ class SecurityRegressionTest extends TestCase
             self::assertStringContainsString('RefreshToken 无效', $exception->getMessage());
         }
 
-        $rotated = StpUtil::refreshToken((string) $refreshToken);
-        self::assertSame($accessToken, $rotated->getAccessToken());
-        self::assertNotSame($rotated->getAccessToken(), $rotated->getRefreshToken());
+        try {
+            StpUtil::refreshToken((string) $refreshToken);
+            self::fail('A constant custom generator must not rotate a bearer credential');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('拒绝复用旧凭据', $exception->getMessage());
+        }
+        self::assertTrue(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($accessToken));
+        self::assertTrue(StpUtil::isRefreshTokenValid((string) $refreshToken));
     }
 
     public function testRevokeTokenWithPermanentTimeoutStaysRevoked(): void

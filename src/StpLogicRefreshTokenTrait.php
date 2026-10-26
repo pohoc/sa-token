@@ -94,6 +94,15 @@ trait StpLogicRefreshTokenTrait
             }
             $remainingTimeout = $this->tokenManager->getRefreshTokenTimeout($refreshToken);
 
+            $oldAccessToken = is_string($data['accessToken'] ?? null) ? $data['accessToken'] : '';
+            // Validate rotation capability while both credentials are still
+            // intact. A fixed custom generator must not consume a RefreshToken
+            // and strand its still-live AccessToken on a failed refresh.
+            if (!$config->isJwtStateless()
+                && $this->tokenManager->createTokenValue($loginId, $this->loginType) === $oldAccessToken) {
+                throw new SaTokenException('AccessToken 值冲突：刷新时拒绝复用旧凭据');
+            }
+
             // 原子消费：同一 RefreshToken 并发重放时，仅第一个请求成功
             $consumed = $this->tokenManager->consumeRefreshToken($refreshToken);
             if ($consumed === null) {
