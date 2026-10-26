@@ -17,6 +17,7 @@ use SaToken\SaToken;
 use SaToken\Sso\SaSsoConfig;
 use SaToken\Sso\SaSsoHandle;
 use SaToken\Sso\SaSsoTemplate;
+use SaToken\StpLogic;
 use SaToken\StpUtil;
 use SaToken\TokenManager;
 use SaToken\Util\SaTokenContext;
@@ -205,6 +206,47 @@ class SecurityRegressionTest extends TestCase
         $userLogic->renewTimeout(172800);
 
         $this->assertLessThanOrEqual($originalTimeout, $adminLogic->getTokenTimeout());
+    }
+
+    public function testStatelessLoginCannotIssueJwtAfterAccountLogoutWinsExpiredLock(): void
+    {
+        $loginId = 'stateless-lock-expiry-user';
+        SaToken::setConfig(SaToken::getConfig()
+            ->setJwtStateless(true)
+            ->setJwtSecretKey('test-jwt-secret-key-32-bytes-long-ok!'));
+
+        $logic = new class ('login') extends StpLogic {
+            public ?\Closure $afterDisableCheck = null;
+
+            protected function checkDisableForLogin(mixed $loginId): void
+            {
+                parent::checkDisableForLogin($loginId);
+                if ($this->afterDisableCheck !== null) {
+                    $callback = $this->afterDisableCheck;
+                    $this->afterDisableCheck = null;
+                    $callback($loginId);
+                }
+            }
+        };
+        $logic->afterDisableCheck = function (mixed $checkedLoginId) use ($loginId): void {
+            self::assertSame($loginId, $checkedLoginId);
+            // Simulate the 30-second account-lock lease expiring while the old
+            // login request is paused; another worker completes logout first.
+            SaToken::getDao()->delete(
+                TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId)
+            );
+            (new StpLogic('login', new TokenManager()))->logoutByLoginId($loginId);
+        };
+
+        try {
+            $token = $logic->loginStateless($loginId);
+            self::assertNull(
+                $logic->getLoginIdByToken($token),
+                '全账号注销完成后，暂停中的旧登录请求不能返回仍可用的 JWT'
+            );
+        } catch (SaTokenException $exception) {
+            self::assertSame('账号会话已撤销，拒绝签发无效登录凭证', $exception->getMessage());
+        }
     }
 
     // ======== C1: mixed JWT 模式下会话必须可终止 ========

@@ -235,6 +235,11 @@ class StpLogic
         SaTokenTimeout::validate($timeout);
 
         $loginIdStr = (string) $loginId;
+        // Create the JWT before entering the account critical section. Its iat
+        // then predates any account-wide logout that wins while this request is
+        // paused, even if the distributed lock lease expires.
+        $jwt = $this->getJwt();
+        $tokenValue = $jwt->createStatelessToken($loginId, $this->loginType, $timeout);
         $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', $loginIdStr);
         if (!$this->tokenManager->acquireLock($lockKey, 30)) {
             throw new SaTokenException('同账号登录正在处理中，请稍后重试');
@@ -242,8 +247,17 @@ class StpLogic
         try {
             $this->checkDisableForLogin($loginId);
 
-            $jwt = $this->getJwt();
-            $tokenValue = $jwt->createStatelessToken($loginId, $this->loginType, $timeout);
+            $claims = $jwt->parseToken($tokenValue);
+            if (($claims['sub'] ?? null) !== $loginIdStr
+                || ($claims['type'] ?? null) !== $this->loginType
+                || $this->tokenManager->isStatelessTokenRevokedByLoginId(
+                    $loginIdStr,
+                    $this->loginType,
+                    $claims['iat'] ?? null
+                )) {
+                throw new SaTokenException('账号会话已撤销，拒绝签发无效登录凭证');
+            }
+
             if ($config->isTokenFingerprint()) {
                 $fingerprint = $this->tokenManager->computeFingerprint();
                 $this->tokenManager->saveFingerprint($tokenValue, $fingerprint, $timeout);
