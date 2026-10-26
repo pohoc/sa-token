@@ -251,6 +251,61 @@ class SecurityRegressionTest extends TestCase
         $this->assertLessThanOrEqual($newOwnerTimeout, $manager->getTokenTimeout($token));
     }
 
+    public function testLogoutAfterRefreshLockLeaseExpiresCannotReturnNewSession(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'refreshToken'         => true,
+            'refreshTokenRotation' => true,
+        ])));
+
+        $manager = new class () extends TokenManager {
+            public bool $pauseAfterGeneratingRefreshAccessToken = false;
+
+            public function createTokenValue(mixed $loginId, string $loginType, string $prefix = ''): string
+            {
+                $token = parent::createTokenValue($loginId, $loginType, $prefix);
+                if ($this->pauseAfterGeneratingRefreshAccessToken && $prefix === '') {
+                    $this->pauseAfterGeneratingRefreshAccessToken = false;
+                    \Fiber::suspend();
+                }
+
+                return $token;
+            }
+        };
+        $logic = new StpLogic('login', $manager);
+        $login = $logic->login('refresh-logout-race');
+        $oldAccessToken = $login->getAccessToken();
+        $refreshToken = (string) $login->getRefreshToken();
+        $manager->pauseAfterGeneratingRefreshAccessToken = true;
+        $refreshResult = null;
+        $refreshError = null;
+
+        $fiber = new \Fiber(function () use ($logic, $refreshToken, &$refreshResult, &$refreshError): void {
+            try {
+                $refreshResult = $logic->refreshToken($refreshToken);
+            } catch (\Throwable $exception) {
+                $refreshError = $exception;
+            }
+        });
+
+        $fiber->start();
+        self::assertTrue($fiber->isSuspended());
+
+        // Model an expired distributed lock lease after refresh minted a
+        // candidate token but before it can save that token as a session.
+        $accountLockKey = TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', 'refresh-logout-race');
+        SaToken::getDao()->delete($accountLockKey);
+        $logic->logoutByLoginId('refresh-logout-race');
+        $fiber->resume();
+
+        self::assertTrue($fiber->isTerminated());
+        self::assertNull($refreshResult, '刷新不能在账号登出完成后返回新的会话凭据');
+        self::assertInstanceOf(SaTokenException::class, $refreshError);
+        self::assertNull($logic->getLoginIdByToken($oldAccessToken));
+        self::assertFalse($logic->isRefreshTokenValid($refreshToken));
+        self::assertSame([], $manager->getTokenListByLoginId('refresh-logout-race', 'login'));
+    }
+
     public function testRenewalExtendsLoginIdIndexWithTokenTimeout(): void
     {
         $manager = new TokenManager();
