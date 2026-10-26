@@ -113,6 +113,38 @@ class SaSsoTemplateTest extends TestCase
         $this->assertFalse($template->verifySign($signed, $clientSecret));
     }
 
+    public function testVerifySignRejectsTooManyParameters(): void
+    {
+        $template = new SaSsoTemplate('intl');
+        $clientSecret = getenv('TEST_SSO_CLIENT_SECRET') ?: 'test-key-placeholder-32-bytes-lo';
+        $signed = $template->signParams(['loginId' => 'user-1'], $clientSecret);
+        for ($index = 0; $index < 128; $index++) {
+            $signed['field' . $index] = 'x';
+        }
+
+        self::assertFalse($template->verifySign($signed, $clientSecret));
+    }
+
+    public function testVerifySignRejectsExcessiveTotalParameterBytes(): void
+    {
+        $template = new SaSsoTemplate('intl');
+        $clientSecret = getenv('TEST_SSO_CLIENT_SECRET') ?: 'test-key-placeholder-32-bytes-lo';
+        $signed = $template->signParams(['loginId' => 'user-1'], $clientSecret);
+        $signed['payload'] = str_repeat('x', 65537);
+
+        self::assertFalse($template->verifySign($signed, $clientSecret));
+    }
+
+    public function testSignParamsRejectsExcessiveTotalParameterBytes(): void
+    {
+        $template = new SaSsoTemplate('intl');
+        $clientSecret = getenv('TEST_SSO_CLIENT_SECRET') ?: 'test-key-placeholder-32-bytes-lo';
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('总长度超过限制');
+        $template->signParams(['payload' => str_repeat('x', 65537)], $clientSecret);
+    }
+
     public function testHttpHelperRejectsNonHttpSchemes(): void
     {
         $this->expectException(SaTokenException::class);

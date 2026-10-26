@@ -13,6 +13,10 @@ class SaSsoTemplate
 {
     protected const MAX_RESPONSE_BYTES = 1_048_576;
 
+    protected const MAX_SIGNED_PARAMS = 128;
+
+    protected const MAX_SIGNED_PARAMS_BYTES = 65536;
+
     protected ?string $lastError = null;
 
     protected string $cryptoType = 'intl';
@@ -63,6 +67,19 @@ class SaSsoTemplate
             throw new SaTokenException('SSO 客户端密钥长度不足，至少需要 32 字节');
         }
         unset($params['sign']);
+        if (count($params) > self::MAX_SIGNED_PARAMS) {
+            throw new SaTokenException('SSO 签名参数数量超过限制');
+        }
+        $totalBytes = 0;
+        foreach ($params as $key => $value) {
+            if (!is_string($key) || !is_string($value)) {
+                throw new SaTokenException('SSO 签名参数必须是字符串键值');
+            }
+            $totalBytes += strlen($key) + strlen($value);
+            if ($totalBytes > self::MAX_SIGNED_PARAMS_BYTES) {
+                throw new SaTokenException('SSO 签名参数总长度超过限制');
+            }
+        }
         ksort($params);
         $signStr = http_build_query($params) . '&key=' . $clientSecret;
 
@@ -85,7 +102,7 @@ class SaSsoTemplate
      */
     public function verifySign(array $params, string $clientSecret, ?int $maxAge = null): bool
     {
-        if (strlen($clientSecret) < 32) {
+        if (strlen($clientSecret) < 32 || count($params) > self::MAX_SIGNED_PARAMS) {
             return false;
         }
         $ts = $params['timestamp'] ?? null;
@@ -97,6 +114,7 @@ class SaSsoTemplate
         $sign = $params['sign'] ?? '';
         unset($params['sign']);
         $normalized = [];
+        $totalBytes = 0;
         foreach ($params as $k => $v) {
             // Reject values that cannot be represented by the flat signing
             // format. Silently dropping them would authenticate only a subset
@@ -104,7 +122,13 @@ class SaSsoTemplate
             if (!is_scalar($v)) {
                 return false;
             }
-            $normalized[(string) $k] = (string) $v;
+            $key = (string) $k;
+            $value = (string) $v;
+            $totalBytes += strlen($key) + strlen($value);
+            if ($totalBytes > self::MAX_SIGNED_PARAMS_BYTES) {
+                return false;
+            }
+            $normalized[$key] = $value;
         }
         ksort($normalized);
         $signStr = http_build_query($normalized) . '&key=' . $clientSecret;
