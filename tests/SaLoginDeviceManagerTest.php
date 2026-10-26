@@ -692,6 +692,31 @@ class SaLoginDeviceManagerTest extends TestCase
         $this->assertNull($this->logic->getTokenManager()->getLoginIdByToken($tokenToRemove));
     }
 
+    public function testKickoutAllDevicesPreservesExceptTokenWhenSeveralSessionsShareADevice(): void
+    {
+        SaToken::getConfig()->setIsShare(false);
+        $device = new SaLoginDevice([
+            'deviceType' => 'pc',
+            'deviceName' => 'Shared workstation',
+            'ip' => '192.0.2.88',
+        ]);
+
+        $keepToken = $this->logic->login(10001, (new SaLoginParameter())->setDevice($device))->getAccessToken();
+        $removeToken = $this->logic->login(10001, (new SaLoginParameter())->setDevice($device))->getAccessToken();
+        self::assertNotSame($keepToken, $removeToken);
+        self::assertSame($device->getDeviceId(), SaLoginDeviceManager::getDeviceList(10001, 'login')[0]->getDeviceId());
+
+        self::assertSame(1, $this->logic->kickoutAllDevices(10001, $keepToken));
+        self::assertSame('10001', $this->logic->getTokenManager()->getLoginIdByToken($keepToken));
+        self::assertNull($this->logic->getTokenManager()->getLoginIdByToken($removeToken));
+        self::assertCount(1, $this->logic->getDeviceList(10001));
+
+        // The retained token must remain indexed by its device so normal
+        // device-management operations can still revoke it afterwards.
+        $this->logic->kickoutDevice(10001, $device->getDeviceId());
+        self::assertNull($this->logic->getTokenManager()->getLoginIdByToken($keepToken));
+    }
+
     public function testDeviceIdUniqueness(): void
     {
         $device1 = new SaLoginDevice([

@@ -349,15 +349,33 @@ class SaLoginDeviceManager
             foreach ($devices as $record) {
                 $renewAccountLock();
                 $device = $record['device'];
-                if ($exceptToken !== null && $device->getTokenValue() === $exceptToken) {
-                    continue;
+                $remainingTokens = [];
+                if ($exceptToken !== null) {
+                    foreach (self::loadDeviceTokenValues($record['key'], $record['raw']) as $tokenValue) {
+                        if ($tokenValue === $exceptToken) {
+                            $remainingTokens[] = $tokenValue;
+                        }
+                    }
                 }
                 $dao = SaToken::getDao();
+                $remainingToken = $remainingTokens[0] ?? null;
+                $hasRemainingToken = $remainingToken !== null;
+                if ($hasRemainingToken) {
+                    // A device may own several stateful sessions. Preserve the
+                    // explicitly exempted bearer even when it is not the
+                    // record's primary tokenValue.
+                    $device->setTokenValue($remainingToken);
+                    $newRecord = self::encodeDevice($device, $remainingTokens);
+                } else {
+                    $newRecord = null;
+                }
                 if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface
-                    || !$dao->compareAndSet($record['key'], $record['raw'], null)) {
+                    || !$dao->compareAndSet($record['key'], $record['raw'], $newRecord)) {
                     throw new SaTokenException('设备记录已并发变更或 DAO 不支持原子条件写入，请重试');
                 }
-                $deviceCount++;
+                if (!$hasRemainingToken) {
+                    $deviceCount++;
+                }
             }
 
             return max($count, $deviceCount);
