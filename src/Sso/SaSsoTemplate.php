@@ -202,7 +202,6 @@ class SaSsoTemplate
 
         $result = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
 
         if ($responseTooLarge) {
             $this->lastError = 'SSO response exceeds the 1 MiB limit';
