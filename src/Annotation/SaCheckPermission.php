@@ -6,7 +6,7 @@ namespace SaToken\Annotation;
 
 use Attribute;
 
-#[Attribute(Attribute::TARGET_METHOD | Attribute::TARGET_CLASS)]
+#[Attribute(Attribute::TARGET_METHOD | Attribute::TARGET_CLASS | Attribute::TARGET_FUNCTION)]
 class SaCheckPermission
 {
     protected string $value;

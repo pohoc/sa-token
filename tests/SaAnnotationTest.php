@@ -252,6 +252,11 @@ class SaAnnotationTestProtectedIgnoreInterfaceController extends SaAnnotationTes
     }
 }
 
+#[SaCheckLogin]
+function saTokenAnnotationSecuredFunctionForTest(): void
+{
+}
+
 class SaAnnotationTestMixedController
 {
     #[SaCheckLogin]
@@ -348,6 +353,21 @@ class SaAnnotationTest extends TestCase
     {
         $this->expectException(NotLoginException::class);
         SaAnnotationProcessor::process(SaAnnotationTestLoginController::class, 'doSomething');
+    }
+
+    public function testSaCheckLoginAttributeIsEnforcedOnClosureCallable(): void
+    {
+        $action = #[SaCheckLogin] static function (): void {
+        };
+
+        $this->expectException(NotLoginException::class);
+        SaAnnotationProcessor::processCallable($action);
+    }
+
+    public function testSaCheckLoginAttributeIsEnforcedOnNamedFunctionCallable(): void
+    {
+        $this->expectException(NotLoginException::class);
+        SaAnnotationProcessor::processCallable(__NAMESPACE__ . '\\saTokenAnnotationSecuredFunctionForTest');
     }
 
     public function testProcessCallableChecksObjectMethodAnnotations(): void

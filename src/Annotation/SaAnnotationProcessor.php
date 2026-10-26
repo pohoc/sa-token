@@ -102,7 +102,13 @@ class SaAnnotationProcessor
 
         $allAttributes = array_merge($classAttributes, $methodAttributes, $interfaceAttributes);
 
-        foreach ($allAttributes as $attr) {
+        self::processAuthorizationAttributes($allAttributes);
+    }
+
+    /** @param array<\ReflectionAttribute<object>> $attributes */
+    protected static function processAuthorizationAttributes(array $attributes): void
+    {
+        foreach ($attributes as $attr) {
             $instance = $attr->newInstance();
             $loginType = method_exists($instance, 'getLoginType') ? $instance->getLoginType() : 'login';
             if (!is_string($loginType)) {
@@ -232,9 +238,26 @@ class SaAnnotationProcessor
             return;
         }
 
-        if (is_object($callable) && !$callable instanceof \Closure) {
+        if ($callable instanceof \Closure || is_string($callable)) {
+            self::processFunction($callable);
+            return;
+        }
+
+        if (is_object($callable)) {
             self::process($callable::class, '__invoke');
         }
+    }
+
+    protected static function processFunction(string|\Closure $function): void
+    {
+        $attributes = (new \ReflectionFunction($function))->getAttributes();
+        foreach ($attributes as $attribute) {
+            if ($attribute->getName() === SaIgnore::class) {
+                return;
+            }
+        }
+
+        self::processAuthorizationAttributes($attributes);
     }
 
     /**
