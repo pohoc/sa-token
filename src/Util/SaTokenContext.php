@@ -530,18 +530,51 @@ class SaTokenContext
         return null;
     }
 
-    /** Reject ambiguous credentials supplied more than once through PSR-7 parameters. */
+    /** Reject ambiguous credentials supplied more than once through request parameters. */
     public static function hasConflictingParamValues(string $name): bool
     {
         $request = self::getRequest();
-        if (!$request instanceof \Psr\Http\Message\ServerRequestInterface) {
+        if ($request instanceof \Psr\Http\Message\ServerRequestInterface) {
+            $queryParams = $request->getQueryParams();
+            $body = $request->getParsedBody();
+            $rawQuery = $request->getUri()->getQuery();
+        } elseif (is_object($request)) {
+            // Laravel and Symfony expose their parsed query/body through public
+            // ParameterBag instances, while input() may merge those sources
+            // using framework-specific precedence rules.
+            $properties = get_object_vars($request);
+            $hasQueryBag = array_key_exists('query', $properties);
+            $hasBodyBag = array_key_exists('request', $properties);
+            if (!$hasQueryBag && !$hasBodyBag) {
+                return false;
+            }
+
+            $queryParams = $hasQueryBag ? self::getParameterBagValues($properties['query']) : [];
+            $body = $hasBodyBag ? self::getParameterBagValues($properties['request']) : [];
+            if ($queryParams === null || $body === null) {
+                return true;
+            }
+
+            $rawQuery = '';
+            if (method_exists($request, 'getQueryString')) {
+                try {
+                    $queryString = $request->getQueryString();
+                } catch (\Throwable) {
+                    return true;
+                }
+                if (is_string($queryString)) {
+                    $rawQuery = $queryString;
+                }
+            }
+        } else {
             return false;
         }
 
-        $queryParams = $request->getQueryParams();
-        $body = $request->getParsedBody();
         $hasQueryValue = array_key_exists($name, $queryParams);
         $hasBodyValue = is_array($body) && array_key_exists($name, $body);
+        if (is_object($body) && property_exists($body, $name)) {
+            return true;
+        }
 
         if (($hasQueryValue && !is_string($queryParams[$name]))
             || ($hasBodyValue && !is_string($body[$name]))) {
@@ -553,7 +586,6 @@ class SaTokenContext
 
         // PSR-7 query parsing may collapse repeated keys to one value. Inspect
         // the raw query so `?token=a&token=b` cannot silently select a bearer.
-        $rawQuery = $request->getUri()->getQuery();
         if ($rawQuery === '') {
             return false;
         }
@@ -571,6 +603,25 @@ class SaTokenContext
         }
 
         return false;
+    }
+
+    /** @return array<array-key, mixed>|null */
+    protected static function getParameterBagValues(mixed $bag): ?array
+    {
+        if (is_array($bag)) {
+            return $bag;
+        }
+        if (!is_object($bag) || !method_exists($bag, 'all')) {
+            return null;
+        }
+
+        try {
+            $values = $bag->all();
+        } catch (\Throwable) {
+            return null;
+        }
+
+        return is_array($values) ? $values : null;
     }
 
     /**

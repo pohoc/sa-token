@@ -14,6 +14,44 @@ use SaToken\StpLogic;
 use SaToken\TokenManager;
 use SaToken\Util\SaTokenContext;
 
+class SaTokenContextParameterBagStub
+{
+    /** @param array<string, string> $values */
+    public function __construct(private array $values)
+    {
+    }
+
+    /** @return array<string, string> */
+    public function all(): array
+    {
+        return $this->values;
+    }
+}
+
+class SaTokenContextFrameworkRequestStub
+{
+    public function __construct(
+        public SaTokenContextParameterBagStub $query,
+        public SaTokenContextParameterBagStub $request
+    ) {
+    }
+
+    public function input(string $name): ?string
+    {
+        return $this->request->all()[$name] ?? $this->query->all()[$name] ?? null;
+    }
+
+    public function header(string $name): string
+    {
+        return '';
+    }
+
+    public function getQueryString(): string
+    {
+        return 'satoken=' . rawurlencode($this->query->all()['satoken'] ?? '');
+    }
+}
+
 class StpLogicTest extends TestCase
 {
     protected StpLogic $logic;
@@ -90,6 +128,21 @@ class StpLogicTest extends TestCase
         $request->method('getUri')->willReturn($uri);
         $request->method('getQueryParams')->willReturn(['satoken' => $queryToken]);
         $request->method('getParsedBody')->willReturn(['satoken' => $bodyToken]);
+        SaTokenContext::setRequest($request);
+
+        self::assertNull($this->logic->getTokenValue());
+        self::assertFalse($this->logic->isLogin());
+    }
+
+    public function testConflictingFrameworkQueryAndBodyTokensFailClosed(): void
+    {
+        SaToken::getConfig()->setIsReadBody(true);
+        $queryToken = $this->logic->login('framework-query-user')->getAccessToken();
+        $bodyToken = $this->logic->login('framework-body-user')->getAccessToken();
+        $request = new SaTokenContextFrameworkRequestStub(
+            new SaTokenContextParameterBagStub(['satoken' => $queryToken]),
+            new SaTokenContextParameterBagStub(['satoken' => $bodyToken])
+        );
         SaTokenContext::setRequest($request);
 
         self::assertNull($this->logic->getTokenValue());
