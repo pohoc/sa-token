@@ -152,24 +152,25 @@ class SaSsoTemplateTest extends TestCase
         (new SaSsoTemplate('intl'))->post('file://localhost/etc/passwd', ['ticket' => 'secret']);
     }
 
-    public function testHttpFailureExceptionRedactsCredentialsAndQuery(): void
+    public function testHttpFailureExceptionRedactsCredentialsAndUrlPath(): void
     {
         try {
             (new SaSsoTemplate('intl'))->post(
-                'http://user:password@127.0.0.1:1/check?ticket=secret&sign=signature#fragment',
+                'http://user:password@127.0.0.1:1/check/sensitive-path-secret?ticket=secret&sign=signature#fragment',
                 ['ticket' => 'secret']
             );
             self::fail('Unreachable local endpoint must fail');
         } catch (SaTokenException $exception) {
-            self::assertStringContainsString('http://127.0.0.1:1/check', $exception->getMessage());
+            self::assertStringContainsString('http://127.0.0.1:1', $exception->getMessage());
             self::assertStringNotContainsString('password', $exception->getMessage());
+            self::assertStringNotContainsString('sensitive-path-secret', $exception->getMessage());
             self::assertStringNotContainsString('ticket=secret', $exception->getMessage());
             self::assertStringNotContainsString('signature', $exception->getMessage());
             self::assertStringNotContainsString('fragment', $exception->getMessage());
         }
     }
 
-    public function testStreamFailureExceptionRedactsCredentialsAndQuery(): void
+    public function testStreamFailureExceptionRedactsCredentialsAndUrlPath(): void
     {
         $template = new class () extends SaSsoTemplate {
             protected function doRequest(string $method, string $url, array $data = []): string|false
@@ -180,13 +181,14 @@ class SaSsoTemplateTest extends TestCase
 
         try {
             $template->post(
-                'http://user:password@127.0.0.1:1/check?ticket=secret&sign=signature#fragment',
+                'http://user:password@127.0.0.1:1/check/sensitive-path-secret?ticket=secret&sign=signature#fragment',
                 ['ticket' => 'secret']
             );
             self::fail('Unreachable local endpoint must fail');
         } catch (SaTokenException $exception) {
-            self::assertStringContainsString('http://127.0.0.1:1/check', $exception->getMessage());
+            self::assertStringContainsString('http://127.0.0.1:1', $exception->getMessage());
             self::assertStringNotContainsString('password', $exception->getMessage());
+            self::assertStringNotContainsString('sensitive-path-secret', $exception->getMessage());
             self::assertStringNotContainsString('ticket=secret', $exception->getMessage());
             self::assertStringNotContainsString('signature', $exception->getMessage());
             self::assertStringNotContainsString('fragment', $exception->getMessage());

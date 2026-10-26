@@ -164,8 +164,8 @@ class SaSsoTemplate
     }
 
     /**
-     * Remove URL components that commonly carry tickets, credentials, or
-     * signed parameters before including an endpoint in an exception.
+     * Keep only the URL origin in exceptions. Paths, queries, and userinfo can
+     * all carry credentials or signed material in deployment-specific URLs.
      */
     protected function sanitizeUrlForError(string $url): string
     {
@@ -180,9 +180,7 @@ class SaSsoTemplate
             $host = '[' . $host . ']';
         }
         $port = isset($parts['port']) ? ':' . $parts['port'] : '';
-        $path = (string) ($parts['path'] ?? '');
-
-        return $scheme . $host . $port . $path;
+        return $scheme . $host . $port;
     }
 
     /**
