@@ -1408,6 +1408,7 @@ class TokenManager
 
         $loginIdStr = (string) $loginId;
         $loginLockKey = 'login:' . $loginType . ':' . hash('sha256', $loginIdStr);
+        $credentialLockKey = 'refresh-credential:' . hash('sha256', $refreshToken);
         if (!$this->acquireLock($loginLockKey, 30)) {
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
@@ -1445,7 +1446,6 @@ class TokenManager
             $data = SaFoxUtil::toJson($refreshData);
             $effectiveTimeout = ($timeout === -1) ? null : $timeout;
             $refreshKey = self::REFRESH_TOKEN_PREFIX . $refreshToken;
-            $credentialLockKey = 'refresh-credential:' . hash('sha256', $refreshToken);
             if (!$this->acquireLock($credentialLockKey, 30)) {
                 throw new SaTokenException('RefreshToken 正在签发或消费，请稍后重试');
             }
@@ -1463,6 +1463,9 @@ class TokenManager
                 if ($this->getDao()->exists(self::TOKEN_PREFIX . $refreshToken)) {
                     throw new SaTokenException('RefreshToken 值冲突：与现有 AccessToken 重复');
                 }
+                if (!$this->renewLock($credentialLockKey, 30)) {
+                    throw new SaTokenException('RefreshToken 凭据锁已失效，拒绝重新签发');
+                }
                 $refreshRaw = $this->encryptValue($data);
                 if (!$this->renewLock($loginLockKey, 30)
                     || (new StpLogic($loginType, $this))->getLoginIdByToken($accessToken) !== $loginIdStr) {
@@ -1472,6 +1475,12 @@ class TokenManager
                 // between these writes, account revocation still knows which key to
                 // inspect; a stale index entry without a credential is harmless.
                 $this->addRefreshTokenToAccountIndex($loginIdStr, $loginType, $refreshToken, $timeout);
+                if (!$this->renewLock($credentialLockKey, 30)
+                    || ($this->getConfig()->isRefreshTokenRotation()
+                        && $this->getDao()->exists(self::REFRESH_TOKEN_USED_PREFIX . hash('sha256', $refreshToken)))) {
+                    $this->removeRefreshTokenFromAccountIndex($loginIdStr, $loginType, $refreshToken);
+                    throw new SaTokenException('RefreshToken 已消费或凭据锁已失效，拒绝重新签发');
+                }
                 if (!$this->getDao()->setIfNotExists(
                     $refreshKey,
                     $refreshRaw,
@@ -1535,7 +1544,10 @@ class TokenManager
      */
     public function consumeRefreshToken(string $refreshToken): ?array
     {
-        $consumptionLockKey = 'refresh-token:' . hash('sha256', $refreshToken);
+        // Issuance and consumption must serialize on the same lock. Otherwise
+        // a stale issuer can pass the replay-marker check while a consumer is
+        // about to mark and delete this credential, then re-register its bearer.
+        $consumptionLockKey = 'refresh-credential:' . hash('sha256', $refreshToken);
         if (!$this->acquireLock($consumptionLockKey, 30)) {
             throw new SaTokenException('RefreshToken 正在处理中，请稍后重试');
         }

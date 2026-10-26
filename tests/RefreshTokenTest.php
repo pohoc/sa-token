@@ -238,6 +238,55 @@ class RefreshTokenTest extends TestCase
         $this->assertTrue(StpUtil::isRefreshTokenValid($secondRefreshToken));
     }
 
+    public function testConsumedRefreshTokenCannotBeReRegisteredAfterCredentialLeaseIsLost(): void
+    {
+        $dao = new class () extends SaTokenDaoMemory {
+            public ?string $markerKeyToInterleave = null;
+
+            public ?string $credentialLockKey = null;
+
+            public ?\Closure $afterMarkerCheck = null;
+
+            public function exists(string $key): bool
+            {
+                $exists = parent::exists($key);
+                if ($key === $this->markerKeyToInterleave && !$exists && $this->afterMarkerCheck !== null) {
+                    $callback = $this->afterMarkerCheck;
+                    $this->afterMarkerCheck = null;
+                    $callback();
+                }
+
+                return $exists;
+            }
+        };
+        SaToken::setDao($dao);
+        $logic = new StpLogic('login');
+        $loginId = 'consumed-refresh-registration-race';
+        $accessToken = $logic->login($loginId)->getAccessToken();
+        $refreshToken = $logic->createRefreshToken($accessToken);
+        $manager = $logic->getTokenManager();
+        $dao->markerKeyToInterleave = TokenManager::REFRESH_TOKEN_USED_PREFIX . hash('sha256', $refreshToken);
+        $dao->credentialLockKey = TokenManager::LOCK_PREFIX . 'refresh-credential:' . hash('sha256', $refreshToken);
+        $dao->afterMarkerCheck = function () use ($dao, $refreshToken): void {
+            // Simulate a paused issuer resuming after its lease was taken over.
+            $dao->delete((string) $dao->credentialLockKey);
+            $consumer = new TokenManager();
+            self::assertNotNull($consumer->consumeRefreshToken($refreshToken));
+        };
+
+        try {
+            $manager->saveRefreshToken($refreshToken, $accessToken, $loginId, 'login', 3600);
+            self::fail('丢失凭据锁后，旧签发者不得重新注册已消费的 RefreshToken');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('锁已失效', $exception->getMessage());
+        }
+
+        self::assertFalse($logic->isRefreshTokenValid($refreshToken));
+        self::assertNotNull($manager->getConsumedRefreshTokenData($refreshToken));
+        $this->expectException(SaTokenException::class);
+        $logic->refreshToken($refreshToken);
+    }
+
     public function testRefreshTokenCannotBeCreatedForAnotherLoginType(): void
     {
         $memberLogic = SaToken::getStpLogic('member');
@@ -337,7 +386,7 @@ class RefreshTokenTest extends TestCase
             // Simulate a paused worker whose account and per-token lock leases
             // expire while a second worker consumes the same RefreshToken.
             $dao->delete(TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId));
-            $dao->delete(TokenManager::LOCK_PREFIX . 'refresh-token:' . hash('sha256', $oldRefreshToken));
+            $dao->delete(TokenManager::LOCK_PREFIX . 'refresh-credential:' . hash('sha256', $oldRefreshToken));
             $otherLogic = new StpLogic('login', new TokenManager());
             $result = $otherLogic->refreshToken($oldRefreshToken);
             $rotatedAccessToken = $result->getAccessToken();
