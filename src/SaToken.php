@@ -127,7 +127,10 @@ class SaToken
     {
         $storage = $config->getStorage();
         $type = $storage['type'] ?? 'memory';
-        $type = is_string($type) ? strtolower($type) : 'memory';
+        if (!is_string($type)) {
+            throw new SaTokenException('storage.type 必须是 memory、file 或 redis 字符串');
+        }
+        $type = strtolower($type);
 
         switch ($type) {
             case 'file':
@@ -144,11 +147,10 @@ class SaToken
                 return new \SaToken\Dao\SaTokenDaoRedis($redisConfig);
 
             case 'memory':
-            default:
-                if ($type !== 'memory') {
-                    trigger_error("Sa-Token: 未知的 storage.type '{$type}'，已回退为 memory 存储", E_USER_WARNING);
-                }
                 return new SaTokenDaoMemory();
+
+            default:
+                throw new SaTokenException("未知的 storage.type '{$type}'，拒绝回退为 memory 存储");
         }
     }
 

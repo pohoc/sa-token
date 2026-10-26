@@ -560,4 +560,20 @@ class SaTokenDaoFileTest extends TestCase
 
         SaToken::reset();
     }
+
+    public function testUnknownStorageTypeFailsClosedInsteadOfFallingBackToMemory(): void
+    {
+        SaToken::reset();
+
+        foreach (['redsi', ['redis'], 42] as $invalidType) {
+            try {
+                SaToken::init(['storage' => ['type' => $invalidType]]);
+                self::fail('未知存储类型不能静默退回进程内存储');
+            } catch (SaTokenException $exception) {
+                self::assertStringContainsString('storage.type', $exception->getMessage());
+            } finally {
+                SaToken::reset();
+            }
+        }
+    }
 }
