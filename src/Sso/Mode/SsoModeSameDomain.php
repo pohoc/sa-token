@@ -39,7 +39,12 @@ class SsoModeSameDomain
      */
     public function doLogin(): mixed
     {
-        $tokenValue = SaTokenContext::getCookie(SaToken::getConfig()->getTokenName());
+        $tokenName = SaToken::getConfig()->getTokenName();
+        if (SaTokenContext::hasMultipleCookieValues($tokenName)) {
+            throw new SaTokenException('同域 SSO Cookie 存在多个同名 Token，拒绝登录');
+        }
+
+        $tokenValue = SaTokenContext::getCookie($tokenName);
         if ($tokenValue !== null) {
             // 即使普通认证已识别出有效 Token，同域 SSO 入口也必须单独校验 CSRF。
             $csrfToken = SaTokenContext::getHeader('X-CSRF-Token');

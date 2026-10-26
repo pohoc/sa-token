@@ -440,6 +440,44 @@ class SaSsoTest extends TestCase
         SaTokenContext::clear();
     }
 
+    public function testSameDomainSsoRejectsDuplicateTokenCookiesBeforeParsing(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenName' => 'satoken',
+            'timeout' => 86400,
+            'activityTimeout' => -1,
+            'signKey' => 'sso-csrf-test-secret-32-bytes-long',
+            'isReadHeader' => false,
+            'isReadCookie' => false,
+            'isReadBody' => false,
+        ]));
+        $token = StpUtil::login('cookie-user')->getAccessToken();
+        $csrf = SsoModeSameDomain::buildCsrfValue($token);
+        SaTokenContext::setRequest(new class ($token, $csrf) {
+            public function __construct(private string $token, private string $csrf)
+            {
+            }
+
+            public function cookie(string $name): ?string
+            {
+                return $name === 'satoken' ? $this->token : null;
+            }
+
+            public function getHeaderLine(string $name): string
+            {
+                return match (strtolower($name)) {
+                    'cookie' => 'satoken=attacker-token; satoken=' . $this->token,
+                    'x-csrf-token' => $this->csrf,
+                    default => '',
+                };
+            }
+        });
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('存在多个同名 Token');
+        (new SsoModeSameDomain(new SaSsoConfig()))->doLogin();
+    }
+
     public function testSameDomainSsoRequiresSecretForCsrfBinding(): void
     {
         $this->expectException(SaTokenException::class);
