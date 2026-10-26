@@ -1023,16 +1023,22 @@ class TokenManager
         // The marker intentionally expires after the idle window. Its creation at
         // issuance plus fail-closed handling of a missing marker makes expiry an
         // unambiguous signal that the Token was inactive for too long.
-        $this->getDao()->set(self::LAST_ACTIVE_PREFIX . $tokenValue, $this->encryptValue((string) SaFoxUtil::getTime()), $config->getActivityTimeout());
+        $key = self::LAST_ACTIVE_PREFIX . $tokenValue;
+        $this->getDao()->set($key, $this->encryptBoundValue($key, (string) SaFoxUtil::getTime()), $config->getActivityTimeout());
     }
 
     public function getLastActiveTime(string $tokenValue): ?int
     {
-        $value = $this->getDao()->get(self::LAST_ACTIVE_PREFIX . $tokenValue);
+        $key = self::LAST_ACTIVE_PREFIX . $tokenValue;
+        $value = $this->getDao()->get($key);
         if ($value === null) {
             return null;
         }
-        $decrypted = $this->decryptValue($value);
+        try {
+            $decrypted = $this->decryptBoundValue($key, $value);
+        } catch (SaTokenException) {
+            return null;
+        }
         return (int) $decrypted;
     }
 
@@ -1246,14 +1252,15 @@ class TokenManager
             }
 
             $registryTimeout = $tokenTimeout >= 0 ? max(1, $tokenTimeout) : null;
+            $servicesKey = $this->safeServicesKey($tokenValue, $loginType);
             $this->getDao()->set(
-                $this->safeServicesKey($tokenValue, $loginType),
-                $this->encryptValue(SaFoxUtil::toJson($services)),
+                $servicesKey,
+                $this->encryptBoundValue($servicesKey, SaFoxUtil::toJson($services)),
                 $registryTimeout
             );
             $this->getDao()->set(
                 $this->safeStateKey($tokenValue, $service, $loginType),
-                $this->encryptValue((string) (SaFoxUtil::getTime() + $effectiveSafeTime)),
+                $this->encryptBoundValue($this->safeStateKey($tokenValue, $service, $loginType), (string) (SaFoxUtil::getTime() + $effectiveSafeTime)),
                 $effectiveSafeTime
             );
         } finally {
@@ -1267,7 +1274,11 @@ class TokenManager
         if ($value === null) {
             return false;
         }
-        $decrypted = $this->decryptValue($value);
+        try {
+            $decrypted = $this->decryptBoundValue($this->safeStateKey($tokenValue, $service, $loginType), $value);
+        } catch (SaTokenException) {
+            return false;
+        }
         return (int) $decrypted > SaFoxUtil::getTime();
     }
 
@@ -1290,7 +1301,7 @@ class TokenManager
             } else {
                 $timeout = $this->getDao()->getTimeout($registryKey);
                 $effectiveTimeout = $timeout > 0 ? $timeout : null;
-                $this->getDao()->set($registryKey, $this->encryptValue(SaFoxUtil::toJson($services)), $effectiveTimeout);
+                $this->getDao()->set($registryKey, $this->encryptBoundValue($registryKey, SaFoxUtil::toJson($services)), $effectiveTimeout);
             }
         } finally {
             $this->releaseLock($tokenLockKey);
@@ -1314,7 +1325,12 @@ class TokenManager
         if ($json === null) {
             return [];
         }
-        $services = SaFoxUtil::fromJson($this->decryptValue($json));
+        try {
+            $decrypted = $this->decryptBoundValue($this->safeServicesKey($tokenValue, $loginType), $json);
+        } catch (SaTokenException) {
+            return [];
+        }
+        $services = SaFoxUtil::fromJson($decrypted);
         if (!is_array($services)) {
             throw new SaTokenException('Token 安全状态索引损坏');
         }
@@ -1342,25 +1358,33 @@ class TokenManager
             throw new SaTokenException('Token 不存在，无法切换身份');
         }
         $effectiveTimeout = ($tokenTimeout > 0) ? $tokenTimeout : null;
-        $this->getDao()->set($key, $this->encryptValue(SaFoxUtil::toString($switchToId)), $effectiveTimeout);
+        $this->getDao()->set($key, $this->encryptBoundValue($key, SaFoxUtil::toString($switchToId)), $effectiveTimeout);
     }
 
     public function getSwitchTo(string $tokenValue, string $loginType): ?string
     {
         $dao = $this->getDao();
-        $value = $dao->get(self::buildSwitchKey($tokenValue, $loginType));
+        $key = self::buildSwitchKey($tokenValue, $loginType);
+        $value = $dao->get($key);
         if ($value === null
             && !str_contains($loginType, ':') && !str_contains($loginType, '%')
             && !str_contains($tokenValue, ':') && !str_contains($tokenValue, '%')) {
             // Keep unambiguous legacy keys readable during upgrade. Delimiters and
             // escape markers must never fall back to the collision-prone namespace:
             // a legacy '%' can alias the encoded spelling of another token's key.
-            $value = $dao->get(self::buildLegacySwitchKey($tokenValue, $loginType));
+            $legacyValue = $dao->get(self::buildLegacySwitchKey($tokenValue, $loginType));
+            if ($legacyValue !== null && !$this->getEncryptor()->isEnabled()) {
+                $value = $legacyValue;
+            }
         }
         if ($value === null) {
             return null;
         }
-        return $this->decryptValue($value);
+        try {
+            return $this->decryptBoundValue($key, $value);
+        } catch (SaTokenException) {
+            return null;
+        }
     }
 
     public function clearSwitch(string $tokenValue, string $loginType): void
@@ -1995,16 +2019,22 @@ class TokenManager
     public function saveFingerprint(string $tokenValue, string $fingerprint, ?int $timeout = null): void
     {
         $effectiveTimeout = ($timeout === -1) ? null : $timeout;
-        $this->getDao()->set(self::FINGERPRINT_PREFIX . $tokenValue, $this->encryptValue($fingerprint), $effectiveTimeout);
+        $key = self::FINGERPRINT_PREFIX . $tokenValue;
+        $this->getDao()->set($key, $this->encryptBoundValue($key, $fingerprint), $effectiveTimeout);
     }
 
     public function getFingerprint(string $tokenValue): ?string
     {
-        $value = $this->getDao()->get(self::FINGERPRINT_PREFIX . $tokenValue);
+        $key = self::FINGERPRINT_PREFIX . $tokenValue;
+        $value = $this->getDao()->get($key);
         if ($value === null) {
             return null;
         }
-        return $this->decryptValue($value);
+        try {
+            return $this->decryptBoundValue($key, $value);
+        } catch (SaTokenException) {
+            return null;
+        }
     }
 
     public function deleteFingerprint(string $tokenValue): void

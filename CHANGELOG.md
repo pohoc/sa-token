@@ -7,6 +7,7 @@
 - (oauth2) 校验客户端与刷新令牌记录中的凭据标识是否匹配 DAO key，拒绝跨 key 记录替换导致的客户端冒用或受害者身份刷新。
 - (security) 将 RefreshToken 标识写入凭据记录并校验其与 DAO key 一致，拒绝跨 key 密文替换导致的受害者身份刷新；升级后旧格式 RefreshToken 需要重新签发。
 - (oauth2) 为消费后的刷新令牌 tombstone 写入凭据哈希并在重放路径校验，阻断跨 key 复制 tombstone 造成的其他令牌家族误撤销。
+- (security) 将身份切换、安全认证窗口、活动时间和设备指纹密文绑定到 bearer key，阻断跨 token 身份冒用、二次认证绕过及活动状态迁移。旧版未绑定的加密状态升级后失效。
 
 本文件由脚本自动生成，基于 git tag 和 commit 记录。
 

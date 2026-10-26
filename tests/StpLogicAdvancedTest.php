@@ -168,6 +168,76 @@ class StpLogicAdvancedTest extends TestCase
         $this->logic->refreshToken($attackerRefreshToken);
     }
 
+    public function testEncryptedSwitchIdentityCannotBeCopiedToAnotherToken(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenEncrypt' => true,
+            'tokenEncryptKey' => str_repeat('i', 32),
+            'aesKey' => str_repeat('i', 32),
+        ]));
+        $victimToken = $this->logic->login('victim')->getAccessToken();
+        $attackerToken = $this->logic->login('attacker')->getAccessToken();
+        $this->logic->getTokenManager()->setSwitchTo($victimToken, 'administrator', 'login');
+        $victimSwitch = $this->dao->get(TokenManager::SWITCH_PREFIX . 'login:' . $victimToken);
+        self::assertNotNull($victimSwitch);
+        $this->dao->set(TokenManager::SWITCH_PREFIX . 'login:' . $attackerToken, $victimSwitch);
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->with('satoken')->willReturn([$attackerToken]);
+        SaTokenContext::setRequest($request);
+
+        self::assertSame('attacker', $this->logic->getLoginId());
+    }
+
+    public function testEncryptedSafeWindowCannotBeCopiedToAnotherToken(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenEncrypt' => true,
+            'tokenEncryptKey' => str_repeat('s', 32),
+            'aesKey' => str_repeat('s', 32),
+        ]));
+        $victimToken = $this->logic->login('victim')->getAccessToken();
+        $attackerToken = $this->logic->login('attacker')->getAccessToken();
+        $this->logic->getTokenManager()->openSafe($victimToken, 'pay', 3600, 'login');
+        $serviceKey = hash('sha256', 'pay');
+        $tokenKey = hash('sha256', $victimToken);
+        $attackerKey = hash('sha256', $attackerToken);
+        $victimSafeState = $this->dao->get('satoken:safe:v2:login:' . $tokenKey . ':' . $serviceKey);
+        self::assertNotNull($victimSafeState);
+        $this->dao->set('satoken:safe:v2:login:' . $attackerKey . ':' . $serviceKey, $victimSafeState);
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->with('satoken')->willReturn([$attackerToken]);
+        SaTokenContext::setRequest($request);
+
+        self::assertFalse($this->logic->isSafe('pay'));
+    }
+
+    public function testEncryptedActivityAndFingerprintRecordsCannotBeCopiedToAnotherToken(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenEncrypt' => true,
+            'tokenEncryptKey' => str_repeat('a', 32),
+            'aesKey' => str_repeat('a', 32),
+            'activityTimeout' => 3600,
+        ]));
+        $owner = $this->logic->login('owner')->getAccessToken();
+        $other = $this->logic->login('other')->getAccessToken();
+        $ownerActivityKey = TokenManager::LAST_ACTIVE_PREFIX . $owner;
+        $otherActivityKey = TokenManager::LAST_ACTIVE_PREFIX . $other;
+        $ownerFingerprintKey = TokenManager::FINGERPRINT_PREFIX . $owner;
+        $otherFingerprintKey = TokenManager::FINGERPRINT_PREFIX . $other;
+        $this->logic->getTokenManager()->updateLastActiveToNow($owner);
+        $this->logic->getTokenManager()->saveFingerprint($owner, 'owner-fingerprint', 3600);
+        $ownerActivity = $this->dao->get($ownerActivityKey);
+        $ownerFingerprint = $this->dao->get($ownerFingerprintKey);
+        self::assertNotNull($ownerActivity);
+        self::assertNotNull($ownerFingerprint);
+        $this->dao->set($otherActivityKey, $ownerActivity);
+        $this->dao->set($otherFingerprintKey, $ownerFingerprint);
+
+        self::assertNull($this->logic->getTokenManager()->getLastActiveTime($other));
+        self::assertNull($this->logic->getTokenManager()->getFingerprint($other));
+    }
+
     public function testLoginWithTokenEncryptSmCryptoType(): void
     {
         if (!class_exists(\CryptoSm\SM4\Sm4::class)) {
