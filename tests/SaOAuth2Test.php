@@ -1321,9 +1321,9 @@ class SaOAuth2Test extends TestCase
         $attacker = $this->handle->exchangeTokenByCode($attackerCode->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
         $victimRefreshToken = $victim->getRefreshToken();
         $attackerRefreshToken = $attacker->getRefreshToken();
-        self::assertNotSame('', $victimRefreshToken);
-        if ($attackerRefreshToken === null || $attackerRefreshToken === '') {
-            self::fail('Authorization code exchange did not issue an attacker refresh token');
+        if ($victimRefreshToken === null || $victimRefreshToken === ''
+            || $attackerRefreshToken === null || $attackerRefreshToken === '') {
+            self::fail('Authorization code exchange did not issue refresh tokens');
         }
 
         $dao = SaToken::getDao();
@@ -1358,6 +1358,39 @@ class SaOAuth2Test extends TestCase
         $dao->set('oauth2:client:' . $otherClientId, $ownerRecord);
 
         self::assertNull($this->handle->getClient($otherClientId));
+    }
+
+    public function testConsumedRefreshTombstoneCannotBeCopiedToAnotherRefreshKey(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenEncrypt' => true,
+            'tokenEncryptKey' => str_repeat('m', 32),
+        ]));
+        $this->handle->registerClient($this->testClient);
+        $victimCode = $this->handle->generateAuthorizationCode('test-client', 'victim', 'https://example.com/callback');
+        $victim = $this->handle->exchangeTokenByCode($victimCode->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
+        $attackerCode = $this->handle->generateAuthorizationCode('test-client', 'attacker', 'https://example.com/callback');
+        $attacker = $this->handle->exchangeTokenByCode($attackerCode->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
+        $victimRefreshToken = $victim->getRefreshToken();
+        $attackerRefreshToken = $attacker->getRefreshToken();
+        if ($victimRefreshToken === null || $victimRefreshToken === ''
+            || $attackerRefreshToken === null || $attackerRefreshToken === '') {
+            self::fail('Authorization code exchange did not issue refresh tokens');
+        }
+
+        $descendant = $this->handle->refreshToken($victimRefreshToken, 'test-client', $this->clientSecret);
+        $dao = SaToken::getDao();
+        $tombstone = $dao->get('oauth2:rt:' . $victimRefreshToken);
+        self::assertNotNull($tombstone);
+        $dao->set('oauth2:rt:' . $attackerRefreshToken, $tombstone, 3600);
+
+        try {
+            $this->handle->refreshToken($attackerRefreshToken, 'test-client', $this->clientSecret);
+            self::fail('A copied consumed marker must not be treated as a replay of another refresh token');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('消费记录与凭据不匹配', $exception->getMessage());
+        }
+        self::assertNotNull($this->handle->validateAccessToken($descendant->getAccessToken()));
     }
 
     public function testOAuth2HandleUsesRotatedStorageEncryptionKey(): void

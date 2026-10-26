@@ -369,6 +369,12 @@ class SaOAuth2Handle
             if (is_array($preData)) {
                 /** @var array<string, mixed> $preData */
                 if (($preData['_state'] ?? null) === 'consumed') {
+                    $refreshTokenHash = is_string($preData['refreshTokenHash'] ?? null)
+                        ? $preData['refreshTokenHash']
+                        : '';
+                    if ($refreshTokenHash === '' || !hash_equals(hash('sha256', $refreshToken), $refreshTokenHash)) {
+                        throw new SaTokenException('刷新令牌消费记录与凭据不匹配');
+                    }
                     $familyId = is_string($preData['familyId'] ?? null) ? $preData['familyId'] : '';
                     $consumedClientId = is_string($preData['clientId'] ?? null) ? $preData['clientId'] : '';
                     if ($familyId === '' || $consumedClientId === '') {
@@ -478,9 +484,10 @@ class SaOAuth2Handle
             throw new SaTokenException('DAO 不支持刷新令牌的原子消费');
         }
         $consumedRecord = $this->encryptValue(SaFoxUtil::toJson([
-            '_state'   => 'consumed',
-            'familyId' => $familyId,
-            'clientId' => $rtData->getClientId(),
+            '_state'          => 'consumed',
+            'refreshTokenHash' => hash('sha256', $refreshToken),
+            'familyId'        => $familyId,
+            'clientId'        => $rtData->getClientId(),
         ]));
         if (!$dao->compareAndUpdate($rtKey, $preJson, $consumedRecord)) {
             // Another lock owner may have consumed this token after its lease
@@ -489,6 +496,8 @@ class SaOAuth2Handle
             $latestJson = $dao->get($rtKey);
             $latest = $latestJson !== null ? SaFoxUtil::fromJson($this->decryptValue($latestJson)) : null;
             if (is_array($latest) && ($latest['_state'] ?? null) === 'consumed'
+                && is_string($latest['refreshTokenHash'] ?? null)
+                && hash_equals(hash('sha256', $refreshToken), $latest['refreshTokenHash'])
                 && is_string($latest['familyId'] ?? null) && $latest['familyId'] !== '') {
                 if (($latest['clientId'] ?? null) !== $clientId) {
                     throw new SaTokenException('客户端 ID 不匹配');
