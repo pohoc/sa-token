@@ -226,6 +226,7 @@ class SaToken
     {
         self::$config = $config;
         self::invalidateConfigDependentCaches();
+        self::$apiKey?->setHeaderNames($config->getApiKeyHeader(), $config->getApiSecretHeader());
     }
 
     /**

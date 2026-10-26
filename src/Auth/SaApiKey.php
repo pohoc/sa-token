@@ -136,6 +136,14 @@ class SaApiKey
         return $this;
     }
 
+    /** Update configured credential header names without discarding validators or registered keys. */
+    public function setHeaderNames(string $keyHeaderName, string $secretHeaderName): static
+    {
+        $this->keyHeaderName = $keyHeaderName;
+        $this->secretHeaderName = $secretHeaderName;
+        return $this;
+    }
+
     public function isApiKeyRequest(): bool
     {
         if (SaTokenContext::hasMultipleHeaderValues($this->keyHeaderName, true)

@@ -75,6 +75,37 @@ class SaApiKeyTest extends TestCase
         $this->assertFalse($api->isApiKeyRequest());
     }
 
+    public function testSetConfigRotatesSingletonApiKeyHeadersAndPreservesValidator(): void
+    {
+        $validatorCalls = 0;
+        $api = SaToken::getApiKey()->setValidator(static function (string $key, string $secret) use (&$validatorCalls): string {
+            $validatorCalls++;
+            return $key === 'configured-key' && $secret === 'configured-api-secret-value-at-least-32-bytes'
+                ? 'configured-api-user'
+                : '';
+        });
+
+        SaToken::setConfig(new SaTokenConfig([
+            'apiKeyHeader' => 'x-api-key-v2',
+            'apiSecretHeader' => 'x-api-secret-v2',
+        ]));
+
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'api-key' => 'configured-key',
+            'api-secret' => 'configured-api-secret-value-at-least-32-bytes',
+        ]));
+        $this->assertFalse($api->isApiKeyRequest());
+
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'x-api-key-v2' => 'configured-key',
+            'x-api-secret-v2' => 'configured-api-secret-value-at-least-32-bytes',
+        ]));
+        $api->checkApiKey();
+
+        $this->assertSame(1, $validatorCalls);
+        $this->assertSame('configured-api-user', SaToken::getStpLogic()->getLoginId());
+    }
+
     public function testDuplicateCredentialHeadersAreRejected(): void
     {
         $request = $this->createMock(ServerRequestInterface::class);
