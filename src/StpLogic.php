@@ -763,6 +763,11 @@ class StpLogic
      */
     protected function isTokenOwnedByLoginType(string $tokenValue, string $loginId): bool
     {
+        $recordedLoginType = $this->tokenManager->getTokenSessionLoginType($tokenValue);
+        if ($recordedLoginType !== null) {
+            return $recordedLoginType === $this->loginType;
+        }
+
         $tokens = $this->tokenManager->getTokenListByLoginId($loginId, $this->loginType);
         foreach ($tokens as $item) {
             if (is_string($item['tokenValue'] ?? null) && $item['tokenValue'] === $tokenValue) {

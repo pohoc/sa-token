@@ -257,34 +257,55 @@ class TokenManager
             if ($this->acquireLock($tokenLockKey, 30)) {
                 try {
                     // 吊销黑名单必须阻止同一 bearer 值在 TTL 内被重新签发。
-                    if (!$this->isBlacklisted($tokenValue)
-                        && $this->getDao()->setIfNotExists(self::TOKEN_PREFIX . $tokenValue, $this->encryptValue($loginIdStr), $effectiveTimeout)) {
+                    $dao = $this->getDao();
+                    $tokenKey = self::TOKEN_PREFIX . $tokenValue;
+                    if (!$this->isBlacklisted($tokenValue) && !$dao->exists($tokenKey)) {
                         $this->clearTokenBoundState($tokenValue, $loginType);
+                        $lineageKey = self::TOKEN_SESSION_LINEAGE_PREFIX . $tokenValue;
+                        $lineageValue = $this->encryptValue(SaFoxUtil::toJson([
+                            'loginId' => $loginIdStr,
+                            'loginType' => $loginType,
+                            'sessionId' => $sessionId,
+                        ]));
+                        // Publish the authenticated owner before the bearer
+                        // record. Otherwise a reused token becomes visible
+                        // between setIfNotExists() and finalizeToken(), while
+                        // a stale account index can claim it for its old type.
+                        $dao->set($lineageKey, $lineageValue, $effectiveTimeout);
                         try {
-                            $finalizedToken = $this->finalizeToken(
-                                $tokenValue,
-                                $loginId,
-                                $loginType,
-                                $deviceType,
-                                $effectiveTimeout,
-                                $sessionId
-                            );
-                            $this->updateLastActiveToNow($tokenValue);
-                            return $finalizedToken;
-                        } catch (\Throwable $exception) {
-                            // A persistence failure after writing the bearer
-                            // must not leave an orphaned credential behind.
-                            // Revalidate the lease before cleanup, then use
-                            // compare-and-delete so an expired owner cannot
-                            // remove a token issued by the next lock holder.
-                            if ($this->acquireLock($tokenLockKey, 30)) {
+                            if ($dao->setIfNotExists($tokenKey, $this->encryptValue($loginIdStr), $effectiveTimeout)) {
                                 try {
-                                    $this->rollbackFailedTokenCreation($tokenValue, $loginIdStr, $loginType);
-                                } finally {
-                                    $this->releaseLock($tokenLockKey);
+                                    $finalizedToken = $this->finalizeToken(
+                                        $tokenValue,
+                                        $loginId,
+                                        $loginType,
+                                        $deviceType,
+                                        $effectiveTimeout,
+                                        $sessionId
+                                    );
+                                    $this->updateLastActiveToNow($tokenValue);
+                                    return $finalizedToken;
+                                } catch (\Throwable $exception) {
+                                    // A persistence failure after writing the bearer
+                                    // must not leave an orphaned credential behind.
+                                    // Revalidate the lease before cleanup, then use
+                                    // compare-and-delete so an expired owner cannot
+                                    // remove a token issued by the next lock holder.
+                                    if ($this->acquireLock($tokenLockKey, 30)) {
+                                        try {
+                                            $this->rollbackFailedTokenCreation($tokenValue, $loginIdStr, $loginType);
+                                        } finally {
+                                            $this->releaseLock($tokenLockKey);
+                                        }
+                                    }
+                                    throw $exception;
                                 }
                             }
-                            throw $exception;
+                        } finally {
+                            if ($dao->get($tokenKey) === null
+                                && $dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
+                                $dao->compareAndDelete($lineageKey, $lineageValue);
+                            }
                         }
                     }
                 } finally {
@@ -388,16 +409,6 @@ class TokenManager
             )) {
             throw new SaTokenException('账号会话列表已并发变更或 DAO 不支持原子条件写入，请重试');
         }
-
-        $dao->set(
-            self::TOKEN_SESSION_LINEAGE_PREFIX . $tokenValue,
-            $this->encryptValue(SaFoxUtil::toJson([
-                'loginId' => $loginIdStr,
-                'loginType' => $loginType,
-                'sessionId' => $sessionId,
-            ])),
-            $effectiveTimeout
-        );
 
         // mixed 模式下实际存储的是 JWT，必须返回真实值供调用方下发给客户端
         return $tokenValue;
@@ -658,6 +669,70 @@ class TokenManager
         } finally {
             $this->releaseLock($loginLockKey);
         }
+    }
+
+    /**
+     * Return the login type recorded in a token's authenticated session lineage.
+     *
+     * `null` means this is a legacy token without lineage metadata. An empty
+     * string means lineage exists but is malformed or no longer matches the
+     * bearer record, and callers must fail closed.
+     */
+    public function getTokenSessionLoginType(string $tokenValue): ?string
+    {
+        $tokenRecord = $this->getDao()->get(self::TOKEN_PREFIX . $tokenValue);
+        if ($tokenRecord === null) {
+            return '';
+        }
+        try {
+            $loginId = $this->decryptValue($tokenRecord);
+        } catch (SaTokenException) {
+            return '';
+        }
+        if ($loginId === '') {
+            return '';
+        }
+
+        $lineage = $this->getDao()->get(self::TOKEN_SESSION_LINEAGE_PREFIX . $tokenValue);
+        if ($lineage !== null) {
+            try {
+                $data = SaFoxUtil::fromJson($this->decryptValue($lineage));
+            } catch (SaTokenException) {
+                return '';
+            }
+            if (!is_array($data)
+                || ($data['loginId'] ?? null) !== $loginId
+                || !is_string($data['loginType'] ?? null)
+                || $data['loginType'] === ''
+                || !is_string($data['sessionId'] ?? null)
+                || $data['sessionId'] === '') {
+                return '';
+            }
+            return $data['loginType'];
+        }
+
+        // Prior releases stored the typed lineage in TOKEN_SESSION_PREFIX,
+        // which is also a public session namespace. Only the exact legacy
+        // sidecar shape is authoritative; ordinary user session data is not.
+        $legacyBinding = $this->getDao()->get(self::TOKEN_SESSION_PREFIX . $tokenValue);
+        if ($legacyBinding !== null) {
+            try {
+                $data = SaFoxUtil::fromJson($this->decryptValue($legacyBinding));
+            } catch (SaTokenException) {
+                return null;
+            }
+            if (is_array($data)
+                && array_keys($data) === ['loginId', 'loginType', 'sessionId']
+                && ($data['loginId'] ?? null) === $loginId
+                && is_string($data['loginType'] ?? null)
+                && $data['loginType'] !== ''
+                && is_string($data['sessionId'] ?? null)
+                && preg_match('/^[A-Za-z0-9]{32}$/D', $data['sessionId']) === 1) {
+                return $data['loginType'];
+            }
+        }
+
+        return null;
     }
 
     public function getTokenSessionId(string $tokenValue, string $loginType): ?string

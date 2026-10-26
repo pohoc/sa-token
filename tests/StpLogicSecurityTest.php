@@ -131,6 +131,89 @@ class StpLogicSecurityTest extends TestCase
         $this->stp->checkSensitiveVerify('payment', $proof);
     }
 
+    public function testExpiredTokenReuseCannotCrossLoginTypeThroughStaleAccountIndex(): void
+    {
+        $dao = new class () extends SaTokenDaoMemory {
+            public ?\Closure $afterTokenWrite = null;
+
+            public function setIfNotExists(string $key, string $value, ?int $timeout = null): bool
+            {
+                $created = parent::setIfNotExists($key, $value, $timeout);
+                if ($created && str_starts_with($key, TokenManager::TOKEN_PREFIX) && $this->afterTokenWrite !== null) {
+                    $callback = $this->afterTokenWrite;
+                    $this->afterTokenWrite = null;
+                    $callback();
+                }
+
+                return $created;
+            }
+        };
+        $this->dao = $dao;
+        SaToken::setDao($dao);
+        SaToken::getConfig()->setConcurrent(true);
+        $legacyType = new StpLogic('legacy');
+        $otherType = new StpLogic('current');
+        $tokenValues = [
+            'legacy'  => ['reused-cross-type-token-value', 'legacy-keep-token-value'],
+            'current' => ['reused-cross-type-token-value'],
+        ];
+        SaToken::setAction(new class ($tokenValues) implements \SaToken\Action\SaTokenActionInterface {
+            /** @param array<string, array<string>> $tokenValues */
+            public function __construct(private array $tokenValues)
+            {
+            }
+
+            public function getPermissionList(mixed $loginId, string $loginType): array
+            {
+                return [];
+            }
+
+            public function getRoleList(mixed $loginId, string $loginType): array
+            {
+                return [];
+            }
+
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return array_shift($this->tokenValues[$loginType]);
+            }
+        });
+
+        $loginId = 'same-login-id';
+        $expiredToken = $legacyType->login(
+            $loginId,
+            (new \SaToken\SaLoginParameter())->setTimeout(1)
+        )->getAccessToken();
+        $legacyType->login(
+            $loginId,
+            (new \SaToken\SaLoginParameter())->setTimeout(3600)->setDeviceType('mobile')
+        );
+        self::assertContains(
+            $expiredToken,
+            array_column($this->manager->getTokenListByLoginId($loginId, 'legacy'), 'tokenValue')
+        );
+
+        // Simulate expiry of one short-lived token while another token keeps
+        // the account index alive. A newly issued token in another login type
+        // may then legitimately reuse the expired bearer string.
+        $this->dao->delete(TokenManager::TOKEN_PREFIX . $expiredToken);
+        $this->dao->delete(TokenManager::TOKEN_SESSION_LINEAGE_PREFIX . $expiredToken);
+        $loginIdObservedDuringBearerPublish = 'not observed';
+        $dao->afterTokenWrite = function () use ($legacyType, $expiredToken, &$loginIdObservedDuringBearerPublish): void {
+            $loginIdObservedDuringBearerPublish = $legacyType->getLoginIdByToken($expiredToken);
+        };
+        $currentToken = $otherType->login($loginId)->getAccessToken();
+        self::assertSame($expiredToken, $currentToken);
+        self::assertNull($loginIdObservedDuringBearerPublish);
+
+        self::assertNull(
+            $legacyType->getLoginIdByToken($currentToken),
+            'A stale account index must not authenticate a token now owned by another login type'
+        );
+        $legacyType->kickoutByTokenValue($currentToken);
+        self::assertSame($loginId, $otherType->getLoginIdByToken($currentToken));
+    }
+
     public function testSourceAntiBruteLimitRemainsEnabledWhenAccountLimitIsDisabled(): void
     {
         SaToken::setConfig(new SaTokenConfig([
