@@ -41,10 +41,13 @@ class TokenManager
 
     public function getStatelessTokenGeneration(string $loginId, string $loginType): int
     {
-        $value = $this->getDao()->get(self::buildStatelessTokenGenerationKey($loginId, $loginType));
+        $key = self::buildStatelessTokenGenerationKey($loginId, $loginType);
+        $value = $this->getDao()->get($key);
         if ($value === null) {
             return 0;
         }
+
+        $value = $this->decryptBoundValue($key, $value);
 
         $generation = self::parseStatelessTokenGeneration($value);
         if ($generation === null) {
@@ -2074,11 +2077,14 @@ class TokenManager
             $key = 'satoken:jwt:revoked-before:' . $loginType . ':' . hash('sha256', $loginId);
             $current = $this->getDao()->get($key);
             $cutoff = microtime(true);
-            if ($current !== null && is_numeric($current) && is_finite((float) $current)) {
-                $cutoff = max($cutoff, (float) $current);
+            if ($current !== null) {
+                $currentCutoff = $this->decryptBoundValue($key, $current);
+                if (is_numeric($currentCutoff) && is_finite((float) $currentCutoff)) {
+                    $cutoff = max($cutoff, (float) $currentCutoff);
+                }
             }
             // 保留水位而不设置 TTL，避免无过期 JWT 在缓存过期后重新有效。
-            $this->getDao()->set($key, sprintf('%.6F', $cutoff));
+            $this->getDao()->set($key, $this->encryptBoundValue($key, sprintf('%.6F', $cutoff)));
             $this->deleteRefreshTokensByLoginIdLocked($loginId, $loginType);
         } finally {
             $this->releaseLock($lockKey);
@@ -2090,8 +2096,25 @@ class TokenManager
     {
         $generationKey = self::buildStatelessTokenGenerationKey($loginId, $loginType);
         $currentGeneration = $this->getStatelessTokenGeneration($loginId, $loginType);
-        if ($currentGeneration === PHP_INT_MAX
-            || $this->getDao()->increment($generationKey) !== $currentGeneration + 1) {
+        if ($currentGeneration === PHP_INT_MAX) {
+            throw new SaTokenException('无状态 JWT 账号会话版本更新失败');
+        }
+        $nextGeneration = (string) ($currentGeneration + 1);
+        if (!$this->getEncryptor()->isEnabled()) {
+            if ($this->getDao()->increment($generationKey) !== $currentGeneration + 1) {
+                throw new SaTokenException('无状态 JWT 账号会话版本更新失败');
+            }
+            return;
+        }
+
+        $dao = $this->getDao();
+        $currentRaw = $dao->get($generationKey);
+        if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface
+            || !$dao->compareAndSet(
+                $generationKey,
+                $currentRaw,
+                $this->encryptBoundValue($generationKey, $nextGeneration)
+            )) {
             throw new SaTokenException('无状态 JWT 账号会话版本更新失败');
         }
     }
@@ -2102,9 +2125,9 @@ class TokenManager
         mixed $issuedAt,
         mixed $tokenGeneration = null
     ): bool {
-        $generationValue = $this->getDao()->get(self::buildStatelessTokenGenerationKey($loginId, $loginType));
-        $currentGeneration = $generationValue === null ? 0 : self::parseStatelessTokenGeneration($generationValue);
-        if ($currentGeneration === null) {
+        try {
+            $currentGeneration = $this->getStatelessTokenGeneration($loginId, $loginType);
+        } catch (SaTokenException) {
             return true;
         }
         if ($tokenGeneration !== null) {
@@ -2117,9 +2140,14 @@ class TokenManager
         }
 
         $key = 'satoken:jwt:revoked-before:' . $loginType . ':' . hash('sha256', $loginId);
-        $cutoff = $this->getDao()->get($key);
-        if ($cutoff === null) {
+        $storedCutoff = $this->getDao()->get($key);
+        if ($storedCutoff === null) {
             return false;
+        }
+        try {
+            $cutoff = $this->decryptBoundValue($key, $storedCutoff);
+        } catch (SaTokenException) {
+            return true;
         }
         if (!is_numeric($cutoff)
             || !is_finite((float) $cutoff)

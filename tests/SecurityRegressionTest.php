@@ -987,6 +987,30 @@ class SecurityRegressionTest extends TestCase
         }
     }
 
+    public function testEncryptedStatelessJwtGenerationCannotBeResetToReviveLoggedOutTokens(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'tokenEncrypt' => true,
+            'tokenEncryptKey' => str_repeat('g', 32),
+            'aesKey' => str_repeat('g', 32),
+            'isReadHeader' => true,
+        ]));
+        $jwt = new \SaToken\Plugin\SaTokenJwt([
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]);
+        $token = $jwt->createStatelessToken('generation-owner', 'login', 3600);
+        $generationKey = TokenManager::buildStatelessTokenGenerationKey('generation-owner', 'login');
+
+        StpUtil::logoutByLoginId('generation-owner');
+        $this->assertNotSame('1', SaToken::getDao()->get($generationKey));
+        SaToken::getDao()->set($generationKey, '0');
+        $this->actAsToken($token);
+
+        $this->assertFalse(StpUtil::isLogin(), '无法认证的撤销版本记录必须按已撤销处理');
+    }
+
     public function testStatelessJwtAtExactAccountRevocationWatermarkIsRevoked(): void
     {
         SaToken::setConfig(new SaTokenConfig([
