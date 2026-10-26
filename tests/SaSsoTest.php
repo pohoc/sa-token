@@ -589,6 +589,27 @@ class SaSsoTest extends TestCase
         (new SaSsoHandle($config))->buildLoginUrl();
     }
 
+    public function testBuildLoginUrlRejectsAmbiguousEndpointUrls(): void
+    {
+        $rejected = 0;
+        foreach ([
+            'https://user@auth.example.com/login',
+            'https://auth.example.com/login#fragment',
+            "https://auth.example.com/login\r\nX-Injected: yes",
+            'https://localhost\\@evil.example/login',
+        ] as $endpoint) {
+            $config = new SaSsoConfig(['loginUrl' => $endpoint]);
+            try {
+                (new SaSsoHandle($config))->buildLoginUrl();
+                self::fail('歧义或带非请求组件的 SSO 端点必须被拒绝');
+            } catch (SaTokenException) {
+                // HTTP clients must not reinterpret a URL accepted by PHP.
+                $rejected++;
+            }
+        }
+        self::assertSame(4, $rejected);
+    }
+
     public function testBuildLoginUrlAllowsLocalHttpRedirect(): void
     {
         $config = new SaSsoConfig([

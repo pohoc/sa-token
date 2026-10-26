@@ -361,10 +361,22 @@ class SaSsoHandle
     protected function validateHttpsEndpoint(string $url, string $configName): void
     {
         $parsed = parse_url($url);
+        // The URL is parsed again by cURL or PHP's stream wrapper before the
+        // request is sent. Reject syntax that can be interpreted differently
+        // by those parsers, and URL components that are not meaningful for a
+        // configured HTTP endpoint.
+        if (!is_array($parsed)
+            || preg_match('/[\\\\\x00-\x20\x7f]/', $url) === 1
+            || array_key_exists('user', $parsed)
+            || array_key_exists('pass', $parsed)
+            || array_key_exists('fragment', $parsed)) {
+            throw new SaTokenException("SSO {$configName} URL 格式无效");
+        }
+
         $scheme = strtolower((string) ($parsed['scheme'] ?? ''));
         $host = strtolower(rtrim((string) ($parsed['host'] ?? ''), '.'));
         $isLocal = in_array(trim($host, '[]'), ['localhost', '127.0.0.1', '::1'], true);
-        if (!is_array($parsed) || !isset($parsed['host']) || $host === ''
+        if (!isset($parsed['host']) || $host === ''
             || !in_array($scheme, ['https', 'http'], true)
             || ($scheme !== 'https' && !$isLocal)) {
             throw new SaTokenException("SSO {$configName} 必须使用 HTTPS 协议");
