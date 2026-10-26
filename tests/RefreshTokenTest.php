@@ -93,6 +93,60 @@ class RefreshTokenTest extends TestCase
         }
     }
 
+    public function testLogoutRevokesRefreshedDescendantWhenOldTokenWasAlreadyValidated(): void
+    {
+        $manager = new class () extends TokenManager {
+            public ?\Closure $afterNextTokenLookup = null;
+
+            public function getLoginIdByToken(string $tokenValue): ?string
+            {
+                $loginId = parent::getLoginIdByToken($tokenValue);
+                if ($this->afterNextTokenLookup !== null) {
+                    $afterLookup = $this->afterNextTokenLookup;
+                    $this->afterNextTokenLookup = null;
+                    $afterLookup($tokenValue, $loginId);
+                }
+
+                return $loginId;
+            }
+
+        };
+        $logic = new StpLogic('login', $manager);
+        $login = $logic->login('logout-refresh-race');
+        $oldAccessToken = $login->getAccessToken();
+        $oldRefreshToken = $login->getRefreshToken();
+        self::assertNotSame('', $oldRefreshToken);
+        $otherSession = $logic->login(
+            'logout-refresh-race',
+            (new \SaToken\SaLoginParameter())->setDeviceType('other-device')
+        );
+
+        $refreshedResult = null;
+        $manager->afterNextTokenLookup = function () use ($logic, $oldRefreshToken, &$refreshedResult): void {
+            $refreshedResult = $logic->refreshToken($oldRefreshToken);
+        };
+        SaTokenContext::setRequest(new class ($oldAccessToken) {
+            public function __construct(private string $token)
+            {
+            }
+
+            public function getHeaderLine(string $name): string
+            {
+                return strtolower($name) === 'satoken' ? $this->token : '';
+            }
+        });
+
+        $logic->logout();
+
+        self::assertInstanceOf(\SaToken\SaLoginResult::class, $refreshedResult);
+        self::assertNull(
+            $logic->getLoginIdByToken($refreshedResult->getAccessToken()),
+            '注销已验证的旧 AccessToken 时，其并发刷出的后代会话也必须失效'
+        );
+        self::assertFalse($manager->isRefreshTokenValid($refreshedResult->getRefreshToken()));
+        self::assertSame('logout-refresh-race', $logic->getLoginIdByToken($otherSession->getAccessToken()));
+    }
+
     public function testKickoutByLoginIdRevokesAllRefreshTokens(): void
     {
         $loginResult = StpUtil::login(10021);

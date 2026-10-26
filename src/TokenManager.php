@@ -203,8 +203,14 @@ class TokenManager
         return $effectivePrefix . $raw;
     }
 
-    public function saveToken(string $tokenValue, mixed $loginId, string $loginType, string $deviceType = '', ?int $timeout = null): string
-    {
+    public function saveToken(
+        string $tokenValue,
+        mixed $loginId,
+        string $loginType,
+        string $deviceType = '',
+        ?int $timeout = null,
+        ?string $sessionId = null
+    ): string {
         SaTokenTimeout::validate($timeout ?? $this->getConfig()->getTimeout());
 
         if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
@@ -212,20 +218,27 @@ class TokenManager
         }
 
         $loginIdStr = (string) $loginId;
+        $sessionId = $sessionId !== null && $sessionId !== '' ? $sessionId : SaFoxUtil::randomString(32);
         $loginLockKey = 'login:' . $loginType . ':' . hash('sha256', $loginIdStr);
         if (!$this->acquireLock($loginLockKey, 30)) {
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
 
         try {
-            return $this->saveTokenWithLoginLock($tokenValue, $loginId, $loginType, $deviceType, $timeout);
+            return $this->saveTokenWithLoginLock($tokenValue, $loginId, $loginType, $deviceType, $timeout, $sessionId);
         } finally {
             $this->releaseLock($loginLockKey);
         }
     }
 
-    protected function saveTokenWithLoginLock(string $tokenValue, mixed $loginId, string $loginType, string $deviceType, ?int $timeout): string
-    {
+    protected function saveTokenWithLoginLock(
+        string $tokenValue,
+        mixed $loginId,
+        string $loginType,
+        string $deviceType,
+        ?int $timeout,
+        string $sessionId
+    ): string {
         $config = $this->getConfig();
         $timeout = $timeout ?? $config->getTimeout();
         $effectiveTimeout = ($timeout === -1) ? null : $timeout;
@@ -246,7 +259,14 @@ class TokenManager
                     if (!$this->isBlacklisted($tokenValue)
                         && $this->getDao()->setIfNotExists(self::TOKEN_PREFIX . $tokenValue, $this->encryptValue($loginIdStr), $effectiveTimeout)) {
                         $this->clearTokenBoundState($tokenValue, $loginType);
-                        $finalizedToken = $this->finalizeToken($tokenValue, $loginId, $loginType, $deviceType, $effectiveTimeout);
+                        $finalizedToken = $this->finalizeToken(
+                            $tokenValue,
+                            $loginId,
+                            $loginType,
+                            $deviceType,
+                            $effectiveTimeout,
+                            $sessionId
+                        );
                         $this->updateLastActiveToNow($tokenValue);
                         return $finalizedToken;
                     }
@@ -266,8 +286,14 @@ class TokenManager
     /**
      * 保存 loginId 会话列表与映射（saveToken 的后半段，拆出以支持冲突重试）
      */
-    protected function finalizeToken(string $tokenValue, mixed $loginId, string $loginType, string $deviceType, ?int $effectiveTimeout): string
-    {
+    protected function finalizeToken(
+        string $tokenValue,
+        mixed $loginId,
+        string $loginType,
+        string $deviceType,
+        ?int $effectiveTimeout,
+        string $sessionId
+    ): string {
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
         $loginIdKey = self::buildLoginIdKey($loginType, $loginIdStr);
         $expectedList = $this->getDao()->get($loginIdKey);
@@ -345,6 +371,16 @@ class TokenManager
             )) {
             throw new SaTokenException('账号会话列表已并发变更或 DAO 不支持原子条件写入，请重试');
         }
+
+        $dao->set(
+            self::TOKEN_SESSION_PREFIX . $tokenValue,
+            $this->encryptValue(SaFoxUtil::toJson([
+                'loginId' => $loginIdStr,
+                'loginType' => $loginType,
+                'sessionId' => $sessionId,
+            ])),
+            $effectiveTimeout
+        );
 
         // mixed 模式下实际存储的是 JWT，必须返回真实值供调用方下发给客户端
         return $tokenValue;
@@ -450,6 +486,148 @@ class TokenManager
         }
         /** @var array<array<string, mixed>> $list */
         return $list;
+    }
+
+    /**
+     * Read or assign the stable session lineage attached to a stateful token.
+     *
+     * @return array{loginId: string, sessionId: string}|null
+     */
+    public function getTokenSessionBinding(string $tokenValue, string $loginType): ?array
+    {
+        $tokenRecord = $this->getDao()->get(self::TOKEN_PREFIX . $tokenValue);
+        if ($tokenRecord === null) {
+            return null;
+        }
+        try {
+            $loginId = $this->decryptValue($tokenRecord);
+        } catch (SaTokenException) {
+            return null;
+        }
+        if ($loginId === '') {
+            return null;
+        }
+
+        $preCapturedSessionId = null;
+        $legacySessionId = null;
+        $sessionValue = $this->getDao()->get(self::TOKEN_SESSION_PREFIX . $tokenValue);
+        if ($sessionValue !== null) {
+            try {
+                $sessionData = SaFoxUtil::fromJson($this->decryptValue($sessionValue));
+                if (is_array($sessionData)) {
+                    $boundLoginId = $sessionData['loginId'] ?? null;
+                    $boundLoginType = $sessionData['loginType'] ?? null;
+                    $boundSessionId = $sessionData['sessionId'] ?? null;
+                    if ($boundLoginId !== $loginId || $boundLoginType !== $loginType
+                        || !is_string($boundSessionId) || $boundSessionId === '') {
+                        return null;
+                    }
+                    $preCapturedSessionId = $boundSessionId;
+                } else {
+                    $legacySessionId = $this->decryptValue($sessionValue);
+                    if ($legacySessionId === '') {
+                        $legacySessionId = null;
+                    }
+                }
+            } catch (SaTokenException) {
+                return null;
+            }
+        }
+
+        $config = $this->getConfig();
+        if ($config->getJwtMode() === 'mixed') {
+            $jwt = $this->getJwtInstance();
+            if ($jwt->getLoginId($tokenValue) !== $loginId || $jwt->getLoginType($tokenValue) !== $loginType) {
+                return null;
+            }
+        }
+
+        $loginLockKey = 'login:' . $loginType . ':' . hash('sha256', $loginId);
+        if (!$this->acquireLock($loginLockKey, 30)) {
+            throw new SaTokenException('同账号会话正在处理中，请稍后重试');
+        }
+
+        try {
+            $loginIdKey = self::buildLoginIdKey($loginType, $loginId);
+            $listKey = $loginIdKey;
+            $expectedList = $this->getDao()->get($listKey);
+            if ($expectedList === null && !str_contains($loginType, '%') && !str_contains($loginId, '%')) {
+                $listKey = self::buildLegacyLoginIdKey($loginType, $loginId);
+                $expectedList = $this->getDao()->get($listKey);
+            }
+            if ($expectedList === null) {
+                return null;
+            }
+
+            $list = SaFoxUtil::fromJson($this->decryptValue($expectedList));
+            if (!is_array($list)) {
+                return null;
+            }
+
+            $tokenIsListed = false;
+            foreach ($list as $item) {
+                if (is_array($item) && ($item['tokenValue'] ?? null) === $tokenValue) {
+                    $tokenIsListed = true;
+                    break;
+                }
+            }
+            if (!$tokenIsListed) {
+                return $preCapturedSessionId !== null
+                    ? ['loginId' => $loginId, 'sessionId' => $preCapturedSessionId]
+                    : null;
+            }
+
+            $sessionId = $preCapturedSessionId ?? $legacySessionId ?? SaFoxUtil::randomString(32);
+            $tokenTimeout = $this->getDao()->getTimeout(self::TOKEN_PREFIX . $tokenValue);
+            $this->getDao()->set(
+                self::TOKEN_SESSION_PREFIX . $tokenValue,
+                $this->encryptValue(SaFoxUtil::toJson([
+                    'loginId' => $loginId,
+                    'loginType' => $loginType,
+                    'sessionId' => $sessionId,
+                ])),
+                $tokenTimeout > 0 ? $tokenTimeout : null
+            );
+
+            return ['loginId' => $loginId, 'sessionId' => $sessionId];
+        } finally {
+            $this->releaseLock($loginLockKey);
+        }
+    }
+
+    public function getTokenSessionId(string $tokenValue, string $loginType): ?string
+    {
+        return $this->getTokenSessionBinding($tokenValue, $loginType)['sessionId'] ?? null;
+    }
+
+    /**
+     * Remove every active access and refresh credential in one rotated session lineage.
+     *
+     * @return array<string>
+     */
+    public function deleteTokenSessionById(string $sessionId, mixed $loginId, string $loginType): array
+    {
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $loginLockKey = 'login:' . $loginType . ':' . hash('sha256', $loginIdStr);
+        if (!$this->acquireLock($loginLockKey, 30)) {
+            throw new SaTokenException('同账号会话正在处理中，请稍后重试');
+        }
+
+        try {
+            $deletedTokens = [];
+            foreach ($this->getTokenListByLoginId($loginId, $loginType) as $item) {
+                $tokenValue = is_string($item['tokenValue'] ?? null) ? $item['tokenValue'] : '';
+                if ($tokenValue === '' || $this->getTokenSessionId($tokenValue, $loginType) !== $sessionId) {
+                    continue;
+                }
+                $this->deleteRefreshTokenByAccessToken($loginId, $loginType, $tokenValue);
+                $this->deleteTokenLocked($tokenValue, $loginId, $loginType);
+                $deletedTokens[] = $tokenValue;
+            }
+            return $deletedTokens;
+        } finally {
+            $this->releaseLock($loginLockKey);
+        }
     }
 
     public function deleteToken(string $tokenValue, mixed $loginId, string $loginType): void

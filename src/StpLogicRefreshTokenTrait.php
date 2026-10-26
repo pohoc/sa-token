@@ -128,6 +128,14 @@ trait StpLogicRefreshTokenTrait
                 }
             }
 
+            $sessionId = null;
+            if (!$config->isJwtStateless()) {
+                $sessionId = $this->tokenManager->getTokenSessionId($oldAccessToken, $this->loginType);
+                if ($sessionId === null) {
+                    throw new SaTokenException('AccessToken 会话标识无效，无法刷新会话');
+                }
+            }
+
             if ($oldAccessToken !== '') {
                 if ($this->tokenManager->isBlacklisted($oldAccessToken)) {
                     throw new SaTokenException('AccessToken 已撤销，无法刷新会话');
@@ -164,7 +172,14 @@ trait StpLogicRefreshTokenTrait
                 $this->tokenManager->updateLastActiveToNow($newAccessToken);
             } else {
                 $newAccessToken = $this->tokenManager->createTokenValue($loginId, $this->loginType);
-                $newAccessToken = $this->tokenManager->saveToken($newAccessToken, $loginId, $this->loginType, '', $timeout);
+                $newAccessToken = $this->tokenManager->saveToken(
+                    $newAccessToken,
+                    $loginId,
+                    $this->loginType,
+                    '',
+                    $timeout,
+                    $sessionId
+                );
                 if ($config->isTokenFingerprint()) {
                     $this->tokenManager->saveFingerprint($newAccessToken, $this->tokenManager->computeFingerprint(), $timeout);
                 }

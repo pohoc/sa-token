@@ -350,13 +350,15 @@ class StpLogic
             return;
         }
 
-        $loginId = $this->tokenManager->getLoginIdByToken($tokenValue);
-        if ($loginId === null || !$this->isTokenOwnedByLoginType($tokenValue, $loginId)) {
+        $sessionBinding = $this->tokenManager->getTokenSessionBinding($tokenValue, $this->loginType);
+        $sessionId = $sessionBinding['sessionId'] ?? null;
+        $loginId = $this->tokenManager->getLoginIdByToken($tokenValue) ?? ($sessionBinding['loginId'] ?? null);
+        if ($loginId === null
+            || (!$this->isTokenOwnedByLoginType($tokenValue, $loginId) && $sessionBinding === null)) {
             return;
         }
 
-        $this->tokenManager->deleteFingerprint($tokenValue);
-        $this->removeTokenAndRefreshToken($tokenValue, $loginId);
+        $this->removeTokenAndRefreshToken($tokenValue, $loginId, $sessionId);
         $this->clearTokenFromResponse();
 
         $this->getEvent()->onLogout($this->loginType, $loginId, $tokenValue);
@@ -402,12 +404,15 @@ class StpLogic
             return $loginId;
         }
 
-        $loginId = $this->tokenManager->getLoginIdByToken($tokenValue);
-        if ($loginId === null || !$this->isTokenOwnedByLoginType($tokenValue, $loginId)) {
+        $sessionBinding = $this->tokenManager->getTokenSessionBinding($tokenValue, $this->loginType);
+        $sessionId = $sessionBinding['sessionId'] ?? null;
+        $loginId = $this->tokenManager->getLoginIdByToken($tokenValue) ?? ($sessionBinding['loginId'] ?? null);
+        if ($loginId === null
+            || (!$this->isTokenOwnedByLoginType($tokenValue, $loginId) && $sessionBinding === null)) {
             return null;
         }
 
-        $this->removeTokenAndRefreshToken($tokenValue, $loginId);
+        $this->removeTokenAndRefreshToken($tokenValue, $loginId, $sessionId);
         if ($dispatchEvent) {
             $this->getEvent()->onKickout($this->loginType, $loginId, $tokenValue);
         }
@@ -435,7 +440,7 @@ class StpLogic
     }
 
     /** 删除会话时一并撤销其 RefreshToken，避免旧凭据重新建立会话。 */
-    protected function removeTokenAndRefreshToken(string $tokenValue, mixed $loginId): void
+    protected function removeTokenAndRefreshToken(string $tokenValue, mixed $loginId, ?string $sessionId = null): void
     {
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
         $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', $loginIdStr);
@@ -443,6 +448,11 @@ class StpLogic
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
         try {
+            if ($sessionId !== null && $sessionId !== '') {
+                $this->tokenManager->deleteTokenSessionById($sessionId, $loginId, $this->loginType);
+                return;
+            }
+
             $this->tokenManager->deleteRefreshTokenByAccessToken($loginId, $this->loginType, $tokenValue);
             // kickout 内部重复获取账号锁是安全的（TokenManager 锁支持可重入）。
             $this->tokenManager->kickout($tokenValue, $loginId, $this->loginType);
@@ -1066,9 +1076,14 @@ class StpLogic
             return true;
         }
 
-        $loginId = $this->tokenManager->getLoginIdByToken($tokenValue);
+        $sessionBinding = $this->getConfig()->isJwtStateless()
+            ? null
+            : $this->tokenManager->getTokenSessionBinding($tokenValue, $this->loginType);
+        $sessionId = $sessionBinding['sessionId'] ?? null;
+        $loginId = $this->tokenManager->getLoginIdByToken($tokenValue) ?? ($sessionBinding['loginId'] ?? null);
         if (!$this->getConfig()->isJwtStateless()
-            && ($loginId === null || !$this->isTokenOwnedByLoginType($tokenValue, $loginId))) {
+            && ($loginId === null
+                || (!$this->isTokenOwnedByLoginType($tokenValue, $loginId) && $sessionBinding === null))) {
             return $alreadyBlacklisted;
         }
 
@@ -1100,7 +1115,7 @@ class StpLogic
             try {
                 $this->tokenManager->addToBlacklist($tokenValue, $blacklistTimeout);
                 // 锁内清理 RefreshToken 与会话记录，和并发刷新形成线性顺序。
-                $this->removeTokenAndRefreshToken($tokenValue, $loginId);
+                $this->removeTokenAndRefreshToken($tokenValue, $loginId, $sessionId);
             } finally {
                 $this->tokenManager->releaseLock($lockKey);
             }
