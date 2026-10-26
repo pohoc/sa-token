@@ -79,6 +79,22 @@ class SaTokenCoreTest extends TestCase
         self::assertTrue(SaToken::getSign()->verifySign($newSignature));
     }
 
+    public function testInPlaceSigningKeyRotationInvalidatesCachedSigner(): void
+    {
+        SaToken::setDao(new SaTokenDaoMemory());
+        $oldKey = 'old-in-place-signing-key-for-rotation-32-bytes';
+        $newKey = 'new-in-place-signing-key-for-rotation-32-bytes';
+        $config = new SaTokenConfig(['signKey' => $oldKey]);
+        SaToken::setConfig($config);
+
+        $oldSignature = SaToken::getSign()->signParams(['operation' => 'transfer']);
+        $config->setSignKey($newKey);
+
+        self::assertFalse(SaToken::getSign()->verifySign($oldSignature));
+        $newSignature = (new SaSign(['key' => $newKey]))->signParams(['operation' => 'transfer']);
+        self::assertTrue(SaToken::getSign()->verifySign($newSignature));
+    }
+
     public function testSetConfigInvalidatesCryptoCachedByExistingLoginLogic(): void
     {
         SaToken::setDao(new SaTokenDaoMemory());
