@@ -278,10 +278,12 @@ class SaSsoHandle
         }
         $this->validateHttpsEndpoint($checkUrl, 'checkTicketUrl');
 
+        $requestNonce = bin2hex(random_bytes(16));
         $data = [
             'ticket'    => $ticket,
             'client_id' => $this->config->getClientId(),
             'timestamp' => (string) time(),
+            'nonce'     => $requestNonce,
         ];
 
         $clientSecret = $this->config->getClientSecret();
@@ -302,19 +304,22 @@ class SaSsoHandle
             return null;
         }
 
-        // check-ticket 响应必须验签：不验证响应来源意味着中间人可伪造 loginId 直接接管任意账号。
-        // 响应携带 timestamp 时校验时效（300 秒），携带 ticket 回显时校验请求绑定——
-        // 否则一次截获的合法响应可对任意后续 ticket 校验离线重放（账号接管）
+        // check-ticket 响应必须验签并绑定本次随机 nonce；只绑定 ticket 仍允许
+        // 截获的同一 ticket 响应在有效期内重放，绕过认证中心的一次性消费。
         if ($clientSecret !== '') {
             $scalarResult = self::normalizeScalarMap(is_array($result) ? $result : []);
             if (!isset($scalarResult['sign'])
                 || !$this->template->verifySign($scalarResult, $clientSecret, 300)) {
                 throw new SaTokenException('SSO check-ticket 响应签名验证失败（或已过期），拒绝信任该响应');
             }
-            if (!isset($result['ticket']) || !is_string($result['ticket'])
-                || !hash_equals($ticket, $result['ticket'])) {
-                throw new SaTokenException('SSO check-ticket 响应与请求的 ticket 不匹配，拒绝信任该响应');
-            }
+        }
+        if (!isset($result['ticket']) || !is_string($result['ticket'])
+            || !hash_equals($ticket, $result['ticket'])) {
+            throw new SaTokenException('SSO check-ticket 响应与请求的 ticket 不匹配，拒绝信任该响应');
+        }
+        if (!isset($result['request_nonce']) || !is_string($result['request_nonce'])
+            || !hash_equals($requestNonce, $result['request_nonce'])) {
+            throw new SaTokenException('SSO check-ticket 响应与本次请求 nonce 不匹配，拒绝重放');
         }
 
         return $loginId;
@@ -323,16 +328,21 @@ class SaSsoHandle
     /**
      * 构建 check-ticket 响应（认证中心侧使用）。
      *
-     * 客户端会验证响应签名与时效（300 秒）以及 ticket 回显绑定，
+     * 客户端会验证响应签名、时效（300 秒）、ticket 与本次请求 nonce 回显，
      * 认证中心的 checkTicket 端点应直接输出本方法返回的 JSON
      *
      * @return array<string, string>
      */
-    public function buildCheckTicketResponse(string $ticket, mixed $loginId): array
+    public function buildCheckTicketResponse(string $ticket, mixed $loginId, string $requestNonce): array
     {
+        if ($requestNonce === '') {
+            throw new SaTokenException('构建 check-ticket 响应必须回显本次请求 nonce');
+        }
+
         $params = [
             'loginId'   => SaFoxUtil::toString($loginId),
             'ticket'    => $ticket,
+            'request_nonce' => $requestNonce,
             'timestamp' => (string) time(),
         ];
 
@@ -369,10 +379,12 @@ class SaSsoHandle
         }
         $this->validateHttpsEndpoint($checkUrl, 'crossRedisCheckUrl');
 
+        $requestNonce = bin2hex(random_bytes(16));
         $data = [
             'ticket'    => $ticket,
             'client_id' => $this->config->getClientId(),
             'timestamp' => (string) time(),
+            'nonce'     => $requestNonce,
         ];
 
         $clientSecret = $this->config->getClientSecret();
@@ -397,12 +409,16 @@ class SaSsoHandle
                 || !$this->template->verifySign($scalarResult, $clientSecret, 300)) {
                 throw new SaTokenException('SSO check-ticket 响应签名验证失败（或已过期），拒绝信任该响应');
             }
-            // 跨 Redis 响应同样必须绑定本次请求的 ticket，
-            // 否则合法签名响应可在有效期内被重放到其他 ticket 请求上。
-            if (!isset($result['ticket']) || !is_string($result['ticket'])
-                || !hash_equals($ticket, $result['ticket'])) {
-                throw new SaTokenException('SSO check-ticket 响应与请求的 ticket 不匹配，拒绝信任该响应');
-            }
+        }
+        // 跨 Redis 响应同样绑定本次 ticket 与随机 nonce，防止同一票据的
+        // 旧响应被再次提交，绕过认证中心的一次性消费。
+        if (!isset($result['ticket']) || !is_string($result['ticket'])
+            || !hash_equals($ticket, $result['ticket'])) {
+            throw new SaTokenException('SSO check-ticket 响应与请求的 ticket 不匹配，拒绝信任该响应');
+        }
+        if (!isset($result['request_nonce']) || !is_string($result['request_nonce'])
+            || !hash_equals($requestNonce, $result['request_nonce'])) {
+            throw new SaTokenException('SSO check-ticket 响应与本次请求 nonce 不匹配，拒绝重放');
         }
 
         return $result['loginId'];

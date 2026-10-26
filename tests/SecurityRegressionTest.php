@@ -1314,6 +1314,68 @@ class SecurityRegressionTest extends TestCase
         }
     }
 
+    public function testSsoCheckTicketResponseCannotBeReplayedForTheSameTicket(): void
+    {
+        $secret = 'sso-test-secret-with-at-least-32-bytes';
+        foreach ([false, true] as $crossRedis) {
+            $template = new class ($secret) extends SaSsoTemplate {
+                private ?string $cachedResponse = null;
+
+                public function __construct(private string $secret)
+                {
+                    parent::__construct();
+                }
+
+                public function post(string $url, array $data = []): string
+                {
+                    if ($this->cachedResponse === null) {
+                        $response = $this->signParams([
+                            'loginId' => '40003',
+                            'ticket' => $data['ticket'],
+                            'request_nonce' => $data['nonce'],
+                            'timestamp' => (string) time(),
+                        ], $this->secret);
+                        $this->cachedResponse = (string) json_encode($response);
+                    }
+
+                    return $this->cachedResponse;
+                }
+            };
+            $handle = new class (new SaSsoConfig([
+                'checkTicketUrl' => 'https://auth.example.com/check-ticket',
+                'crossRedisCheckUrl' => 'https://auth.example.com/cross-check-ticket',
+                'clientSecret' => $secret,
+            ]), $template) extends SaSsoHandle {
+                public function __construct(SaSsoConfig $config, SaSsoTemplate $template)
+                {
+                    parent::__construct($config);
+                    $this->template = $template;
+                }
+
+                public function checkLocal(string $ticket): ?string
+                {
+                    return $this->checkTicket($ticket);
+                }
+
+                public function checkRemote(string $ticket): ?string
+                {
+                    return $this->checkTicketCrossRedis($ticket);
+                }
+            };
+
+            $this->assertSame(
+                '40003',
+                $crossRedis ? $handle->checkRemote('ticket-40003') : $handle->checkLocal('ticket-40003')
+            );
+            try {
+                $crossRedis ? $handle->checkRemote('ticket-40003') : $handle->checkLocal('ticket-40003');
+                $this->fail('已签名的 check-ticket 响应不能在另一个请求中重放');
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('nonce', $e->getMessage());
+            }
+        }
+    }
+
     // ======== 第二轮加固回归 ========
 
     public function testTokenIsBoundToItsLoginType(): void

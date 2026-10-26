@@ -611,6 +611,8 @@ SaToken::init([
 
 ### 使用
 
+check-ticket 端点必须把请求中的 `nonce` 原样放入签名响应的 `request_nonce` 字段，且回显 `ticket`。认证中心可用 `$sso->buildCheckTicketResponse($ticket, $loginId, $request['nonce'])` 构建响应；客户端会将两者与本次请求比较，拒绝旧响应重放。
+
 ```php
 use SaToken\Sso\SaSsoManager;
 
