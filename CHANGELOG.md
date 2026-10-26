@@ -12,6 +12,7 @@
 - (security) 验证 RefreshToken 索引目标与查询账号、登录类型及 AccessToken 的绑定关系，拒绝返回其他账号的刷新凭据。
 - (security) 将 OAuth2 access-token 家族索引和家族标记绑定到各自 DAO key，阻止复制索引后跨家族撤销。
 - (security) 将 OAuth2 授权码记录绑定到 code 对应的 DAO key，拒绝跨 key 复制记录。
+- (security) 将 RefreshToken 消费索引绑定到令牌哈希 key，防止复制索引触发其他家族撤销。
 
 本文件由脚本自动生成，基于 git tag 和 commit 记录。
 

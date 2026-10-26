@@ -1413,6 +1413,31 @@ class SaOAuth2Test extends TestCase
         self::assertNotNull($this->handle->validateAccessToken($descendant->getAccessToken()));
     }
 
+    public function testCopiedConsumedRefreshIndexCannotRevokeAnotherFamily(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenEncrypt' => true,
+            'tokenEncryptKey' => str_repeat('i', 32),
+        ]));
+        $this->handle->registerClient($this->testClient);
+
+        $victimCode = $this->handle->generateAuthorizationCode('test-client', 'victim', 'https://example.com/callback');
+        $victim = $this->handle->exchangeTokenByCode($victimCode->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
+        $victimDescendant = $this->handle->refreshToken((string) $victim->getRefreshToken(), 'test-client', $this->clientSecret);
+
+        $otherCode = $this->handle->generateAuthorizationCode('test-client', 'other', 'https://example.com/callback');
+        $other = $this->handle->exchangeTokenByCode($otherCode->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
+        $victimConsumedKey = 'oauth2:rt:consumed:' . hash('sha256', (string) $victim->getRefreshToken());
+        $otherConsumedKey = 'oauth2:rt:consumed:' . hash('sha256', (string) $other->getRefreshToken());
+        $dao = SaToken::getDao();
+        $dao->set($otherConsumedKey, (string) $dao->get($victimConsumedKey), 3600);
+
+        $otherDescendant = $this->handle->refreshToken((string) $other->getRefreshToken(), 'test-client', $this->clientSecret);
+
+        self::assertNotNull($this->handle->validateAccessToken($victimDescendant->getAccessToken()));
+        self::assertNotNull($this->handle->validateAccessToken($otherDescendant->getAccessToken()));
+    }
+
     public function testOAuth2HandleUsesRotatedStorageEncryptionKey(): void
     {
         $oldKey = 'old-oauth2-storage-encryption-key-32-bytes';

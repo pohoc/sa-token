@@ -329,7 +329,7 @@ class SaOAuth2Handle
     protected function getRefreshTokenFamilyLockIdentity(string $refreshToken): string
     {
         $tokenHash = hash('sha256', $refreshToken);
-        $consumedFamily = $this->getDao()->get('oauth2:rt:consumed:' . $tokenHash);
+        $consumedFamily = $this->getConsumedRefreshFamily($refreshToken);
         if (is_string($consumedFamily) && $consumedFamily !== '') {
             return 'family:' . hash('sha256', $consumedFamily);
         }
@@ -429,7 +429,7 @@ class SaOAuth2Handle
         // 消费标记（RT 哈希 -> familyId）是重放判定的唯一权威：
         // RT 记录本身消费后即删除，标记独立存在使重放请求仍能定位家族并触发整体撤销
         $consumedKey = 'oauth2:rt:consumed:' . hash('sha256', $refreshToken);
-        $consumedFamily = $this->getDao()->get($consumedKey);
+        $consumedFamily = $this->getConsumedRefreshFamily($refreshToken);
         if (is_string($consumedFamily) && $consumedFamily !== '') {
             $this->rejectConsumedRefreshTokenReplay($clientId, $consumedFamily, $consumedKey);
         }
@@ -508,13 +508,13 @@ class SaOAuth2Handle
                 }
                 $this->rejectConsumedRefreshTokenReplay($clientId, $latest['familyId'], $consumedKey);
             }
-            $latestConsumedFamily = $dao->get($consumedKey);
+            $latestConsumedFamily = $this->getConsumedRefreshFamily($refreshToken);
             if (is_string($latestConsumedFamily) && $latestConsumedFamily !== '') {
                 $this->rejectConsumedRefreshTokenReplay($clientId, $latestConsumedFamily, $consumedKey);
             }
             throw new SaTokenException('刷新令牌状态已变更，拒绝刷新');
         }
-        $dao->set($consumedKey, $familyId, $markerTimeout);
+        $dao->set($consumedKey, $this->encryptValueForContext($familyId, $consumedKey), $markerTimeout);
         if ($this->isTokenFamilyRevoked($familyId)) {
             throw new SaTokenException('刷新令牌家族已撤销');
         }
@@ -998,7 +998,7 @@ class SaOAuth2Handle
             }
             $this->acquireRefreshLock($familyLockKey, $lockValue);
             try {
-                $consumedFamily = $this->getDao()->get('oauth2:rt:consumed:' . hash('sha256', $refreshToken));
+                $consumedFamily = $this->getConsumedRefreshFamily($refreshToken);
                 if ((!is_string($consumedFamily) || $consumedFamily === '') && is_string($familyId) && $familyId !== '') {
                     $consumedFamily = $familyId;
                 }
@@ -1675,6 +1675,16 @@ class SaOAuth2Handle
     protected function getAccessTokenFamilyId(string $accessToken): ?string
     {
         $key = $this->buildAccessTokenFamilyKey($accessToken);
+        $value = $this->getDao()->get($key);
+        if ($value === null) {
+            return null;
+        }
+        return $this->decryptValueForContext($value, $key);
+    }
+
+    protected function getConsumedRefreshFamily(string $refreshToken): ?string
+    {
+        $key = 'oauth2:rt:consumed:' . hash('sha256', $refreshToken);
         $value = $this->getDao()->get($key);
         if ($value === null) {
             return null;
