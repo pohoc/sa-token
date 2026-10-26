@@ -232,6 +232,8 @@ StpUtil::kickoutByTokenValue($tokenValue);
 StpUtil::kickout(10001);
 ```
 
+`logoutByLoginId()`、`kickout()` 和 `kickoutByTokenValue()` 是管理操作，不会判断当前调用者是否有权注销目标账号或 Token。对外提供这些操作时，必须在应用层校验专用管理权限，并验证目标账号/Token 属于调用者可管理的范围；不要直接把请求参数传入这些方法。
+
 ### 5. 权限校验
 
 实现 `SaTokenActionInterface` 提供权限/角色数据：
@@ -302,6 +304,8 @@ $level = StpUtil::getDisableLevel(10001, 'comment');
 
 StpUtil::untieDisable(10001, 'comment');
 ```
+
+封禁、解封及按 loginId 查询/操作会话或设备的 API 都是管理原语，本身不做调用者授权。应用必须先检查管理权限和目标范围，不能将请求提交的 loginId 直接传给这些方法。
 
 ### 8. 二级认证
 
@@ -1100,6 +1104,8 @@ $kickedCount = StpUtil::kickoutAllDevices(10001, $currentToken);
 
 $device = StpUtil::findDevice(10001, 'device-id-xxx');
 ```
+
+设备列表、设备查询和踢出方法不会验证调用者对目标账号的管理权限。面向用户提供时，应从已认证身份或服务端授权策略确定目标账号，并限制其可操作范围。
 
 配置：
 
