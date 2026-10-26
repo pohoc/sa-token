@@ -1011,6 +1011,32 @@ class SecurityRegressionTest extends TestCase
         $this->assertSame(-2, SaToken::getDao()->getTimeout('satoken:blacklist:' . $token));
     }
 
+    public function testFailedLoginDoesNotLeaveBearerWhenAccountIndexCasFails(): void
+    {
+        $dao = new class () extends SaTokenDaoMemory {
+            public bool $failLoginIndexWrite = true;
+
+            public function compareAndSet(string $key, ?string $expectedValue, ?string $newValue, ?int $timeout = null): bool
+            {
+                if ($this->failLoginIndexWrite && str_starts_with($key, TokenManager::LOGIN_ID_V2_PREFIX)) {
+                    $this->failLoginIndexWrite = false;
+                    return false;
+                }
+                return parent::compareAndSet($key, $expectedValue, $newValue, $timeout);
+            }
+        };
+        SaToken::setDao($dao);
+
+        try {
+            StpUtil::login('failed-index-cas-user');
+            self::fail('账号会话索引 CAS 失败后登录必须失败');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('账号会话列表已并发变更', $exception->getMessage());
+        }
+        self::assertFalse($dao->failLoginIndexWrite, '故障注入必须命中账号会话索引写入');
+        self::assertSame([], $dao->searchKeys(TokenManager::TOKEN_PREFIX, '', 0, 100));
+    }
+
     public function testEncryptedTokenRejectsPlaintextSubjectReplacement(): void
     {
         SaToken::setConfig(new SaTokenConfig([

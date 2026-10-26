@@ -260,16 +260,32 @@ class TokenManager
                     if (!$this->isBlacklisted($tokenValue)
                         && $this->getDao()->setIfNotExists(self::TOKEN_PREFIX . $tokenValue, $this->encryptValue($loginIdStr), $effectiveTimeout)) {
                         $this->clearTokenBoundState($tokenValue, $loginType);
-                        $finalizedToken = $this->finalizeToken(
-                            $tokenValue,
-                            $loginId,
-                            $loginType,
-                            $deviceType,
-                            $effectiveTimeout,
-                            $sessionId
-                        );
-                        $this->updateLastActiveToNow($tokenValue);
-                        return $finalizedToken;
+                        try {
+                            $finalizedToken = $this->finalizeToken(
+                                $tokenValue,
+                                $loginId,
+                                $loginType,
+                                $deviceType,
+                                $effectiveTimeout,
+                                $sessionId
+                            );
+                            $this->updateLastActiveToNow($tokenValue);
+                            return $finalizedToken;
+                        } catch (\Throwable $exception) {
+                            // A persistence failure after writing the bearer
+                            // must not leave an orphaned credential behind.
+                            // Revalidate the lease before cleanup, then use
+                            // compare-and-delete so an expired owner cannot
+                            // remove a token issued by the next lock holder.
+                            if ($this->acquireLock($tokenLockKey, 30)) {
+                                try {
+                                    $this->rollbackFailedTokenCreation($tokenValue, $loginIdStr, $loginType);
+                                } finally {
+                                    $this->releaseLock($tokenLockKey);
+                                }
+                            }
+                            throw $exception;
+                        }
                     }
                 } finally {
                     $this->releaseLock($tokenLockKey);
@@ -390,6 +406,34 @@ class TokenManager
     protected function tokenValueLockKey(string $tokenValue): string
     {
         return 'token-value:' . hash('sha256', $tokenValue);
+    }
+
+    protected function rollbackFailedTokenCreation(string $tokenValue, string $loginId, string $loginType): void
+    {
+        $dao = $this->getDao();
+        $tokenKey = self::TOKEN_PREFIX . $tokenValue;
+        $storedValue = $dao->get($tokenKey);
+        if ($storedValue === null || $this->decryptValue($storedValue) !== $loginId) {
+            return;
+        }
+
+        $lineageKey = self::TOKEN_SESSION_LINEAGE_PREFIX . $tokenValue;
+        $lineageValue = $dao->get($lineageKey);
+        if ($lineageValue !== null) {
+            $lineage = SaFoxUtil::fromJson($this->decryptValue($lineageValue));
+            if (!is_array($lineage)
+                || ($lineage['loginId'] ?? null) !== $loginId
+                || ($lineage['loginType'] ?? null) !== $loginType) {
+                return;
+            }
+        }
+
+        if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface
+            || !$dao->compareAndDelete($tokenKey, $storedValue)) {
+            return;
+        }
+
+        $this->clearTokenBoundState($tokenValue, $loginType);
     }
 
     protected function clearTokenBoundState(string $tokenValue, string $loginType): void
