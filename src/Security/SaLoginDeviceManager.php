@@ -132,21 +132,18 @@ class SaLoginDeviceManager
     {
         $dao = SaToken::getDao();
         $keyPrefix = self::getKey($loginId, $loginType) . ':';
-        $results = [];
-        $pageSize = 100;
-        $start = 0;
-        do {
-            $page = $dao->search($keyPrefix, '', $start, $pageSize);
-            if ($page === []) {
-                break;
-            }
-            array_push($results, ...$page);
-            $start += count($page);
-        } while (count($page) === $pageSize);
+        // Take one stable key snapshot. Offset pagination can become stale when
+        // an expiring record disappears between pages and abort a bulk
+        // kickout/cleanup after only part of the operation has completed.
+        $keys = $dao->searchKeys($keyPrefix, '', 0, PHP_INT_MAX);
 
         $devices = [];
-        foreach ($results as $value) {
-            if ($value === '') {
+        foreach ($keys as $key) {
+            if (!is_string($key) || !str_starts_with($key, $keyPrefix)) {
+                continue;
+            }
+            $value = $dao->get($key);
+            if ($value === null || $value === '') {
                 continue;
             }
             $data = @json_decode($value, true);
@@ -164,7 +161,7 @@ class SaLoginDeviceManager
             if (!$includeToken) {
                 $device->setTokenValue('');
             }
-            $devices[] = ['device' => $device, 'key' => $keyPrefix . $device->getDeviceId(), 'raw' => $value];
+            $devices[] = ['device' => $device, 'key' => $key, 'raw' => $value];
         }
 
         usort($devices, fn ($a, $b) => $b['device']->getLoginTime() - $a['device']->getLoginTime());

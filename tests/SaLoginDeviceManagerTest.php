@@ -108,6 +108,36 @@ class SaLoginDeviceKickoutPausingDao extends SaTokenDaoMemory
     }
 }
 
+class SaLoginDeviceOffsetMutatingDao extends SaTokenDaoMemory
+{
+    public ?string $deleteBeforeOffsetPage = null;
+
+    public ?string $deleteAfterKeySnapshot = null;
+
+    public function search(string $prefix, string $keyword, int $start, int $size): array
+    {
+        if ($start >= 100 && $this->deleteBeforeOffsetPage !== null) {
+            $key = $this->deleteBeforeOffsetPage;
+            $this->deleteBeforeOffsetPage = null;
+            $this->delete($key);
+        }
+
+        return parent::search($prefix, $keyword, $start, $size);
+    }
+
+    public function searchKeys(string $prefix, string $keyword, int $start, int $size): array
+    {
+        $keys = parent::searchKeys($prefix, $keyword, $start, $size);
+        if ($start === 0 && $this->deleteAfterKeySnapshot !== null) {
+            $key = $this->deleteAfterKeySnapshot;
+            $this->deleteAfterKeySnapshot = null;
+            $this->delete($key);
+        }
+
+        return $keys;
+    }
+}
+
 class SaLoginFailingResponseStpLogic extends StpLogic
 {
     public ?SaTokenDaoMemory $failureDao = null;
@@ -505,6 +535,47 @@ class SaLoginDeviceManagerTest extends TestCase
         self::assertNull($this->logic->getLoginIdByToken($firstToken));
         self::assertSame($loginId, $this->logic->getLoginIdByToken($exceptToken));
         self::assertCount(1, $this->logic->getDeviceList($loginId));
+    }
+
+    public function testStatelessKickoutAllDevicesContinuesWhenEarlierRecordExpiresDuringDiscovery(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenName'        => 'satoken',
+            'timeout'          => 86400,
+            'activityTimeout'  => -1,
+            'isReadHeader'     => false,
+            'isReadCookie'     => false,
+            'isWriteCookie'    => false,
+            'isWriteHeader'    => false,
+            'deviceManagement' => true,
+            'jwtStateless'     => true,
+            'jwtSecretKey'     => 'test-stateless-device-secret-32-bytes-long',
+        ]));
+
+        $dao = new SaLoginDeviceOffsetMutatingDao();
+        $this->dao = $dao;
+        SaToken::setDao($dao);
+
+        $loginId = 'stateless-offset-race-account';
+        $tokens = [];
+        for ($i = 0; $i < 101; $i++) {
+            $tokens[] = $this->logic->loginStateless($loginId, (new SaLoginParameter())->setDeviceType('device-' . $i)->setDevice(
+                new SaLoginDevice(['deviceType' => 'device-' . $i, 'deviceName' => 'Device ' . $i])
+            ));
+        }
+
+        $devicePrefix = SaLoginDeviceManager::getKey($loginId, 'login') . ':';
+        $firstKey = $dao->searchKeys($devicePrefix, '', 0, 1)[0] ?? null;
+        self::assertNotNull($firstKey);
+        $dao->deleteBeforeOffsetPage = $firstKey;
+        $dao->deleteAfterKeySnapshot = $firstKey;
+
+        $this->logic->kickoutAllDevices($loginId, $tokens[0]);
+
+        self::assertSame($loginId, $this->logic->getLoginIdByToken($tokens[0]));
+        foreach (array_slice($tokens, 1) as $token) {
+            self::assertNull($this->logic->getLoginIdByToken($token), '分页中的设备记录消失后，不得漏撤销仍有效的令牌');
+        }
     }
 
     public function testStatelessKickoutAllDevicesRemovesDeviceRecords(): void
