@@ -426,6 +426,9 @@ class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteI
                 return false;
             }
             if ($newValue === null) {
+                if ($this->assertRegularFileOrMissing($this->dataFile($key), '文件存储记录') === null) {
+                    return true;
+                }
                 $this->removeRecordFile($key);
             } else {
                 $this->writeRecord($key, $newValue, ($timeout !== null && $timeout > 0) ? time() + $timeout : null);

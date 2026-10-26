@@ -14,6 +14,9 @@
 - (security) 将 OAuth2 授权码记录绑定到 code 对应的 DAO key，拒绝跨 key 复制记录。
 - (security) 将 RefreshToken 消费索引绑定到令牌哈希 key，防止复制索引触发其他家族撤销。
 
+### 修复
+- 文件 DAO 对缺失记录执行 `compareAndSet(key, null, null)` 时按接口约定成功返回，不再因尝试删除不存在的文件而抛错。
+
 本文件由脚本自动生成，基于 git tag 和 commit 记录。
 
 ## [v0.2.0] - 2026-08-31

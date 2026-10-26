@@ -283,6 +283,12 @@ class SaTokenDaoFileTest extends TestCase
         self::assertSame('active-marker', $this->dao->get($key));
     }
 
+    public function testCompareAndSetMissingValueToMissingValueIsSuccessfulNoOp(): void
+    {
+        self::assertTrue($this->dao->compareAndSet('k:cas-empty-delete', null, null));
+        self::assertNull($this->dao->get('k:cas-empty-delete'));
+    }
+
     public function testExecuteAtomicallyHoldsLockUntilCallbackReturns(): void
     {
         if (!function_exists('pcntl_fork')) {
