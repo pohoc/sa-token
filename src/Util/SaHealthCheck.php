@@ -102,10 +102,13 @@ class SaHealthCheck
                     'type' => $daoClass,
                 ],
             ];
-        } catch (\Throwable $e) {
+        } catch (\Throwable) {
             return [
                 'status' => self::STATUS_FAIL,
-                'message' => $e->getMessage(),
+                // Driver exceptions may include credentials, connection URLs,
+                // or filesystem paths. Health reports are often exposed to
+                // monitoring probes, so return a stable public diagnostic.
+                'message' => 'DAO check failed',
             ];
         }
     }
