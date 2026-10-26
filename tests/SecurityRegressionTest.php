@@ -572,6 +572,30 @@ class SecurityRegressionTest extends TestCase
         }
     }
 
+    public function testStatelessJwtAtExactAccountRevocationWatermarkIsRevoked(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'isReadHeader' => true,
+        ]));
+
+        $logic = SaToken::getStpLogic('login');
+        $token = $logic->loginStateless('watermark-equality-user');
+        $claims = (new \SaToken\Plugin\SaTokenJwt([
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]))->parseToken($token);
+        if (!is_int($claims['iat'] ?? null) && !is_float($claims['iat'] ?? null)) {
+            self::fail('JWT iat 必须是数值时间戳');
+        }
+        self::assertSame('watermark-equality-user', $logic->getLoginIdByToken($token));
+
+        $watermarkKey = 'satoken:jwt:revoked-before:login:' . hash('sha256', 'watermark-equality-user');
+        SaToken::getDao()->set($watermarkKey, sprintf('%.6F', (float) $claims['iat']));
+
+        self::assertNull($logic->getLoginIdByToken($token), 'iat 与撤销水位相等时必须按已撤销处理');
+    }
+
     public function testStatelessJwtIssuedAfterAccountLogoutRemainsValid(): void
     {
         SaToken::setConfig(new SaTokenConfig([

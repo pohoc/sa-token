@@ -1530,7 +1530,10 @@ class TokenManager
             return true;
         }
 
-        return (float) $issuedAt < (float) $cutoff;
+        // Equal timestamps are ambiguous at the storage precision: the token
+        // may have been issued just before logout in the same microsecond.
+        // Fail closed so the revocation boundary cannot leave that token live.
+        return (float) $issuedAt <= (float) $cutoff;
     }
 
     public function removeFromBlacklist(string $tokenValue): void
