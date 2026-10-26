@@ -1143,7 +1143,7 @@ $token = StpUtil::openSensitiveVerify('payment', 600);
 StpUtil::checkSensitiveVerify('payment', $token);
 ```
 
-`sendOtpCode()` 通过配置的发送回调投递验证码，不会把验证码返回给调用方。`generateOtpCode()` 仅供可信服务端自定义投递流程使用；验证码属于秘密凭据，不要将其放入 HTTP/RPC 响应返回给用户。
+`sendOtpCode()` 要求当前请求已登录，并按当前登录账号投递验证码，不会把验证码返回给调用方。底层静态方法 `SaSensitiveVerify::sendCode()` 可由服务端指定任意 `loginId`，本身不验证调用者身份或目标归属；只应从可信服务端流程调用，不要暴露为允许匿名用户任意指定手机号/邮箱的接口。对外发送端点还应校验目标归属并设置来源级限流。`generateOtpCode()` 同样仅供可信服务端自定义投递流程使用；验证码属于秘密凭据，不要将其放入 HTTP/RPC 响应返回给用户。
 
 ## 审计日志
 
