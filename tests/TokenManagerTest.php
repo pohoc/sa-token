@@ -59,6 +59,22 @@ class SaTokenDaoFailingTokenDelete extends SaTokenDaoMemory
     }
 }
 
+class SaTokenDaoRecreatingRefreshDuringAccountCleanup extends SaTokenDaoMemory
+{
+    public ?\Closure $duringRefreshAccountRead = null;
+
+    public function get(string $key): ?string
+    {
+        if (str_starts_with($key, 'satoken:refreshAccount:') && $this->duringRefreshAccountRead !== null) {
+            $callback = $this->duringRefreshAccountRead;
+            $this->duringRefreshAccountRead = null;
+            $callback();
+        }
+
+        return parent::get($key);
+    }
+}
+
 class TokenManagerTest extends TestCase
 {
     protected TokenManager $manager;
@@ -372,6 +388,51 @@ class TokenManagerTest extends TestCase
         self::assertFalse($manager->isRefreshTokenValid($refreshToken));
         self::assertNull($manager->getRefreshTokenByAccessToken($loginId, $loginType, $accessToken));
         self::assertNull((new StpLogic($loginType, $manager))->getLoginIdByToken($accessToken));
+    }
+
+    public function testAccountLogoutCannotDeleteRefreshTokenFromNewSessionAfterLockLeaseLoss(): void
+    {
+        $dao = new SaTokenDaoRecreatingRefreshDuringAccountCleanup();
+        SaToken::setDao($dao);
+        $manager = new TokenManager();
+        $loginId = 'refresh-account-cleanup-lease-user';
+        $loginType = 'login';
+
+        $oldAccessToken = $manager->createTokenValue($loginId, $loginType);
+        $manager->saveToken($oldAccessToken, $loginId, $loginType, 'PC', 3600);
+        $oldRefreshToken = $manager->createTokenValue($loginId, $loginType, 'srt_');
+        $manager->saveRefreshToken($oldRefreshToken, $oldAccessToken, $loginId, $loginType, 3600);
+
+        $newAccessToken = '';
+        $newRefreshToken = '';
+        $dao->duringRefreshAccountRead = function () use ($dao, $loginId, $loginType, &$newAccessToken, &$newRefreshToken): void {
+            // The bulk logout has removed the old access and refresh records.
+            // Let a second worker take over its expired account lock and commit
+            // a fresh session immediately before the stale cleanup reads the
+            // current refresh-token account index.
+            $dao->delete(TokenManager::LOCK_PREFIX . 'login:' . $loginType . ':' . hash('sha256', $loginId));
+            $newManager = new TokenManager();
+            $newAccessToken = $newManager->createTokenValue($loginId, $loginType);
+            $newManager->saveToken($newAccessToken, $loginId, $loginType, 'mobile', 3600);
+            $newRefreshToken = $newManager->createTokenValue($loginId, $loginType, 'srt_');
+            $newManager->saveRefreshToken($newRefreshToken, $newAccessToken, $loginId, $loginType, 3600);
+        };
+
+        try {
+            $manager->deleteAllTokenByLoginId($loginId, $loginType);
+            self::fail('失去账号锁租约的旧登出操作必须停止清理');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('租约已失效', $exception->getMessage());
+        }
+
+        self::assertNotSame('', $newAccessToken);
+        self::assertNotSame('', $newRefreshToken);
+        self::assertSame($loginId, $manager->getLoginIdByToken($newAccessToken));
+        self::assertNull($manager->getRefreshTokenData($oldRefreshToken));
+        self::assertNotNull(
+            $manager->getRefreshTokenData($newRefreshToken),
+            '过期账号锁的清理者不能撤销新持有者刚签发的 RefreshToken'
+        );
     }
 
     public function testSaveRefreshTokenValidatesStatelessJwtOwner(): void

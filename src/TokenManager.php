@@ -1782,8 +1782,20 @@ class TokenManager
     protected function deleteRefreshTokensByLoginIdLocked(string $loginId, string $loginType): void
     {
         $dao = $this->getDao();
+        $loginLockKey = 'login:' . $loginType . ':' . hash('sha256', $loginId);
+        if (!$this->renewLock($loginLockKey, 30)) {
+            throw new SaTokenException('账号会话锁租约已失效，请重试');
+        }
+
         $key = self::buildRefreshTokenAccountKey($loginId, $loginType);
         $snapshot = $dao->get($key);
+        // The account lock may expire while the backing DAO is reading this
+        // index. Revalidate ownership before trusting the snapshot: otherwise
+        // a stale logout could read and delete RefreshTokens registered by a
+        // newer login that took over the lease during that read.
+        if (!$this->renewLock($loginLockKey, 30)) {
+            throw new SaTokenException('账号会话锁租约已失效，请重试');
+        }
         if ($snapshot === null) {
             return;
         }
@@ -1793,6 +1805,9 @@ class TokenManager
         }
 
         foreach ($decoded as $refreshToken) {
+            if (!$this->renewLock($loginLockKey, 30)) {
+                throw new SaTokenException('账号会话锁租约已失效，请重试');
+            }
             if (!is_string($refreshToken) || $refreshToken === '') {
                 continue;
             }
@@ -1811,6 +1826,9 @@ class TokenManager
             }
         }
 
+        if (!$this->renewLock($loginLockKey, 30)) {
+            throw new SaTokenException('账号会话锁租约已失效，请重试');
+        }
         if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface
             || !$dao->compareAndSet($key, $snapshot, null)) {
             throw new SaTokenException('RefreshToken 账号索引已并发变更，请重试');
@@ -2102,7 +2120,11 @@ class TokenManager
         unset($this->lockDepths[$stateKey]);
     }
 
-    /** 仅在当前请求上下文仍持有同一租约时续期。 */
+    /**
+     * 仅在当前请求上下文仍持有同一租约时续期。
+     *
+     * @phpstan-impure
+     */
     public function renewLock(string $key, int $ttl = 30): bool
     {
         if ($ttl <= 0) {
