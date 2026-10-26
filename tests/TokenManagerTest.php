@@ -34,6 +34,8 @@ class SaTokenDaoFailingTokenDelete extends SaTokenDaoMemory
 {
     public bool $failTokenDelete = false;
 
+    public bool $failBulkTokenDelete = false;
+
     public function compareAndDelete(string $key, string $expectedValue): bool
     {
         if ($this->failTokenDelete && str_starts_with($key, TokenManager::TOKEN_PREFIX)) {
@@ -41,6 +43,19 @@ class SaTokenDaoFailingTokenDelete extends SaTokenDaoMemory
         }
 
         return parent::compareAndDelete($key, $expectedValue);
+    }
+
+    public function deleteMultiple(array $keys): void
+    {
+        if ($this->failBulkTokenDelete) {
+            foreach ($keys as $key) {
+                if (str_starts_with($key, TokenManager::TOKEN_PREFIX)) {
+                    throw new SaTokenException('simulated bulk token delete failure');
+                }
+            }
+        }
+
+        parent::deleteMultiple($keys);
     }
 }
 
@@ -378,6 +393,30 @@ class TokenManagerTest extends TestCase
 
         $this->assertNull($this->manager->getLoginIdByToken($token1));
         $this->assertNull($this->manager->getLoginIdByToken($token2));
+    }
+
+    public function testDeleteAllTokensKeepsAccountIndexWhenBearerDeletionFails(): void
+    {
+        $dao = new SaTokenDaoFailingTokenDelete();
+        SaToken::setDao($dao);
+        $manager = new TokenManager();
+        $token = $manager->createTokenValue('user-2', 'login');
+        $manager->saveToken($token, 'user-2', 'login', 'PC', 3600);
+        $dao->failBulkTokenDelete = true;
+
+        try {
+            $manager->deleteAllTokenByLoginId('user-2', 'login');
+            self::fail('Expected the simulated bulk bearer deletion failure');
+        } catch (SaTokenException $exception) {
+            self::assertSame('simulated bulk token delete failure', $exception->getMessage());
+        }
+
+        self::assertSame('user-2', $manager->getLoginIdByToken($token));
+        self::assertCount(1, $manager->getTokenListByLoginId('user-2', 'login'));
+
+        $dao->failBulkTokenDelete = false;
+        $manager->deleteAllTokenByLoginId('user-2', 'login');
+        self::assertNull($manager->getLoginIdByToken($token));
     }
 
     public function testDeleteAllTokenByLoginIdRemovesPermanentRefreshTokenMap(): void

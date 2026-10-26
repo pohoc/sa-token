@@ -883,16 +883,22 @@ class TokenManager
             }
 
             $dao = $this->getDao();
+            $keysToDelete[] = self::buildSessionId($loginType, $loginIdStr);
+
+            // Revoke bearer records before removing the account index. If the
+            // DAO fails during batch deletion, the index must remain available
+            // so the caller can retry and every still-live token is discoverable.
+            if (count($keysToDelete) > 0) {
+                $renewLocks();
+                $dao->deleteMultiple($keysToDelete);
+            }
+
             if ($expectedList !== null) {
+                $renewLocks();
                 if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface
                     || !$dao->compareAndSet($loginIdKey, $expectedList, null)) {
                     throw new SaTokenException('账号会话列表已并发变更或 DAO 不支持原子条件写入，请重试');
                 }
-            }
-            $keysToDelete[] = self::buildSessionId($loginType, $loginIdStr);
-
-            if (count($keysToDelete) > 0) {
-                $dao->deleteMultiple($keysToDelete);
             }
             foreach ($deletedTokens as $tokenValue) {
                 $this->clearTokenBoundState($tokenValue, $loginType);
