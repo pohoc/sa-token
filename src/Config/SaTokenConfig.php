@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SaToken\Config;
 
 use SaToken\Exception\SaTokenException;
+use SaToken\Util\SaTokenCryptoType;
 use SaToken\Util\SaTokenTimeout;
 
 /**
@@ -540,7 +541,7 @@ class SaTokenConfig
 
     public function setCryptoType(string $cryptoType): static
     {
-        $this->cryptoType = $cryptoType;
+        $this->cryptoType = SaTokenCryptoType::validate($cryptoType);
         return $this;
     }
 

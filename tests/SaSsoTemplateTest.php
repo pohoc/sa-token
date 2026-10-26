@@ -13,6 +13,14 @@ use SaToken\Sso\SaSsoTemplate;
 
 class SaSsoTemplateTest extends TestCase
 {
+    public function testUnknownCryptoTypeIsRejected(): void
+    {
+        $this->expectException(\SaToken\Exception\SaTokenException::class);
+        $this->expectExceptionMessage('不支持的加密类型');
+
+        new SaSsoTemplate('smm');
+    }
+
     protected function setUp(): void
     {
         SaToken::reset();

@@ -43,6 +43,14 @@ class SaTokenConfigTest extends TestCase
         $this->assertEquals('sm', $config->getCryptoType());
     }
 
+    public function testUnknownCryptoTypeIsRejected(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('不支持的加密类型');
+
+        new SaTokenConfig(['cryptoType' => 'smm']);
+    }
+
     public function testChainSetting(): void
     {
         $config = new SaTokenConfig();

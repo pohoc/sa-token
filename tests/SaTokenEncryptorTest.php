@@ -52,6 +52,14 @@ class SaTokenEncryptorTest extends TestCase
         $this->assertSame('plain-value', $encryptor->decrypt('plain-value'));
     }
 
+    public function testUnknownCryptoTypeIsRejectedWhenEncryptionIsDisabled(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('不支持的加密类型');
+
+        new SaTokenEncryptor(false, '', 'smm');
+    }
+
     private function createAesEncryptor(bool $enabled = true, string $key = ''): SaTokenEncryptor
     {
         if ($key === '') {

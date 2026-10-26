@@ -24,6 +24,7 @@ class SaTokenEncryptor
 
     public function __construct(bool $enabled, string $key, string $cryptoType = 'intl')
     {
+        $cryptoType = SaTokenCryptoType::validate($cryptoType);
         $this->enabled = $enabled;
         $this->useSm = ($cryptoType === 'sm');
 

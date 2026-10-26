@@ -7,6 +7,7 @@ namespace SaToken\Sso;
 use CryptoSm\SM3\HmacSm3;
 use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
+use SaToken\Util\SaTokenCryptoType;
 
 class SaSsoTemplate
 {
@@ -18,7 +19,7 @@ class SaSsoTemplate
 
     public function __construct(?string $cryptoType = null)
     {
-        $this->cryptoType = $cryptoType ?? SaToken::getConfig()->getCryptoType();
+        $this->cryptoType = SaTokenCryptoType::validate($cryptoType ?? SaToken::getConfig()->getCryptoType());
     }
 
     /**

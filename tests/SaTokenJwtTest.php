@@ -27,6 +27,14 @@ class SaTokenJwtTest extends TestCase
         $this->assertStringContainsString('.', $token); // JWT 格式：header.payload.signature
     }
 
+    public function testUnknownCryptoTypeIsRejected(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('不支持的加密类型');
+
+        new SaTokenJwt(['cryptoType' => 'smm']);
+    }
+
     public function testParseTokenRejectsAlgorithmOutsideConfiguredCryptoType(): void
     {
         $token = $this->jwt->createToken(10001, 'login');

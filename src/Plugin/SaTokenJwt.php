@@ -7,6 +7,7 @@ namespace SaToken\Plugin;
 use CryptoSm\SM3\HmacSm3;
 use SaToken\Exception\SaTokenException;
 use SaToken\TokenManager;
+use SaToken\Util\SaTokenCryptoType;
 use SaToken\Util\SaTokenTimeout;
 
 class SaTokenJwt
@@ -23,7 +24,10 @@ class SaTokenJwt
         $secretKey = $config['jwtSecretKey'] ?? '';
         $this->secretKey = is_string($secretKey) ? $secretKey : '';
         $cryptoType = $config['cryptoType'] ?? 'intl';
-        $this->cryptoType = is_string($cryptoType) ? $cryptoType : 'intl';
+        if (!is_string($cryptoType)) {
+            throw new SaTokenException('JWT 加密类型必须为 intl 或 sm');
+        }
+        $this->cryptoType = SaTokenCryptoType::validate($cryptoType);
     }
 
     /**
