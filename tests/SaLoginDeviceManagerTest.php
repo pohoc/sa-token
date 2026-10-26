@@ -131,6 +131,18 @@ class SaLoginDeviceManagerTest extends TestCase
         SaLoginDeviceManager::reset();
     }
 
+    public function testAccountDeviceKeysUseVersionedSha256Digests(): void
+    {
+        $loginId = 'test:user';
+        $loginType = 'admin:type';
+        $expected = 'satoken:security:device:v2:'
+            . \SaToken\TokenManager::encodeKeyComponent($loginType)
+            . ':' . hash('sha256', $loginId);
+
+        self::assertSame($expected, SaLoginDeviceManager::getKey($loginId, $loginType));
+        self::assertNotSame(SaLoginDeviceManager::getKey('test:user', 'admin:type'), SaLoginDeviceManager::getKey('test:user', 'admin'));
+    }
+
     public function testDeviceRegistration(): void
     {
         $device = new SaLoginDevice([

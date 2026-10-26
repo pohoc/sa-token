@@ -29,7 +29,7 @@ class SaLoginDeviceManager
     public static function getKey(mixed $loginId, string $loginType = 'login'): string
     {
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-        return self::$keyPrefix . $loginType . ':' . md5($loginIdStr);
+        return self::$keyPrefix . 'v2:' . \SaToken\TokenManager::encodeKeyComponent($loginType) . ':' . hash('sha256', $loginIdStr);
     }
 
     public static function registerDevice(mixed $loginId, string $loginType = 'login', ?SaLoginDevice $device = null, ?string $tokenValue = null, ?StpLogic $logicInstance = null): SaLoginDevice
