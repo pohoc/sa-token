@@ -10,7 +10,9 @@ use SaToken\Exception\SaTokenException;
 
 /**
  * PSR-16 adapter with host-local file locks for atomic DAO operations.
- * A cache shared by multiple hosts still requires a distributed atomic DAO.
+ * The default lock directory is isolated by effective Unix UID; processes
+ * must use the same lock directory to coordinate through these locks. A cache
+ * shared by multiple hosts still requires a distributed atomic DAO.
  */
 class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface, SaTokenDaoCompareAndExpireInterface, SaTokenDaoCompareAndSetInterface, SaTokenDaoCompareAndUpdateInterface, SaTokenDaoDeleteIfExpiredInterface
 {
@@ -481,7 +483,8 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
 
     /**
      * PSR-16 has no atomic primitives; a fixed set of host-local file locks
-     * makes DAO operations atomic across PHP processes on this host. Deployments
+     * makes DAO operations atomic across processes using this lock directory.
+     * The default directory is scoped by effective Unix UID. Deployments
      * sharing the cache across hosts must use a shared atomic DAO such as Redis.
      * @template T
      * @param  callable(): T $operation
