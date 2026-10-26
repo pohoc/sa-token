@@ -11,6 +11,8 @@ use SaToken\Util\SaTokenContext;
 
 class SaApiKey
 {
+    protected const MIN_SECRET_BYTES = 32;
+
     protected string $keyHeaderName;
 
     protected string $secretHeaderName;
@@ -147,6 +149,9 @@ class SaApiKey
         if (trim($apiKey) === '' || trim($apiSecret) === '') {
             throw new SaTokenException('注册 API Key 必须提供非空 Key 和 Secret');
         }
+        if (strlen($apiSecret) < self::MIN_SECRET_BYTES) {
+            throw new SaTokenException('API Secret 至少需要 32 字节');
+        }
 
         $this->keyRegistry[$apiKey] = [
             'secret'  => $apiSecret,
@@ -163,6 +168,9 @@ class SaApiKey
             if (trim((string) $apiKey) === '' || !is_array($entry)
                 || !is_string($entry['secret'] ?? null) || trim($entry['secret']) === '') {
                 throw new SaTokenException('API Key 注册表中的 Key 和 Secret 必须为非空字符串');
+            }
+            if (strlen($entry['secret']) < self::MIN_SECRET_BYTES) {
+                throw new SaTokenException('API Key 注册表中的 API Secret 至少需要 32 字节');
             }
         }
 

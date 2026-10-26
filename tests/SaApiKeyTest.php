@@ -61,7 +61,7 @@ class SaApiKeyTest extends TestCase
     {
         $request = $this->mockRequestWithHeaders([
             'api-key' => 'my-key',
-            'api-secret' => 'my-secret',
+            'api-secret' => 'my-api-secret-value-at-least-32-bytes',
         ]);
         SaTokenContext::setRequest($request);
 
@@ -118,12 +118,12 @@ class SaApiKeyTest extends TestCase
     {
         $request = $this->mockRequestWithHeaders([
             'api-key' => 'my-key',
-            'api-secret' => 'my-secret',
+            'api-secret' => 'my-api-secret-value-at-least-32-bytes',
         ]);
         SaTokenContext::setRequest($request);
 
         $api = new SaApiKey();
-        $api->registerKey('my-key', 'my-secret', 10001);
+        $api->registerKey('my-key', 'my-api-secret-value-at-least-32-bytes', 10001);
         $api->checkApiKey();
 
         $this->assertTrue(SaToken::getDao()->exists(\SaToken\TokenManager::buildLoginIdKey('login', '10001')));
@@ -135,12 +135,12 @@ class SaApiKeyTest extends TestCase
         $logic = SaToken::getStpLogic();
         $unrelatedToken = $logic->login('bearer-account')->getAccessToken();
         $api = new SaApiKey();
-        $api->registerKey('service-key', 'service-secret', 'api-key-account');
+        $api->registerKey('service-key', 'service-api-secret-value-at-least-32-bytes', 'api-key-account');
 
         SaTokenContext::setRequest($this->mockRequestWithHeaders([
             'satoken' => $unrelatedToken,
             'api-key' => 'service-key',
-            'api-secret' => 'service-secret',
+            'api-secret' => 'service-api-secret-value-at-least-32-bytes',
         ]));
 
         $api->checkApiKey();
@@ -153,7 +153,7 @@ class SaApiKeyTest extends TestCase
         SaTokenContext::setRequest($this->mockRequestWithHeaders([
             'satoken' => $unrelatedToken,
             'api-key' => 'service-key',
-            'api-secret' => 'service-secret',
+            'api-secret' => 'service-api-secret-value-at-least-32-bytes',
         ]));
         $api->checkApiKey();
         self::assertSame('api-key-account', $logic->getLoginId());
@@ -165,7 +165,7 @@ class SaApiKeyTest extends TestCase
         $logic = SaToken::getStpLogic();
         $bearerToken = $logic->login('bearer-account')->getAccessToken();
         $api = new SaApiKey();
-        $api->registerKey('service-key', 'service-secret', 'api-key-account');
+        $api->registerKey('service-key', 'service-api-secret-value-at-least-32-bytes', 'api-key-account');
         SaTokenContext::setRequest($this->mockRequestWithHeaders([
             'satoken' => $bearerToken,
             'api-key' => 'service-key',
@@ -183,11 +183,11 @@ class SaApiKeyTest extends TestCase
     public function testApiKeySessionReuseDoesNotEmitBearerWhenResponseWritingIsDisabled(): void
     {
         $api = new SaApiKey();
-        $api->registerKey('response-policy-key', 'response-policy-secret', 'api-key-account');
+        $api->registerKey('response-policy-key', 'response-policy-api-secret-at-least-32-bytes', 'api-key-account');
 
         SaTokenContext::setRequest($this->mockRequestWithHeaders([
             'api-key' => 'response-policy-key',
-            'api-secret' => 'response-policy-secret',
+            'api-secret' => 'response-policy-api-secret-at-least-32-bytes',
         ]));
         $api->checkApiKey();
 
@@ -203,7 +203,7 @@ class SaApiKeyTest extends TestCase
         // that can be used on routes which accept Sa-Token credentials.
         SaTokenContext::setRequest($this->mockRequestWithHeaders([
             'api-key' => 'response-policy-key',
-            'api-secret' => 'response-policy-secret',
+            'api-secret' => 'response-policy-api-secret-at-least-32-bytes',
         ]));
         $api->checkApiKey();
 
@@ -216,7 +216,7 @@ class SaApiKeyTest extends TestCase
         SaToken::getConfig()->setIsWriteHeader(true);
         SaTokenContext::setRequest($this->mockRequestWithHeaders([
             'api-key' => 'response-policy-key',
-            'api-secret' => 'response-policy-secret',
+            'api-secret' => 'response-policy-api-secret-at-least-32-bytes',
         ]));
         $api->checkApiKey();
         $headersByContext = $pendingHeaders->getValue();
@@ -253,7 +253,7 @@ class SaApiKeyTest extends TestCase
         SaTokenContext::setRequest($request);
 
         $api = new SaApiKey();
-        $api->registerKey('my-key', 'my-secret', 10001);
+        $api->registerKey('my-key', 'my-api-secret-value-at-least-32-bytes', 10001);
         $this->expectException(SaTokenException::class);
         $api->checkApiKey();
     }
@@ -282,7 +282,7 @@ class SaApiKeyTest extends TestCase
     {
         SaToken::setConfig(SaToken::getConfig()->setAntiBruteMaxFailures(2)->setAntiBruteLockDuration(60));
         $api = new SaApiKey();
-        $api->registerKey('known-api-key', 'correct-secret', 10001);
+        $api->registerKey('known-api-key', 'correct-api-secret-value-at-least-32-bytes', 10001);
 
         foreach ([1, 2] as $attempt) {
             SaTokenContext::setRequest($this->mockRequestWithHeaders([
@@ -300,7 +300,7 @@ class SaApiKeyTest extends TestCase
         $this->assertSame(2, SaAntiBruteUtil::getFailCount('known-api-key', 'api-key'));
         SaTokenContext::setRequest($this->mockRequestWithHeaders([
             'api-key' => 'known-api-key',
-            'api-secret' => 'correct-secret',
+            'api-secret' => 'correct-api-secret-value-at-least-32-bytes',
         ]));
 
         $this->expectExceptionMessage('账号已被锁定');
@@ -310,7 +310,7 @@ class SaApiKeyTest extends TestCase
     public function testSuccessfulApiKeyValidationClearsCurrentSourceFailures(): void
     {
         $api = new SaApiKey();
-        $api->registerKey('known-api-key', 'correct-secret', 10001);
+        $api->registerKey('known-api-key', 'correct-api-secret-value-at-least-32-bytes', 10001);
 
         SaTokenContext::setRequest($this->mockRequestWithHeaders([
             'api-key' => 'known-api-key',
@@ -325,7 +325,7 @@ class SaApiKeyTest extends TestCase
 
         SaTokenContext::setRequest($this->mockRequestWithHeaders([
             'api-key' => 'known-api-key',
-            'api-secret' => 'correct-secret',
+            'api-secret' => 'correct-api-secret-value-at-least-32-bytes',
         ]));
         $api->checkApiKey();
 
@@ -356,6 +356,15 @@ class SaApiKeyTest extends TestCase
         $api->registerKey('my-key', '   ', 10001);
     }
 
+    public function testRegisterKeyRejectsShortSecret(): void
+    {
+        $api = new SaApiKey();
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('至少需要 32 字节');
+        $api->registerKey('my-key', 'short-secret', 10001);
+    }
+
     public function testSetKeyRegistryRejectsEmptySecret(): void
     {
         $api = new SaApiKey();
@@ -364,15 +373,24 @@ class SaApiKeyTest extends TestCase
         $api->setKeyRegistry(['my-key' => ['secret' => '', 'loginId' => 10001]]);
     }
 
+    public function testSetKeyRegistryRejectsShortSecret(): void
+    {
+        $api = new SaApiKey();
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('至少需要 32 字节');
+        $api->setKeyRegistry(['my-key' => ['secret' => 'short-secret', 'loginId' => 10001]]);
+    }
+
     public function testSetKeyRegistryAcceptsNumericApiKey(): void
     {
         SaTokenContext::setRequest($this->mockRequestWithHeaders([
             'api-key' => '123',
-            'api-secret' => 'numeric-key-secret',
+            'api-secret' => 'numeric-api-secret-value-at-least-32-bytes',
         ]));
 
         $api = new SaApiKey();
-        $api->setKeyRegistry(['123' => ['secret' => 'numeric-key-secret', 'loginId' => 10001]]);
+        $api->setKeyRegistry(['123' => ['secret' => 'numeric-api-secret-value-at-least-32-bytes', 'loginId' => 10001]]);
         $api->checkApiKey();
 
         $this->assertTrue(SaToken::getDao()->exists(\SaToken\TokenManager::buildLoginIdKey('login', '10001')));
@@ -382,13 +400,13 @@ class SaApiKeyTest extends TestCase
     {
         $request = $this->mockRequestWithHeaders([
             'api-key' => 'my-key',
-            'api-secret' => 'my-secret',
+            'api-secret' => 'my-api-secret-value-at-least-32-bytes',
         ]);
         SaTokenContext::setRequest($request);
 
         $api = new SaApiKey();
         $api->setValidator(function (string $apiKey, string $apiSecret): mixed {
-            if ($apiKey === 'my-key' && $apiSecret === 'my-secret') {
+            if ($apiKey === 'my-key' && $apiSecret === 'my-api-secret-value-at-least-32-bytes') {
                 return 20001;
             }
             return null;
@@ -402,11 +420,11 @@ class SaApiKeyTest extends TestCase
     {
         SaToken::setConfig(SaToken::getConfig()->setActivityTimeout(60));
         $api = new SaApiKey();
-        $api->registerKey('activity-key', 'activity-secret', 10001);
+        $api->registerKey('activity-key', 'activity-api-secret-value-at-least-32-bytes', 10001);
 
         SaTokenContext::setRequest($this->mockRequestWithHeaders([
             'api-key' => 'activity-key',
-            'api-secret' => 'activity-secret',
+            'api-secret' => 'activity-api-secret-value-at-least-32-bytes',
         ]));
         $api->checkApiKey();
 
@@ -421,7 +439,7 @@ class SaApiKeyTest extends TestCase
 
         SaTokenContext::setRequest($this->mockRequestWithHeaders([
             'api-key' => 'activity-key',
-            'api-secret' => 'activity-secret',
+            'api-secret' => 'activity-api-secret-value-at-least-32-bytes',
         ]));
         $api->checkApiKey();
 
@@ -462,7 +480,7 @@ class SaApiKeyTest extends TestCase
     {
         $request = $this->mockRequestWithHeaders([
             'x-api-key' => 'my-key',
-            'x-api-secret' => 'my-secret',
+            'x-api-secret' => 'my-api-secret-value-at-least-32-bytes',
         ]);
         SaTokenContext::setRequest($request);
 

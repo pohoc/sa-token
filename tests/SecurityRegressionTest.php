@@ -2289,9 +2289,9 @@ class SecurityRegressionTest extends TestCase
         ])));
         $loginResult = StpUtil::login(62005);
         $apiKeyAuth = new \SaToken\Auth\SaApiKey();
-        $apiKeyAuth->registerKey('k-test-1', 's-test-1', 62005);
+        $apiKeyAuth->registerKey('k-test-1', 'security-regression-api-secret-value-32b', 62005);
 
-        $request = new class ('k-test-1', 's-test-1') implements \Psr\Http\Message\ServerRequestInterface {
+        $request = new class ('k-test-1', 'security-regression-api-secret-value-32b') implements \Psr\Http\Message\ServerRequestInterface {
             use PsrRequestStubTrait;
             public function __construct(private string $k, private string $s)
             {
