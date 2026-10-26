@@ -764,10 +764,11 @@ class SaTokenContext
      */
     public static function setHeader(string $name, string $value): void
     {
-        // 头名/值中的 CR/LF/NUL 会让攻击者注入任意响应头（HTTP 响应拆分）。
-        // 框架内部值均为服务端生成，但 setHeader 是公开 API——在入口统一剥离，
-        // 集成方把用户可控数据写头时不再形成注入面
-        $name = str_replace(["\r", "\n", "\0"], '', $name);
+        // 头名不做净化后继续使用：删除控制字符可能把非法输入改成另一个有效头名。
+        // 按 HTTP token 语法拒绝非法名称，并剥离值中的 CR/LF/NUL 防止响应头注入。
+        if (preg_match("/^[!#$%&'*+\\-.^_`|~0-9A-Za-z]+$/D", $name) !== 1) {
+            throw new SaTokenException('响应头名称包含无效字符');
+        }
         $value = str_replace(["\r", "\n", "\0"], '', $value);
 
         $response = self::getResponse();

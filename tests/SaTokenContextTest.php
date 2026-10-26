@@ -440,6 +440,21 @@ class SaTokenContextTest extends TestCase
         $this->assertSame($newResponse, SaTokenContext::getResponse());
     }
 
+    public function testSetHeaderRejectsInvalidHeaderNames(): void
+    {
+        $rejected = 0;
+        foreach (['X-Test: injected', "X-\r\n-Test", '', ' X-Test'] as $name) {
+            try {
+                SaTokenContext::setHeader($name, 'value');
+                self::fail('非法响应头名称必须被拒绝');
+            } catch (SaTokenException) {
+                // Invalid names must not be transformed into different valid headers.
+                $rejected++;
+            }
+        }
+        self::assertSame(4, $rejected);
+    }
+
     public function testSetHeaderWhenNoResponse(): void
     {
         $response = $this->createMock(\Psr\Http\Message\ResponseInterface::class);
