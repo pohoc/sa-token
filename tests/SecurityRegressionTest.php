@@ -1595,6 +1595,56 @@ class SecurityRegressionTest extends TestCase
         }
     }
 
+    public function testSsoCheckTicketRejectsEmptyLoginIdInLocalAndCrossRedisResponses(): void
+    {
+        $secret = 'sso-test-secret-with-at-least-32-bytes';
+        foreach ([false, true] as $crossRedis) {
+            $template = new class ($secret) extends SaSsoTemplate {
+                public function __construct(private string $secret)
+                {
+                    parent::__construct();
+                }
+
+                public function post(string $url, array $data = []): string
+                {
+                    return (string) json_encode($this->signParams([
+                        'loginId' => '',
+                        'ticket' => $data['ticket'],
+                        'request_nonce' => $data['nonce'],
+                        'timestamp' => (string) time(),
+                    ], $this->secret));
+                }
+            };
+            $handle = new class (new SaSsoConfig([
+                'checkTicketUrl' => 'https://auth.example.com/check-ticket',
+                'crossRedisCheckUrl' => 'https://auth.example.com/cross-check-ticket',
+                'clientSecret' => $secret,
+            ]), $template) extends SaSsoHandle {
+                public function __construct(SaSsoConfig $config, SaSsoTemplate $template)
+                {
+                    parent::__construct($config);
+                    $this->template = $template;
+                }
+
+                public function checkLocal(string $ticket): ?string
+                {
+                    return $this->checkTicket($ticket);
+                }
+
+                public function checkRemote(string $ticket): ?string
+                {
+                    return $this->checkTicketCrossRedis($ticket);
+                }
+            };
+
+            $loginId = $crossRedis
+                ? $handle->checkRemote('ticket-empty-login-id')
+                : $handle->checkLocal('ticket-empty-login-id');
+
+            self::assertNull($loginId, 'An empty SSO subject must never count as a validated ticket identity');
+        }
+    }
+
     // ======== 第二轮加固回归 ========
 
     public function testTokenIsBoundToItsLoginType(): void

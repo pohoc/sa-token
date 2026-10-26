@@ -300,7 +300,7 @@ class SaSsoHandle
 
         $result = json_decode($response, true);
         $loginId = is_array($result) ? ($result['loginId'] ?? null) : null;
-        if (!is_string($loginId)) {
+        if (!is_string($loginId) || $loginId === '') {
             return null;
         }
 
@@ -399,7 +399,8 @@ class SaSsoHandle
         }
 
         $result = json_decode($response, true);
-        if (!is_array($result) || !isset($result['loginId']) || !is_string($result['loginId'])) {
+        if (!is_array($result) || !isset($result['loginId'])
+            || !is_string($result['loginId']) || $result['loginId'] === '') {
             return null;
         }
 
