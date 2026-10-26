@@ -151,7 +151,11 @@ class SaSsoTemplate
         $urlParts = parse_url($url);
         $scheme = is_array($urlParts) ? strtolower((string) ($urlParts['scheme'] ?? '')) : '';
         if (!is_array($urlParts) || !isset($urlParts['host']) || $urlParts['host'] === ''
-            || !in_array($scheme, ['http', 'https'], true)) {
+            || !in_array($scheme, ['http', 'https'], true)
+            || preg_match('/[\\\\\x00-\x20\x7f]/', $url) === 1
+            || array_key_exists('user', $urlParts)
+            || array_key_exists('pass', $urlParts)
+            || array_key_exists('fragment', $urlParts)) {
             $this->lastError = 'Only HTTP and HTTPS URLs are allowed';
             return false;
         }

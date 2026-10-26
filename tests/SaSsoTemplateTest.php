@@ -152,6 +152,35 @@ class SaSsoTemplateTest extends TestCase
         (new SaSsoTemplate('intl'))->post('file://localhost/etc/passwd', ['ticket' => 'secret']);
     }
 
+    public function testHttpHelperRejectsAmbiguousUrlsBeforeOpeningTransport(): void
+    {
+        $template = new class () extends SaSsoTemplate {
+            protected function curlRequest(string $method, string $url, array $data = []): string|false
+            {
+                throw new \RuntimeException('Transport must not be opened for an invalid URL');
+            }
+
+            protected function fileGetContentsRequest(string $method, string $url, array $data = []): string|false
+            {
+                throw new \RuntimeException('Transport must not be opened for an invalid URL');
+            }
+        };
+
+        foreach ([
+            'https://user:password@example.test/check',
+            'https://example.test/check#fragment',
+            'https://example.test\\@attacker.test/check',
+            "https://example.test/check\n",
+        ] as $url) {
+            try {
+                $template->post($url, ['ticket' => 'secret']);
+                self::fail('Ambiguous URL components must be rejected before transport');
+            } catch (SaTokenException $exception) {
+                self::assertStringContainsString('Only HTTP and HTTPS URLs are allowed', $exception->getMessage());
+            }
+        }
+    }
+
     public function testHttpFailureExceptionRedactsCredentialsAndUrlPath(): void
     {
         try {
