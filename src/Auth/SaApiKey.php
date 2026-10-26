@@ -78,16 +78,34 @@ class SaApiKey
         // 同一 Key 已存在有效会话时直接复用：每次请求全量 login() 会触发
         // 账号级分布式锁竞争、反复触发 onLogin 事件、并在多实例部署下互相踢线
         $deviceType = 'apikey:' . hash('sha256', $apiKey);
+        $logic = StpUtil::getStpLogic();
+        $tokenManager = $logic->getTokenManager();
+        $accountLockKey = 'login:' . $logic->getLoginType() . ':' . hash('sha256', (string) $loginId);
         for ($attempt = 0; $attempt < 3; $attempt++) {
-            $reuseToken = $this->findReusableToken($loginId, $apiKey);
-            if ($reuseToken !== null) {
-                StpUtil::getStpLogic()->writeTokenToResponse(
-                    $reuseToken,
-                    (new \SaToken\SaLoginParameter())->setWriteResponseCredentials(false)
-                );
-                SaTokenContext::setTokenOverride(StpUtil::getStpLogic()->getLoginType(), $reuseToken);
-                SaAntiBruteUtil::clearCurrentSourceFailures($apiKey, 'api-key');
-                return;
+            if ($tokenManager->acquireLock($accountLockKey, 30)) {
+                try {
+                    $logic->checkDisable($loginId, 'login');
+                    $reuseToken = $this->findReusableToken($loginId, $apiKey);
+                    if ($reuseToken !== null) {
+                        // Disable and session reuse share the account lock.
+                        // Recheck after storage reads, then renew immediately
+                        // before making the cached bearer current for this request.
+                        $logic->checkDisable($loginId, 'login');
+                        if (!$tokenManager->renewLock($accountLockKey, 30)) {
+                            throw new SaTokenException('账号会话锁已失效，拒绝复用 API Key 会话');
+                        }
+
+                        $logic->writeTokenToResponse(
+                            $reuseToken,
+                            (new \SaToken\SaLoginParameter())->setWriteResponseCredentials(false)
+                        );
+                        SaTokenContext::setTokenOverride($logic->getLoginType(), $reuseToken);
+                        SaAntiBruteUtil::clearCurrentSourceFailures($apiKey, 'api-key');
+                        return;
+                    }
+                } finally {
+                    $tokenManager->releaseLock($accountLockKey);
+                }
             }
 
             try {

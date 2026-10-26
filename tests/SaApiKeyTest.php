@@ -9,6 +9,7 @@ use Psr\Http\Message\ServerRequestInterface;
 use SaToken\Auth\SaApiKey;
 use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoMemory;
+use SaToken\Exception\DisableServiceException;
 use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
 use SaToken\Security\SaAntiBruteUtil;
@@ -188,6 +189,82 @@ class SaApiKeyTest extends TestCase
         ]));
         $api->checkApiKey();
         self::assertSame('api-key-account', $logic->getLoginId());
+    }
+
+    public function testDisabledAccountCannotReuseAnApiKeySession(): void
+    {
+        $logic = SaToken::getStpLogic();
+        $api = new SaApiKey();
+        $api->registerKey('disabled-api-key', 'disabled-api-secret-value-at-least-32-bytes', 'disabled-api-user');
+        $headers = [
+            'api-key' => 'disabled-api-key',
+            'api-secret' => 'disabled-api-secret-value-at-least-32-bytes',
+        ];
+
+        SaTokenContext::setRequest($this->mockRequestWithHeaders($headers));
+        $api->checkApiKey();
+        $logic->disable('disabled-api-user', 'login', 1, 3600);
+
+        SaTokenContext::setRequest($this->mockRequestWithHeaders($headers));
+        try {
+            $api->checkApiKey();
+            self::fail('封禁账号不能通过复用的 API Key 会话继续认证');
+        } catch (DisableServiceException) {
+            self::assertTrue($logic->isDisable('disabled-api-user', 'login'));
+        }
+    }
+
+    public function testApiKeyReuseCannotWinAfterDisableTakesOverTheAccountLock(): void
+    {
+        $loginId = 'api-key-disable-lock-race';
+        $tokenManager = new class () extends \SaToken\TokenManager {
+            public ?\Closure $afterTokenListRead = null;
+
+            public function getTokenListByLoginId(mixed $loginId, string $loginType): array
+            {
+                $tokens = parent::getTokenListByLoginId($loginId, $loginType);
+                if ($this->afterTokenListRead !== null) {
+                    $callback = $this->afterTokenListRead;
+                    $this->afterTokenListRead = null;
+                    $callback($loginId);
+                }
+
+                return $tokens;
+            }
+        };
+        $logic = SaToken::getStpLogic();
+        $logic->setTokenManager($tokenManager);
+        $api = new SaApiKey();
+        $api->registerKey('race-api-key', 'race-api-secret-value-at-least-32-bytes', $loginId);
+        $headers = [
+            'api-key' => 'race-api-key',
+            'api-secret' => 'race-api-secret-value-at-least-32-bytes',
+        ];
+
+        SaTokenContext::setRequest($this->mockRequestWithHeaders($headers));
+        $api->checkApiKey();
+        SaTokenContext::setTokenOverride('login', null);
+        $tokenManager->afterTokenListRead = function () use ($loginId): void {
+            SaToken::getDao()->delete(
+                \SaToken\TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId)
+            );
+            SaTokenContext::setContextId('disable-admin');
+            try {
+                SaToken::getStpLogic()->disable($loginId, 'login', 1, 3600);
+            } finally {
+                SaTokenContext::setContextId('default');
+            }
+        };
+        SaTokenContext::setRequest($this->mockRequestWithHeaders($headers));
+
+        try {
+            $api->checkApiKey();
+            self::fail('账号封禁完成后，缓存 API Key 会话不能继续认证');
+        } catch (DisableServiceException) {
+            self::assertTrue($logic->isDisable($loginId, 'login'));
+        }
+
+        self::assertNull($logic->getLoginId());
     }
 
     public function testInvalidApiKeyCannotFallBackToAnUnrelatedBearerToken(): void
