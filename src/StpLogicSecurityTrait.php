@@ -8,6 +8,7 @@ use SaToken\Data\SaLoginDevice;
 use SaToken\Exception\DisableServiceException;
 use SaToken\Exception\NotLoginException;
 use SaToken\Exception\NotSafeException;
+use SaToken\Exception\SaTokenException;
 use SaToken\Security\SaAntiBruteUtil;
 use SaToken\Security\SaAuditLog;
 use SaToken\Security\SaIpAnomalyDetector;
@@ -93,6 +94,10 @@ trait StpLogicSecurityTrait
 
     public function switchTo(mixed $loginId): void
     {
+        if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
+            throw new SaTokenException('切换身份必须是非空、非布尔标量');
+        }
+
         $this->checkLogin();
         $tokenValue = $this->getTokenValue();
         if ($tokenValue === null) {

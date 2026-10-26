@@ -866,6 +866,10 @@ class TokenManager
 
     public function setSwitchTo(string $tokenValue, mixed $switchToId, string $loginType): void
     {
+        if ($switchToId === null || $switchToId === '' || is_bool($switchToId) || !is_scalar($switchToId)) {
+            throw new SaTokenException('切换身份必须是非空、非布尔标量');
+        }
+
         $key = self::buildSwitchKey($tokenValue, $loginType);
         // 身份切换跟随 Token 生命周期：Token 过期/被删除后切换关系不应残留；
         // Token 不存在（-2）时直接拒绝写入，避免产生永不回收的孤儿键

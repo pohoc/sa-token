@@ -589,6 +589,23 @@ class TokenManagerTest extends TestCase
         $this->assertNull($this->manager->getSwitchTo($token, 'login'));
     }
 
+    public function testSetSwitchToRejectsInvalidIdentityValues(): void
+    {
+        $token = $this->manager->createTokenValue(10001, 'login');
+        $this->manager->saveToken($token, 10001, 'login', 'PC');
+
+        foreach ([null, '', false, true, [], new \stdClass()] as $invalidLoginId) {
+            try {
+                $this->manager->setSwitchTo($token, $invalidLoginId, 'login');
+                self::fail('底层身份切换不得接受空值、布尔值或非标量值');
+            } catch (SaTokenException $exception) {
+                self::assertStringContainsString('非空、非布尔标量', $exception->getMessage());
+            }
+        }
+
+        self::assertNull($this->manager->getSwitchTo($token, 'login'));
+    }
+
     public function testSwitchStateDoesNotCollideAcrossLoginTypeAndToken(): void
     {
         $tokenA = 'b:c:1234567890123456';

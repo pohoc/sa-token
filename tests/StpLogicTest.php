@@ -116,6 +116,18 @@ class StpLogicTest extends TestCase
         $this->assertNull($this->tokenManager->getSwitchTo($token, 'login'));
     }
 
+    public function testSwitchToRejectsInvalidIdentityValues(): void
+    {
+        foreach ([null, '', false, true, [], new \stdClass()] as $invalidLoginId) {
+            try {
+                $this->logic->switchTo($invalidLoginId);
+                self::fail('切换身份不得接受空值、布尔值或非标量值');
+            } catch (SaTokenException $exception) {
+                self::assertStringContainsString('非空、非布尔标量', $exception->getMessage());
+            }
+        }
+    }
+
     public function testConflictingQueryAndBodyTokensFailClosed(): void
     {
         SaToken::getConfig()->setIsReadBody(true);
