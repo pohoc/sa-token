@@ -112,6 +112,23 @@ class SaSsoTemplateTest extends TestCase
         (new SaSsoTemplate('intl'))->post('file://localhost/etc/passwd', ['ticket' => 'secret']);
     }
 
+    public function testHttpFailureExceptionRedactsCredentialsAndQuery(): void
+    {
+        try {
+            (new SaSsoTemplate('intl'))->post(
+                'http://user:password@127.0.0.1:1/check?ticket=secret&sign=signature#fragment',
+                ['ticket' => 'secret']
+            );
+            self::fail('Unreachable local endpoint must fail');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('http://127.0.0.1:1/check', $exception->getMessage());
+            self::assertStringNotContainsString('password', $exception->getMessage());
+            self::assertStringNotContainsString('ticket=secret', $exception->getMessage());
+            self::assertStringNotContainsString('signature', $exception->getMessage());
+            self::assertStringNotContainsString('fragment', $exception->getMessage());
+        }
+    }
+
     public function testShortSecretCannotSignOrVerify(): void
     {
         $template = new SaSsoTemplate('intl');

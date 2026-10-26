@@ -33,7 +33,7 @@ class SaSsoTemplate
         $response = $this->doRequest('GET', $url);
         if ($response === false || $response === '') {
             $errorMsg = $this->lastError ?? 'SSO HTTP 请求失败';
-            throw new SaTokenException("SSO HTTP 请求失败：{$url} - {$errorMsg}");
+            throw new SaTokenException('SSO HTTP 请求失败：' . $this->sanitizeUrlForError($url) . " - {$errorMsg}");
         }
 
         return $response;
@@ -46,7 +46,7 @@ class SaSsoTemplate
     {
         $response = $this->doRequest('POST', $url, $data);
         if ($response === false) {
-            throw new SaTokenException("SSO HTTP 请求失败：{$url}" . ($this->lastError ? ' - ' . $this->lastError : ''));
+            throw new SaTokenException('SSO HTTP 请求失败：' . $this->sanitizeUrlForError($url) . ($this->lastError ? ' - ' . $this->lastError : ''));
         }
 
         return $response;
@@ -136,6 +136,28 @@ class SaSsoTemplate
         }
 
         return $this->fileGetContentsRequest($method, $url, $data);
+    }
+
+    /**
+     * Remove URL components that commonly carry tickets, credentials, or
+     * signed parameters before including an endpoint in an exception.
+     */
+    protected function sanitizeUrlForError(string $url): string
+    {
+        $parts = parse_url($url);
+        if (!is_array($parts)) {
+            return '[invalid URL]';
+        }
+
+        $scheme = isset($parts['scheme']) ? $parts['scheme'] . '://' : '';
+        $host = (string) ($parts['host'] ?? '');
+        if (str_contains($host, ':') && !str_starts_with($host, '[')) {
+            $host = '[' . $host . ']';
+        }
+        $port = isset($parts['port']) ? ':' . $parts['port'] : '';
+        $path = (string) ($parts['path'] ?? '');
+
+        return $scheme . $host . $port . $path;
     }
 
     /**
