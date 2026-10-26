@@ -129,6 +129,30 @@ class SaSsoTemplateTest extends TestCase
         }
     }
 
+    public function testStreamFailureExceptionRedactsCredentialsAndQuery(): void
+    {
+        $template = new class () extends SaSsoTemplate {
+            protected function doRequest(string $method, string $url, array $data = []): string|false
+            {
+                return $this->fileGetContentsRequest($method, $url, $data);
+            }
+        };
+
+        try {
+            $template->post(
+                'http://user:password@127.0.0.1:1/check?ticket=secret&sign=signature#fragment',
+                ['ticket' => 'secret']
+            );
+            self::fail('Unreachable local endpoint must fail');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('http://127.0.0.1:1/check', $exception->getMessage());
+            self::assertStringNotContainsString('password', $exception->getMessage());
+            self::assertStringNotContainsString('ticket=secret', $exception->getMessage());
+            self::assertStringNotContainsString('signature', $exception->getMessage());
+            self::assertStringNotContainsString('fragment', $exception->getMessage());
+        }
+    }
+
     public function testShortSecretCannotSignOrVerify(): void
     {
         $template = new SaSsoTemplate('intl');

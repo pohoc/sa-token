@@ -250,7 +250,9 @@ class SaSsoTemplate
         // be rejected without loading their full body into memory.
         $result = @file_get_contents($url, false, stream_context_create($context), 0, self::MAX_RESPONSE_BYTES + 1);
         if ($result === false) {
-            $this->lastError = error_get_last()['message'] ?? 'file_get_contents failed';
+            // PHP's warning may embed the full URL, including query credentials
+            // or tickets. Keep transport details out of exceptions and logs.
+            $this->lastError = 'SSO stream request failed';
         } elseif (strlen($result) > self::MAX_RESPONSE_BYTES) {
             $this->lastError = 'SSO response exceeds the 1 MiB limit';
             return false;
