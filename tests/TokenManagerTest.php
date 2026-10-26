@@ -30,6 +30,20 @@ class SaTokenDaoPausingRefreshWrite extends SaTokenDaoMemory
     }
 }
 
+class SaTokenDaoFailingTokenDelete extends SaTokenDaoMemory
+{
+    public bool $failTokenDelete = false;
+
+    public function compareAndDelete(string $key, string $expectedValue): bool
+    {
+        if ($this->failTokenDelete && str_starts_with($key, TokenManager::TOKEN_PREFIX)) {
+            throw new SaTokenException('simulated token delete failure');
+        }
+
+        return parent::compareAndDelete($key, $expectedValue);
+    }
+}
+
 class TokenManagerTest extends TestCase
 {
     protected TokenManager $manager;
@@ -222,6 +236,31 @@ class TokenManagerTest extends TestCase
 
         $this->manager->deleteToken($token, 10001, 'login');
         $this->assertNull($this->manager->getLoginIdByToken($token));
+    }
+
+    public function testDeleteTokenDoesNotRemoveAccountIndexWhenBearerRevocationFails(): void
+    {
+        $dao = new SaTokenDaoFailingTokenDelete();
+        SaToken::setDao($dao);
+        $manager = new TokenManager();
+        $token = $manager->createTokenValue('user-1', 'login');
+        $manager->saveToken($token, 'user-1', 'login', 'PC', 3600);
+        $dao->failTokenDelete = true;
+
+        try {
+            $manager->deleteToken($token, 'user-1', 'login');
+            self::fail('Expected the simulated bearer revocation failure');
+        } catch (SaTokenException $exception) {
+            self::assertSame('simulated token delete failure', $exception->getMessage());
+        }
+
+        self::assertSame('user-1', $manager->getLoginIdByToken($token));
+        self::assertCount(1, $manager->getTokenListByLoginId('user-1', 'login'));
+
+        $dao->failTokenDelete = false;
+        $manager->deleteToken($token, 'user-1', 'login');
+        self::assertNull($manager->getLoginIdByToken($token));
+        self::assertSame([], $manager->getTokenListByLoginId('user-1', 'login'));
     }
 
     public function testDeleteTokenCannotDeleteAnotherAccountsToken(): void

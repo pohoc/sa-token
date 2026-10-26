@@ -721,6 +721,12 @@ class TokenManager
 
         try {
             $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+            $dao = $this->getDao();
+            $tokenKey = self::TOKEN_PREFIX . $tokenValue;
+            $storedTokenRecord = $dao->get($tokenKey);
+            if ($storedTokenRecord === null) {
+                return;
+            }
             // 只有 token 主记录仍属于指定账号，且账号列表确实登记了该 token，
             // 才允许清理它及其关联状态。否则伪造 loginId/loginType 会造成跨账号注销。
             if ($this->getLoginIdByToken($tokenValue) !== $loginIdStr) {
@@ -742,8 +748,16 @@ class TokenManager
                 $this->advanceStatelessTokenGenerationLocked($loginIdStr, $loginType);
             }
 
+            // The bearer record is the authoritative login state. Revoke it
+            // before changing the account index, so a storage failure cannot
+            // leave a valid token stranded outside the index and impossible to
+            // retry. Keep the token-value lock through cleanup to prevent reuse.
+            if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface
+                || !$dao->compareAndDelete($tokenKey, $storedTokenRecord)) {
+                throw new SaTokenException('Token 吊销失败，请重试');
+            }
+
             if ($expectedList !== null) {
-                $dao = $this->getDao();
                 $timeout = $dao->getTimeout($loginIdKey);
                 $effectiveTimeout = ($timeout === -1) ? null : max(1, $timeout);
                 $newList = $newTokens === [] ? null : $this->encryptValue(SaFoxUtil::toJson($newTokens));
@@ -754,8 +768,6 @@ class TokenManager
             }
 
             $this->clearTokenBoundState($tokenValue, $loginType);
-            // token 主键最后删除：NX 签发方在这之前无法重用同一 bearer 值。
-            $this->getDao()->delete(self::TOKEN_PREFIX . $tokenValue);
         } finally {
             $this->releaseLock($tokenLockKey);
         }
