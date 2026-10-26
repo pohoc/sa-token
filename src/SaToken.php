@@ -73,6 +73,8 @@ class SaToken
 
     protected static ?SaSign $sign = null;
 
+    protected static ?string $signConfigFingerprint = null;
+
     protected static ?Middleware\SaGlobalFilter $globalFilter = null;
 
     /**
@@ -241,6 +243,7 @@ class SaToken
         }
 
         self::$sign = null;
+        self::$signConfigFingerprint = null;
     }
 
     /**
@@ -343,13 +346,19 @@ class SaToken
 
     public static function getSign(): SaSign
     {
-        if (self::$sign === null) {
-            $config = self::getConfig();
+        $config = self::getConfig();
+        $fingerprint = hash('sha256', serialize([
+            $config->getSignKey(),
+            $config->getSignTimestampGap(),
+            $config->getSignAlg(),
+        ]));
+        if (self::$sign === null || self::$signConfigFingerprint !== $fingerprint) {
             self::$sign = new SaSign([
                 'key'          => $config->getSignKey(),
                 'timestampGap' => $config->getSignTimestampGap(),
                 'signAlg'      => $config->getSignAlg(),
             ]);
+            self::$signConfigFingerprint = $fingerprint;
         }
         return self::$sign;
     }
