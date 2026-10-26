@@ -319,7 +319,10 @@ StpUtil::closeSafe('payment');
 
 ### 9. 身份切换
 
+`switchTo()` 会让当前 Token 后续读取的登录 ID、角色和权限切换为目标账号。它不会判断调用者是否有权模拟该账号；必须先在应用层检查专用管理权限，并确认目标账号处于允许范围内。不要将未经授权的用户输入直接传给 `switchTo()`。
+
 ```php
+StpUtil::checkPermission('user:impersonate');
 StpUtil::switchTo(20002);
 $isSwitch = StpUtil::isSwitch();
 StpUtil::endSwitch();
