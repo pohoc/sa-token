@@ -208,6 +208,64 @@ class SecurityRegressionTest extends TestCase
         $this->assertLessThanOrEqual($originalTimeout, $adminLogic->getTokenTimeout());
     }
 
+    public function testStaleRenewalCannotExtendTokenReissuedToAnotherAccount(): void
+    {
+        $token = 'reusable-renewal-token-value';
+        $manager = new TokenManager();
+        $manager->saveToken($token, 'old-owner', 'login', 'PC', 300);
+
+        $logic = new class ('login', $manager) extends StpLogic {
+            public bool $pauseAfterIdentityLookup = true;
+
+            public function getLoginIdByToken(string $tokenValue): ?string
+            {
+                $loginId = parent::getLoginIdByToken($tokenValue);
+                if ($this->pauseAfterIdentityLookup && $loginId !== null) {
+                    $this->pauseAfterIdentityLookup = false;
+                    \Fiber::suspend();
+                }
+                return $loginId;
+            }
+        };
+
+        $fiber = new \Fiber(function () use ($logic, $token): void {
+            SaTokenContext::setTokenOverride('login', $token);
+            try {
+                $logic->renewTimeout(7200);
+            } finally {
+                SaTokenContext::setTokenOverride('login', null);
+            }
+        });
+
+        $fiber->start();
+        $this->assertTrue($fiber->isSuspended());
+
+        $manager->deleteToken($token, 'old-owner', 'login');
+        $manager->saveToken($token, 'new-owner', 'login', 'PC', 300);
+        $newOwnerTimeout = $manager->getTokenTimeout($token);
+
+        $fiber->resume();
+
+        $this->assertTrue($fiber->isTerminated());
+        $this->assertSame('new-owner', $manager->getLoginIdByToken($token));
+        $this->assertLessThanOrEqual($newOwnerTimeout, $manager->getTokenTimeout($token));
+    }
+
+    public function testRenewalExtendsLoginIdIndexWithTokenTimeout(): void
+    {
+        $manager = new TokenManager();
+        $token = $manager->createTokenValue('renew-index-owner', 'login');
+        $manager->saveToken($token, 'renew-index-owner', 'login', 'PC', 300);
+        $this->actAsToken($token);
+
+        (new StpLogic('login', $manager))->renewTimeout(7200);
+
+        $this->assertGreaterThanOrEqual(
+            $manager->getTokenTimeout($token),
+            SaToken::getDao()->getTimeout(TokenManager::buildLoginIdKey('login', 'renew-index-owner'))
+        );
+    }
+
     public function testStatelessLoginCannotIssueJwtAfterAccountLogoutWinsExpiredLock(): void
     {
         $loginId = 'stateless-lock-expiry-user';

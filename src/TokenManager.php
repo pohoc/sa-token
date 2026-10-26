@@ -629,6 +629,52 @@ class TokenManager
         $this->getDao()->expire(self::TOKEN_PREFIX . $tokenValue, $timeout);
     }
 
+    /** Renew only while the credential is still owned by the expected login type and account. */
+    public function renewTimeoutIfOwnedByLoginType(
+        string $tokenValue,
+        int $timeout,
+        string $loginType,
+        string $expectedLoginId
+    ): bool {
+        SaTokenTimeout::validate($timeout);
+
+        $accountLockKey = 'login:' . $loginType . ':' . hash('sha256', $expectedLoginId);
+        if (!$this->acquireLock($accountLockKey, 30)) {
+            throw new SaTokenException('同账号会话正在处理中，请稍后重试');
+        }
+
+        try {
+            $tokenLockKey = $this->tokenValueLockKey($tokenValue);
+            if (!$this->acquireLock($tokenLockKey, 30)) {
+                throw new SaTokenException('Token 正在签发或注销，请稍后重试');
+            }
+
+            try {
+                if ($this->getLoginIdByToken($tokenValue) !== $expectedLoginId) {
+                    return false;
+                }
+
+                $accountTokens = $this->getTokenListByLoginId($expectedLoginId, $loginType);
+                if (!in_array($tokenValue, array_column($accountTokens, 'tokenValue'), true)) {
+                    return false;
+                }
+
+                $this->getDao()->expire(self::TOKEN_PREFIX . $tokenValue, $timeout);
+                if ($this->getTokenTimeout($tokenValue) === -2) {
+                    return false;
+                }
+
+                $this->extendLoginIdListTimeout($expectedLoginId, $loginType, $timeout);
+                $this->updateLastActiveToNow($tokenValue);
+                return true;
+            } finally {
+                $this->releaseLock($tokenLockKey);
+            }
+        } finally {
+            $this->releaseLock($accountLockKey);
+        }
+    }
+
     public function isTokenValid(string $tokenValue): bool
     {
         if (SaFoxUtil::isEmpty($tokenValue)) {

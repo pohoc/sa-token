@@ -779,12 +779,17 @@ class StpLogic
             return;
         }
 
-        if ($this->getLoginIdByToken($tokenValue) === null) {
+        $loginId = $this->getLoginIdByToken($tokenValue);
+        if ($loginId === null) {
             return;
         }
 
-        $this->tokenManager->renewTimeout($tokenValue, $timeout);
-        $this->tokenManager->updateLastActiveToNow($tokenValue);
+        $this->tokenManager->renewTimeoutIfOwnedByLoginType(
+            $tokenValue,
+            $timeout,
+            $this->loginType,
+            $loginId
+        );
     }
 
     /**
