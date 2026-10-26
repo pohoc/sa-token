@@ -34,45 +34,45 @@ class SaRpcInterceptor
 
     public function handleIncoming(): void
     {
-        if (!SaRpcContext::isRpcRequest()) {
-            throw new SaTokenException('RPC 请求缺少认证信息');
-        }
-
-        if ($this->validateToken) {
-            SaRpcContext::extractAndValidate($this->loginType);
-        }
-
-        if ($this->autoLogin) {
-            SaTokenContext::setTokenOverride($this->loginType, null);
-            $tokenValue = SaRpcContext::getForwardedToken();
-            $stpLogic = SaToken::getStpLogic($this->loginType);
-            $loginId = $tokenValue !== null ? $stpLogic->getLoginIdByToken($tokenValue) : null;
-            if ($loginId === null || $tokenValue === null) {
-                // Keep a rejected RPC credential from falling through to a
-                // different native token on the same request if the exception
-                // is intercepted by application middleware.
-                SaTokenContext::setTokenOverride($this->loginType, '');
-                throw new SaTokenException('RPC Token 无效');
+        try {
+            if (!SaRpcContext::isRpcRequest()) {
+                throw new SaTokenException('RPC 请求缺少认证信息');
             }
 
-            if (SaTokenContext::hasMultipleHeaderValues('X-Sa-Login-Id')
-                || SaTokenContext::hasMultipleHeaderValues('X-Sa-Login-Type')) {
-                SaTokenContext::setTokenOverride($this->loginType, '');
-                throw new SaTokenException('RPC 认证 Header 存在多个值');
+            if ($this->validateToken) {
+                SaRpcContext::extractAndValidate($this->loginType);
             }
 
-            $forwardedLoginId = SaRpcContext::getForwardedLoginId();
-            $forwardedLoginType = SaRpcContext::getForwardedLoginType();
-            if (($forwardedLoginId !== null && $forwardedLoginId !== (string) $loginId)
-                || ($forwardedLoginType !== null && $forwardedLoginType !== $this->loginType)) {
-                SaTokenContext::setTokenOverride($this->loginType, '');
-                throw new SaTokenException('RPC Token 与转发身份信息不匹配');
-            }
+            if ($this->autoLogin) {
+                $tokenValue = SaRpcContext::getForwardedToken();
+                $stpLogic = SaToken::getStpLogic($this->loginType);
+                $loginId = $tokenValue !== null ? $stpLogic->getLoginIdByToken($tokenValue) : null;
+                if ($loginId === null || $tokenValue === null) {
+                    throw new SaTokenException('RPC Token 无效');
+                }
 
-            // Bind the validated upstream credential to this request's local
-            // authentication API without issuing another token or trusting a
-            // conflicting native satoken header.
-            SaTokenContext::setTokenOverride($this->loginType, $tokenValue);
+                if (SaTokenContext::hasMultipleHeaderValues('X-Sa-Login-Id')
+                    || SaTokenContext::hasMultipleHeaderValues('X-Sa-Login-Type')) {
+                    throw new SaTokenException('RPC 认证 Header 存在多个值');
+                }
+
+                $forwardedLoginId = SaRpcContext::getForwardedLoginId();
+                $forwardedLoginType = SaRpcContext::getForwardedLoginType();
+                if (($forwardedLoginId !== null && $forwardedLoginId !== (string) $loginId)
+                    || ($forwardedLoginType !== null && $forwardedLoginType !== $this->loginType)) {
+                    throw new SaTokenException('RPC Token 与转发身份信息不匹配');
+                }
+
+                // Bind the validated upstream credential to this request's local
+                // authentication API without issuing another token or trusting a
+                // conflicting native satoken header.
+                SaTokenContext::setTokenOverride($this->loginType, $tokenValue);
+            }
+        } catch (\Throwable $exception) {
+            // If application middleware catches the RPC failure, a native
+            // bearer token on the same request must not become a fallback identity.
+            SaTokenContext::setTokenOverride($this->loginType, '');
+            throw $exception;
         }
     }
 

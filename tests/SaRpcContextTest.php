@@ -303,6 +303,22 @@ class SaRpcContextTest extends TestCase
         $this->assertTrue(true);
     }
 
+    public function testInvalidRpcTokenCannotFallBackToAnUnrelatedBearerTokenWhenExceptionIsCaught(): void
+    {
+        $bearerToken = StpUtil::login('local-bearer-account')->getAccessToken();
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token' => 'invalid-rpc-token',
+            'satoken' => $bearerToken,
+        ]));
+
+        try {
+            (new SaRpcInterceptor())->handleIncoming();
+            self::fail('无效 RPC Token 必须拒绝认证');
+        } catch (SaTokenException) {
+            self::assertNull(StpUtil::getLoginId(), '捕获 RPC 校验异常后不得回退到本地 bearer token');
+        }
+    }
+
     public function testRpcInterceptorEnforcesConfiguredLoginType(): void
     {
         $token = SaToken::getStpLogic('user')->login(10004)->getAccessToken();
