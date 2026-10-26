@@ -198,4 +198,14 @@ class SaSignTest extends TestCase
 
         $this->assertFalse($this->sign->verifySign($params));
     }
+
+    public function testVerifySignRejectsTooManyParameters(): void
+    {
+        $params = $this->sign->signParams(['operation' => 'transfer']);
+        for ($index = 0; $index < 128; $index++) {
+            $params['field' . $index] = 'x';
+        }
+
+        $this->assertFalse($this->sign->verifySign($params));
+    }
 }

@@ -20,6 +20,8 @@ class SaSign
 
     private const MAX_NONCE_BYTES = 256;
 
+    private const MAX_SIGNED_PARAMS = 128;
+
     protected string $key = '';
 
     protected int $timestampGap = 600;
@@ -86,6 +88,10 @@ class SaSign
      */
     public function verifySign(array $params, ?string $method = null, ?string $path = null): bool
     {
+        if (count($params) > self::MAX_SIGNED_PARAMS) {
+            return false;
+        }
+
         foreach ($params as $value) {
             if ((!is_string($value) && !is_int($value)) || strlen((string) $value) > self::MAX_SIGNED_VALUE_BYTES) {
                 return false;
