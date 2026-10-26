@@ -442,6 +442,36 @@ class SaLoginDeviceManagerTest extends TestCase
         self::assertSame($loginId, $this->logic->getLoginIdByToken($secondToken));
     }
 
+    public function testStatelessLoginRegistersDevicesForExceptTokenKickout(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenName'        => 'satoken',
+            'timeout'          => 86400,
+            'activityTimeout'  => -1,
+            'isReadHeader'     => false,
+            'isReadCookie'     => false,
+            'isWriteCookie'    => false,
+            'isWriteHeader'    => false,
+            'deviceManagement' => true,
+            'jwtStateless'     => true,
+            'jwtSecretKey'     => 'test-stateless-device-secret-32-bytes-long',
+        ]));
+
+        $loginId = 'stateless-device-auto-registration';
+        $firstToken = $this->logic->loginStateless($loginId, (new SaLoginParameter())->setDevice(
+            new SaLoginDevice(['deviceType' => 'pc', 'deviceName' => 'first workstation'])
+        ));
+        $exceptToken = $this->logic->loginStateless($loginId, (new SaLoginParameter())->setDevice(
+            new SaLoginDevice(['deviceType' => 'mobile', 'deviceName' => 'current phone'])
+        ));
+
+        self::assertCount(2, $this->logic->getDeviceList($loginId));
+        self::assertSame(1, $this->logic->kickoutAllDevices($loginId, $exceptToken));
+        self::assertNull($this->logic->getLoginIdByToken($firstToken));
+        self::assertSame($loginId, $this->logic->getLoginIdByToken($exceptToken));
+        self::assertCount(1, $this->logic->getDeviceList($loginId));
+    }
+
     public function testStatelessKickoutAllDevicesRemovesDeviceRecords(): void
     {
         SaToken::setConfig(new SaTokenConfig([
@@ -459,12 +489,8 @@ class SaLoginDeviceManagerTest extends TestCase
 
         $loginId = 'stateless-device-cleanup-account';
         $token = $this->logic->loginStateless($loginId);
-        $device = new SaLoginDevice([
-            'deviceType' => 'pc',
-            'deviceName' => 'Old workstation',
-        ]);
-        SaLoginDeviceManager::registerDevice($loginId, 'login', $device, $token, $this->logic);
 
+        self::assertCount(1, $this->logic->getDeviceList($loginId));
         self::assertSame(1, $this->logic->kickoutAllDevices($loginId));
         self::assertNull($this->logic->getLoginIdByToken($token));
         self::assertSame([], $this->logic->getDeviceList($loginId));

@@ -305,6 +305,9 @@ class StpLogic
                 $this->tokenManager->saveFingerprint($tokenValue, $fingerprint, $timeout);
             }
             $this->tokenManager->updateLastActiveToNow($tokenValue);
+            if ($config->isDeviceManagement()) {
+                $this->registerLoginDevice($loginId, $parameter->getDeviceType(), $parameter, $tokenValue);
+            }
             $this->recordLoginIpIfEnabled($loginId, $config);
 
             if ($parameter->shouldWriteResponseCredentials()) {
