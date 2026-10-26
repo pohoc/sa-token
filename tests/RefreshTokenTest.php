@@ -748,6 +748,27 @@ class RefreshTokenTest extends TestCase
         $this->assertFalse(StpUtil::isRefreshTokenValid($refreshToken));
     }
 
+    public function testStatelessRefreshTokenCanBeLookedUpAndRevokedByAccessToken(): void
+    {
+        SaToken::reset();
+        SaToken::init([
+            'timeout'              => 7200,
+            'activityTimeout'      => -1,
+            'jwtStateless'         => true,
+            'jwtSecretKey'         => 'test-refresh-stateless-jwt-secret-32-bytes',
+            'refreshToken'         => true,
+            'refreshTokenTimeout'  => 2592000,
+            'refreshTokenRotation' => true,
+        ]);
+        $logic = new StpLogic('login');
+        $accessToken = $logic->loginStateless('stateless-refresh-revoke-by-access');
+        $refreshToken = $logic->createRefreshToken($accessToken);
+
+        self::assertSame($refreshToken, $logic->getRefreshTokenByAccessToken($accessToken));
+        self::assertTrue($logic->revokeRefreshTokenByAccessToken($accessToken));
+        self::assertFalse($logic->isRefreshTokenValid($refreshToken));
+    }
+
     public function testGetRefreshTokenByAccessToken(): void
     {
         $loginResult = StpUtil::login(10008);

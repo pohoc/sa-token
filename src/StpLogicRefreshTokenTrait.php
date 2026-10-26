@@ -360,7 +360,7 @@ trait StpLogicRefreshTokenTrait
 
     public function revokeRefreshTokenByAccessToken(string $accessToken): bool
     {
-        $loginId = $this->tokenManager->getLoginIdByToken($accessToken);
+        $loginId = $this->getLoginIdByToken($accessToken);
         if ($loginId === null) {
             return false;
         }
@@ -370,7 +370,7 @@ trait StpLogicRefreshTokenTrait
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
         try {
-            if ($this->tokenManager->getLoginIdByToken($accessToken) !== (string) $loginId) {
+            if ($this->getLoginIdByToken($accessToken) !== (string) $loginId) {
                 return false;
             }
             $refreshToken = $this->tokenManager->getRefreshTokenByAccessToken($loginId, $this->loginType, $accessToken);
@@ -392,7 +392,7 @@ trait StpLogicRefreshTokenTrait
 
     public function getRefreshTokenByAccessToken(string $accessToken): ?string
     {
-        $loginId = $this->tokenManager->getLoginIdByToken($accessToken);
+        $loginId = $this->getLoginIdByToken($accessToken);
         if ($loginId === null) {
             return null;
         }
