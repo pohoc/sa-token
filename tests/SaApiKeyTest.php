@@ -183,7 +183,6 @@ class SaApiKeyTest extends TestCase
             ['name' => 'satoken', 'value' => self::readReusableToken('api-key-account')],
             $contextHeaders[0] ?? null
         );
-
     }
 
     private static function readReusableToken(string $loginId): string
