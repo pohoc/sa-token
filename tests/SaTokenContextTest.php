@@ -148,6 +148,56 @@ class SaTokenContextTest extends TestCase
         $this->assertSame('203.0.113.88', SaTokenContext::getClientIp());
     }
 
+    public function testTrustedProxyDoesNotFallBackToSharedProxyIpForMalformedForwardedChain(): void
+    {
+        SaTokenContext::setTrustedProxies(['198.51.100.1']);
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '198.51.100.1']);
+        $request->method('getHeader')->willReturnCallback(static function (string $name): array {
+            return strcasecmp($name, 'X-Forwarded-For') === 0 ? ['192.0.2.25, invalid'] : [];
+        });
+        SaTokenContext::setRequest($request);
+
+        $this->assertNull(SaTokenContext::getClientIp());
+    }
+
+    public function testTrustedProxyDoesNotUseProxyIpWhenForwardedChainHasNoClient(): void
+    {
+        SaTokenContext::setTrustedProxies(['198.51.100.1', '198.51.100.2']);
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '198.51.100.1']);
+        $request->method('getHeader')->willReturnCallback(static function (string $name): array {
+            return strcasecmp($name, 'X-Forwarded-For') === 0 ? ['198.51.100.2'] : [];
+        });
+        SaTokenContext::setRequest($request);
+
+        $this->assertNull(SaTokenContext::getClientIp());
+    }
+
+    public function testTrustedProxyRejectsMalformedRealIpInsteadOfSharingProxyBucket(): void
+    {
+        SaTokenContext::setTrustedProxies(['198.51.100.1']);
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '198.51.100.1']);
+        $request->method('getHeader')->willReturnCallback(static function (string $name): array {
+            return strcasecmp($name, 'X-Real-IP') === 0 ? ['not-an-ip'] : [];
+        });
+        SaTokenContext::setRequest($request);
+
+        $this->assertNull(SaTokenContext::getClientIp());
+    }
+
+    public function testTrustedProxyWithoutForwardedClientAddressReturnsUnknown(): void
+    {
+        SaTokenContext::setTrustedProxies(['198.51.100.1']);
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '198.51.100.1']);
+        $request->method('getHeader')->willReturn([]);
+        SaTokenContext::setRequest($request);
+
+        $this->assertNull(SaTokenContext::getClientIp());
+    }
+
     public function testSetAndGetResponse(): void
     {
         $response = new \stdClass();

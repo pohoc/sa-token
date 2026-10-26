@@ -276,23 +276,30 @@ class SaTokenContext
             for ($i = count($ips) - 1; $i >= 0; $i--) {
                 $ip = $ips[$i];
                 if (filter_var($ip, FILTER_VALIDATE_IP) === false) {
-                    return $remoteAddr;
+                    // Never collapse malformed forwarded chains into the
+                    // trusted proxy's shared address: that would let one
+                    // client exhaust the brute-force bucket for every user
+                    // behind the proxy.
+                    return null;
                 }
                 if (!in_array($ip, self::$trustedProxies, true)) {
                     return $ip;
                 }
             }
-            // 链上全部为可信代理时，XFF 最左值是最初代理写入的、可能被
-            // 伪造的字段；此时唯一可信的是直连地址 REMOTE_ADDR
-            return $remoteAddr;
+            // No client address can be established when every hop is itself
+            // trusted. Returning the proxy address would share lockout state
+            // across all clients behind that proxy.
+            return null;
         }
 
         $realIp = self::getForwardedHeader('X-Real-IP');
-        if ($realIp !== null && filter_var($realIp, FILTER_VALIDATE_IP) !== false) {
-            return $realIp;
+        if ($realIp !== null) {
+            return filter_var($realIp, FILTER_VALIDATE_IP) !== false ? $realIp : null;
         }
 
-        return $remoteAddr;
+        // A trusted proxy without a usable client-address header cannot be
+        // distinguished from every other client behind that proxy.
+        return null;
     }
 
     protected static function getForwardedHeader(string $name): ?string
