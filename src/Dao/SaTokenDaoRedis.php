@@ -394,20 +394,7 @@ LUA;
     {
         $client = $this->saRedis ?? $this->client;
         $pattern = self::escapeGlobPattern($prefix) . '*' . self::escapeGlobPattern($keyword) . '*';
-        $keys = [];
-        $iterator = null;
-        $maxIterations = 100;
-        $iterations = 0;
-
-        while (($scanResult = $client->scan($iterator, $pattern, 100)) !== false) {
-            $keys = array_merge($keys, $scanResult);
-            $iterations++;
-            if ($iterations >= $maxIterations || $iterator === 0) {
-                break;
-            }
-        }
-
-        $keys = array_unique($keys);
+        $keys = $this->scanKeys($client, $pattern);
 
         if (empty($keys)) {
             return [];
@@ -437,21 +424,34 @@ LUA;
     {
         $client = $this->saRedis ?? $this->client;
         $pattern = self::escapeGlobPattern($prefix) . '*' . self::escapeGlobPattern($keyword) . '*';
+        $keys = $this->scanKeys($client, $pattern);
+        return array_slice($keys, $start, $size);
+    }
+
+    /** @return array<string> */
+    protected function scanKeys(\Redis $client, string $pattern): array
+    {
         $keys = [];
         $iterator = null;
-        $maxIterations = 100;
-        $iterations = 0;
 
-        while (($scanResult = $client->scan($iterator, $pattern, 100)) !== false) {
-            $keys = array_merge($keys, $scanResult);
-            $iterations++;
-            if ($iterations >= $maxIterations || $iterator === 0) {
-                break;
+        do {
+            $previousIterator = $iterator;
+            $scanResult = $client->scan($iterator, $pattern, 100);
+            if ($scanResult === false) {
+                // SCAN may return an empty batch while its cursor is still moving.
+                // A false result without cursor progress signals a failed scan;
+                // do not silently return a partial result or loop forever.
+                if ($iterator === $previousIterator) {
+                    throw new SaTokenException('Redis 键扫描失败');
+                }
+            } else {
+                foreach ($scanResult as $key) {
+                    $keys[] = $key;
+                }
             }
-        }
+        } while ($iterator !== 0);
 
-        $keys = array_values(array_unique($keys));
-        return array_slice($keys, $start, $size);
+        return array_values(array_unique($keys));
     }
 
     /** Escape Redis glob metacharacters so DAO prefixes retain literal semantics. */

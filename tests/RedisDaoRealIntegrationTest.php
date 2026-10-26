@@ -942,6 +942,36 @@ class RedisDaoRealIntegrationTest extends TestCase
         self::assertSame(['matching-value'], $this->dao->search($literalPrefix, '', 0, 10));
     }
 
+    public function testSearchScansPastThePreviousIterationLimitAgainstRealRedis(): void
+    {
+        $prefix = $this->prefix . 'bulk:';
+        $pipeline = $this->redis->pipeline();
+        for ($index = 0; $index < 25_000; $index++) {
+            $pipeline->set($prefix . 'key:' . $index, 'bulk-value');
+            if (($index + 1) % 500 === 0) {
+                $pipeline->exec();
+                $pipeline = $this->redis->pipeline();
+            }
+        }
+        $pipeline->exec();
+
+        // Capture exactly the result set the former 100-iteration limit could
+        // inspect, then request the next page beyond that boundary.
+        $iterator = null;
+        $limitedKeys = [];
+        for ($iteration = 0; $iteration < 100 && $iterator !== 0; $iteration++) {
+            $scanResult = $this->redis->scan($iterator, $prefix . '*', 100);
+            if (is_array($scanResult)) {
+                array_push($limitedKeys, ...$scanResult);
+            }
+        }
+        $offset = count(array_unique($limitedKeys));
+
+        self::assertLessThan(25_000, $offset);
+        self::assertCount(10, $this->dao->searchKeys($prefix, '', $offset, 10));
+        self::assertSame(array_fill(0, 10, 'bulk-value'), $this->dao->search($prefix, '', $offset, 10));
+    }
+
     public function testLoginConcurrentLockAgainstRealRedis(): void
     {
         // 全链路：真实 Redis 上登录锁 SET NX + 释放 Lua 脚本
