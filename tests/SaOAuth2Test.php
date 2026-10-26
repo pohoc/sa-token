@@ -705,6 +705,30 @@ class SaOAuth2Test extends TestCase
         self::assertNotSame('', $rotated->getAccessToken());
     }
 
+    public function testConsumedRefreshMarkerRetainsOriginalLifetimeAfterPolicyShrink(): void
+    {
+        $originalTimeout = 30 * 86400;
+        $this->config->setRefreshTokenTimeout($originalTimeout);
+        $code = $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback');
+        $initial = $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
+        $oldRefreshToken = (string) $initial->getRefreshToken();
+        $getRefreshData = new \ReflectionMethod($this->handle, 'getRefreshTokenData');
+        $initialData = $getRefreshData->invoke($this->handle, $oldRefreshToken);
+        self::assertInstanceOf(SaOAuth2RefreshToken::class, $initialData);
+
+        // Existing tokens keep the expiry embedded at issuance when operators
+        // shorten the policy for newly issued refresh tokens.
+        $this->config->setRefreshTokenTimeout(86400);
+        $firstRotated = $this->handle->refreshToken($oldRefreshToken, 'test-client', $this->clientSecret);
+        $this->handle->refreshToken((string) $firstRotated->getRefreshToken(), 'test-client', $this->clientSecret);
+
+        $consumedKey = 'oauth2:rt:consumed:' . hash('sha256', $oldRefreshToken);
+        $familyMarkerKey = 'oauth2:family:' . hash('sha256', $initialData->getFamilyId());
+        $expectedRemaining = $initialData->getCreateTime() + $initialData->getExpiresIn() - time();
+        self::assertGreaterThanOrEqual($expectedRemaining, SaToken::getDao()->getTimeout($consumedKey));
+        self::assertGreaterThanOrEqual($expectedRemaining, SaToken::getDao()->getTimeout($familyMarkerKey));
+    }
+
     public function testRefreshTokenLeaseExpiryCannotResurrectARevokedFamily(): void
     {
         $dao = new class () extends SaTokenDaoMemory {

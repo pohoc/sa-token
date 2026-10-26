@@ -9,6 +9,10 @@ use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoRedis;
 use SaToken\Data\SaLoginDevice;
 use SaToken\Exception\SaTokenException;
+use SaToken\OAuth2\Data\SaOAuth2Client;
+use SaToken\OAuth2\Data\SaOAuth2RefreshToken;
+use SaToken\OAuth2\SaOAuth2Config;
+use SaToken\OAuth2\SaOAuth2Handle;
 use SaToken\SaLoginParameter;
 use SaToken\SaToken;
 use SaToken\Security\SaLoginDeviceManager;
@@ -724,6 +728,71 @@ class RedisDaoRealIntegrationTest extends TestCase
             }
             SaToken::reset();
             SaSensitiveVerify::reset();
+        }
+    }
+
+    public function testOAuth2ReplayFamilyTtlSurvivesRefreshPolicyShrinkAgainstRealRedis(): void
+    {
+        SaToken::reset();
+        SaToken::setDao($this->dao);
+        $clientId = 'redis-oauth-' . bin2hex(random_bytes(8));
+        $clientSecret = bin2hex(random_bytes(24));
+        $config = new SaOAuth2Config([
+            'grantTypes' => ['authorization_code'],
+            'accessTokenTimeout' => 7200,
+            'refreshTokenTimeout' => 30 * 86400,
+            'isNewRefreshToken' => true,
+        ]);
+        $handle = new SaOAuth2Handle($config);
+        $handle->registerClient(new SaOAuth2Client([
+            'clientId' => $clientId,
+            'clientSecret' => $clientSecret,
+            'redirectUris' => ['https://example.com/callback'],
+            'grantTypes' => ['authorization_code', 'refresh_token'],
+        ]));
+
+        $refreshTokens = [];
+        $accessTokens = [];
+        $familyId = '';
+        try {
+            $code = $handle->generateAuthorizationCode($clientId, 'redis-oauth-user', 'https://example.com/callback');
+            $initial = $handle->exchangeTokenByCode($code->getCode(), $clientId, $clientSecret, 'https://example.com/callback');
+            $refreshTokens[] = (string) $initial->getRefreshToken();
+            $accessTokens[] = $initial->getAccessToken();
+
+            $getRefreshData = new \ReflectionMethod($handle, 'getRefreshTokenData');
+            $initialData = $getRefreshData->invoke($handle, $refreshTokens[0]);
+            self::assertInstanceOf(SaOAuth2RefreshToken::class, $initialData);
+            $familyId = $initialData->getFamilyId();
+
+            $config->setRefreshTokenTimeout(86400);
+            $first = $handle->refreshToken($refreshTokens[0], $clientId, $clientSecret);
+            $refreshTokens[] = (string) $first->getRefreshToken();
+            $accessTokens[] = $first->getAccessToken();
+            $handle->refreshToken($refreshTokens[1], $clientId, $clientSecret);
+
+            $expectedRemaining = $initialData->getCreateTime() + $initialData->getExpiresIn() - time();
+            $consumedKey = 'oauth2:rt:consumed:' . hash('sha256', $refreshTokens[0]);
+            $familyKey = 'oauth2:family:' . hash('sha256', $familyId);
+            self::assertGreaterThanOrEqual($expectedRemaining, $this->dao->getTimeout($consumedKey));
+            self::assertGreaterThanOrEqual($expectedRemaining, $this->dao->getTimeout($familyKey));
+        } finally {
+            foreach ($refreshTokens as $refreshToken) {
+                $this->dao->delete('oauth2:rt:' . $refreshToken);
+                $this->dao->delete('oauth2:rt:consumed:' . hash('sha256', $refreshToken));
+                $this->dao->delete('oauth2:refresh:token:' . hash('sha256', $refreshToken));
+            }
+            foreach ($accessTokens as $accessToken) {
+                $this->dao->delete('oauth2:at:' . $accessToken);
+                $this->dao->delete('oauth2:at:family:' . hash('sha256', $accessToken));
+            }
+            if ($familyId !== '') {
+                $familyHash = hash('sha256', $familyId);
+                $this->dao->delete('oauth2:family:' . $familyHash);
+                $this->dao->delete('oauth2:refresh:family:' . $familyHash);
+            }
+            $this->dao->delete('oauth2:client:' . $clientId);
+            SaToken::reset();
         }
     }
 

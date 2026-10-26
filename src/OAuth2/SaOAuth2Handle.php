@@ -4,7 +4,8 @@ declare(strict_types=1);
 
 namespace SaToken\OAuth2;
 
-use SaToken\Dao\SaTokenDaoCompareAndSetInterface;
+use SaToken\Dao\SaTokenDaoCompareAndExpireInterface;
+use SaToken\Dao\SaTokenDaoCompareAndUpdateInterface;
 use SaToken\Dao\SaTokenDaoInterface;
 use SaToken\Exception\SaTokenException;
 use SaToken\OAuth2\Data\SaOAuth2AccessToken;
@@ -349,6 +350,7 @@ class SaOAuth2Handle
                 if (!$this->isRefreshTokenRecordValid($preData)) {
                     throw new SaTokenException('刷新令牌数据无效或已过期');
                 }
+                $markerTimeout = $this->extendTokenFamilyMarkerTimeout($markerTimeout, $preData);
                 $preClientId = is_string($preData['clientId'] ?? null) ? $preData['clientId'] : '';
                 if ($preClientId !== '' && $preClientId !== $clientId) {
                     throw new SaTokenException('客户端 ID 不匹配');
@@ -569,7 +571,7 @@ class SaOAuth2Handle
         }
     }
 
-    protected function updateTokenFamilyCurrentDescendants(string $familyMarkerKey, string $accessToken, string $childRefreshToken, int $markerTimeout): void
+    protected function updateTokenFamilyCurrentDescendants(string $familyMarkerKey, string $accessToken, string $childRefreshToken, ?int $markerTimeout): void
     {
         $markerJson = $this->getDao()->get($familyMarkerKey);
         if ($markerJson === null) {
@@ -604,8 +606,10 @@ class SaOAuth2Handle
             'revoked'   => false,
         ]));
         $dao = $this->getDao();
-        if (!$dao instanceof SaTokenDaoCompareAndSetInterface
-            || !$dao->compareAndSet($familyMarkerKey, $markerJson, $newMarkerJson, $markerTimeout)) {
+        if (!$dao instanceof SaTokenDaoCompareAndUpdateInterface
+            || !$dao instanceof SaTokenDaoCompareAndExpireInterface
+            || !$dao->compareAndUpdate($familyMarkerKey, $markerJson, $newMarkerJson)
+            || !$dao->compareAndExpire($familyMarkerKey, $newMarkerJson, $markerTimeout ?? -1)) {
             // Never overwrite a marker changed by a newer owner after our lock
             // lease expired. The issued credentials are not safe to keep.
             $this->revokeAccessTokenUnlocked($accessToken);
@@ -630,7 +634,7 @@ class SaOAuth2Handle
     /** @param array<mixed> $tokens
      * @param array<mixed> $childRefreshTokens
      */
-    protected function getTokenFamilyMarkerTimeout(array $tokens, array $childRefreshTokens): int
+    protected function getTokenFamilyMarkerTimeout(array $tokens, array $childRefreshTokens): ?int
     {
         $timeout = max(1, $this->config->getAccessTokenTimeout(), $this->config->getRefreshTokenTimeout());
         $now = time();
@@ -645,6 +649,9 @@ class SaOAuth2Handle
                 $createTime = $data['createTime'] ?? null;
                 if (!is_int($expiresIn) || !is_int($createTime)) {
                     continue;
+                }
+                if ($expiresIn === -1) {
+                    return null;
                 }
                 if ($expiresIn > 0 && $createTime > 0 && $createTime <= PHP_INT_MAX - $expiresIn - 60) {
                     $timeout = max($timeout, $createTime + $expiresIn - $now);
@@ -663,6 +670,9 @@ class SaOAuth2Handle
                 if (!is_int($expiresIn) || !is_int($createTime)) {
                     continue;
                 }
+                if ($expiresIn === -1) {
+                    return null;
+                }
                 if ($expiresIn > 0 && $createTime > 0 && $createTime <= PHP_INT_MAX - $expiresIn - 60) {
                     $timeout = max($timeout, $createTime + $expiresIn - $now);
                 }
@@ -670,6 +680,25 @@ class SaOAuth2Handle
         }
 
         return max(1, $timeout);
+    }
+
+    /** @param array<string, mixed> $record */
+    protected function extendTokenFamilyMarkerTimeout(?int $timeout, array $record): ?int
+    {
+        $expiresIn = $record['expiresIn'] ?? null;
+        $createTime = $record['createTime'] ?? null;
+        if ($expiresIn === -1) {
+            return null;
+        }
+        if (!is_int($expiresIn) || !is_int($createTime)
+            || $expiresIn <= 0
+            || $createTime <= 0
+            || $createTime > PHP_INT_MAX - $expiresIn - 60) {
+            return $timeout;
+        }
+
+        $remaining = max(1, $createTime + $expiresIn - time());
+        return $timeout === null ? null : max($timeout, $remaining);
     }
 
     /**
