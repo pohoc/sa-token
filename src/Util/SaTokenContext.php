@@ -323,14 +323,16 @@ class SaTokenContext
     }
 
     /**
-     * 判断 PSR-7 请求是否为指定 Header 提供了多个值。
+     * 判断请求是否为指定 Header 提供了多个或被合并的值。
      * 认证凭据不允许依赖不同代理/框架对重复 Header 的选取顺序。
      */
-    public static function hasMultipleHeaderValues(string $name): bool
+    public static function hasMultipleHeaderValues(string $name, bool $rejectCombinedValues = false): bool
     {
         $request = self::getRequest();
         if ($request instanceof \Psr\Http\Message\ServerRequestInterface) {
-            return count($request->getHeader($name)) > 1;
+            $values = $request->getHeader($name);
+            return count($values) > 1
+                || ($rejectCombinedValues && self::containsCombinedHeaderValue($values));
         }
 
         if (!is_object($request)) {
@@ -353,11 +355,14 @@ class SaTokenContext
 
             if (is_array($values)) {
                 if (array_is_list($values)) {
-                    return count($values) > 1;
+                    return count($values) > 1
+                        || ($rejectCombinedValues && self::containsCombinedHeaderValue($values));
                 }
                 foreach ($values as $headerName => $headerValues) {
                     if (is_string($headerName) && strcasecmp($headerName, $name) === 0) {
-                        return is_array($headerValues) && count($headerValues) > 1;
+                        return !is_array($headerValues)
+                            || count($headerValues) > 1
+                            || ($rejectCombinedValues && self::containsCombinedHeaderValue($headerValues));
                     }
                 }
                 return false;
@@ -368,7 +373,28 @@ class SaTokenContext
 
         if (method_exists($request, 'header')) {
             $values = $request->header($name);
-            return is_array($values) && count($values) > 1;
+            if (is_array($values)) {
+                return count($values) > 1
+                    || ($rejectCombinedValues && self::containsCombinedHeaderValue($values));
+            }
+            return $rejectCombinedValues && is_string($values) && str_contains($values, ',');
+        }
+
+        if (method_exists($request, 'getHeaderLine')) {
+            $value = $request->getHeaderLine($name);
+            return $rejectCombinedValues && is_string($value) && str_contains($value, ',');
+        }
+
+        return false;
+    }
+
+    /** @param array<array-key, mixed> $values */
+    protected static function containsCombinedHeaderValue(array $values): bool
+    {
+        foreach ($values as $value) {
+            if (!is_string($value) || str_contains($value, ',')) {
+                return true;
+            }
         }
 
         return false;

@@ -149,6 +149,27 @@ class StpLogicTest extends TestCase
         self::assertFalse($this->logic->isLogin());
     }
 
+    public function testCombinedHeaderTokensFailClosed(): void
+    {
+        SaToken::getConfig()->setIsReadHeader(true);
+        $firstToken = $this->logic->login('header-user-one')->getAccessToken();
+        $secondToken = $this->logic->login('header-user-two')->getAccessToken();
+        $request = new class ($firstToken . ', ' . $secondToken) {
+            public function __construct(private string $combinedToken)
+            {
+            }
+
+            public function getHeaderLine(string $name): string
+            {
+                return $name === 'satoken' ? $this->combinedToken : '';
+            }
+        };
+        SaTokenContext::setRequest($request);
+
+        self::assertNull($this->logic->getTokenValue());
+        self::assertFalse($this->logic->isLogin());
+    }
+
     public function testDisableWithLevel(): void
     {
         $this->logic->disable(10001, 'comment', 2, 3600);
