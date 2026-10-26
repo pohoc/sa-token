@@ -76,6 +76,36 @@ class SaOAuth2StrategyTest extends TestCase
         $strategy->validateRequest(['client_id' => 'test-client']);
     }
 
+    public function testStrategiesRejectNonStringCredentialParameters(): void
+    {
+        $cases = [
+            [new PasswordStrategy($this->handle), [
+                'client_id' => 'test-client', 'client_secret' => 'valid-secret',
+                'username' => 'alice', 'password' => 'password', 'scope' => ['read'],
+            ]],
+            [new ClientCredentialsStrategy($this->handle), [
+                'client_id' => 'test-client', 'client_secret' => 'valid-secret', 'scope' => ['read'],
+            ]],
+            [new RefreshTokenStrategy($this->handle), [
+                'client_id' => 'test-client', 'client_secret' => 'valid-secret', 'refresh_token' => 'refresh',
+            ]],
+        ];
+
+        foreach ($cases as [$strategy, $params]) {
+            foreach (array_keys($params) as $parameter) {
+                $invalidParams = $params;
+                $invalidParams[$parameter] = ['unexpected'];
+                try {
+                    $strategy->validateRequest($invalidParams);
+                    self::fail("非字符串参数 {$parameter} 必须在策略校验阶段拒绝");
+                } catch (\SaToken\Exception\SaTokenException $exception) {
+                    // Expected: malformed parameters fail as a domain error, not TypeError.
+                    self::assertStringContainsString('必须是字符串', $exception->getMessage());
+                }
+            }
+        }
+    }
+
     public function testStrategyIntegration(): void
     {
         // 测试完整的授权码流程
