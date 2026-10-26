@@ -63,6 +63,22 @@ class SaTokenJwtTest extends TestCase
         $this->jwt->parseToken($alias);
     }
 
+    public function testParseTokenRejectsOversizedInputBeforeDecoding(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('JWT Token 长度无效');
+
+        $this->jwt->parseToken('header.payload.' . str_repeat('x', 65536));
+    }
+
+    public function testCreateTokenRejectsOversizedClaims(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('JWT Token 超过最大允许长度');
+
+        $this->jwt->createToken('user-1', 'login', 3600, ['large_claim' => str_repeat('x', 65536)]);
+    }
+
     public function testCreateTokenRejectsInvalidLoginIdTypes(): void
     {
         foreach ([null, '', false, true, [], new \stdClass()] as $loginId) {

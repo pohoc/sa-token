@@ -12,6 +12,9 @@ use SaToken\Util\SaTokenTimeout;
 
 class SaTokenJwt
 {
+    /** Bound JWT parsing and claim payloads at all authentication entry points. */
+    private const MAX_TOKEN_BYTES = 65536;
+
     protected string $secretKey = '';
 
     protected string $cryptoType = 'intl';
@@ -110,7 +113,12 @@ class SaTokenJwt
             throw new SaTokenException('JWT 签名失败');
         }
 
-        return $signingInput . '.' . $this->base64UrlEncode($signatureBin);
+        $token = $signingInput . '.' . $this->base64UrlEncode($signatureBin);
+        if (strlen($token) > self::MAX_TOKEN_BYTES) {
+            throw new SaTokenException('JWT Token 超过最大允许长度');
+        }
+
+        return $token;
     }
 
     /**
@@ -137,6 +145,10 @@ class SaTokenJwt
      */
     public function parseToken(string $token, bool $allowExpired = false): array
     {
+        if ($token === '' || strlen($token) > self::MAX_TOKEN_BYTES) {
+            throw new SaTokenException('JWT Token 长度无效');
+        }
+
         if ($this->secretKey === '') {
             throw new SaTokenException('JWT 密钥未配置');
         }
