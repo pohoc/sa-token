@@ -244,6 +244,24 @@ class SaAnnotationTestInterfaceController implements SaAnnotationTestSecuredInte
     }
 }
 
+#[SaIgnore]
+class SaAnnotationTestIgnoredInterfaceController implements SaAnnotationTestSecuredInterface
+{
+    public function execute(): string
+    {
+        return 'executed';
+    }
+}
+
+class SaAnnotationTestIgnoredInterfaceMethodController implements SaAnnotationTestSecuredInterface
+{
+    #[SaIgnore]
+    public function execute(): string
+    {
+        return 'executed';
+    }
+}
+
 class SaAnnotationTestProtectedIgnoreInterfaceController extends SaAnnotationTestIgnoredBaseController implements SaAnnotationTestSecuredInterface
 {
     public function execute(): string
@@ -558,6 +576,18 @@ class SaAnnotationTest extends TestCase
     {
         $this->expectException(NotLoginException::class);
         SaAnnotationProcessor::process(SaAnnotationTestInterfaceController::class, 'execute');
+    }
+
+    public function testInterfaceAuthorizationCannotBeDisabledByImplementingClassIgnore(): void
+    {
+        $this->expectException(NotLoginException::class);
+        SaAnnotationProcessor::process(SaAnnotationTestIgnoredInterfaceController::class, 'execute');
+    }
+
+    public function testInterfaceAuthorizationCannotBeDisabledByMethodIgnore(): void
+    {
+        $this->expectException(NotLoginException::class);
+        SaAnnotationProcessor::process(SaAnnotationTestIgnoredInterfaceMethodController::class, 'execute');
     }
 
     public function testInterfaceAuthorizationOverridesInheritedIgnore(): void

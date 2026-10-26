@@ -28,8 +28,10 @@ class SaAnnotationProcessor
         foreach ($targetMethodAttributes as $attr) {
             if ($attr->getName() === SaIgnore::class) {
                 // 当前类直接声明的 method-level ignore 是明确的 opt-out；
-                // 继承来的 ignore 不能抵消子类新增的类级授权要求。
-                if ($targetMethodDeclaration === $reflectionClass->getName() || !$hasMoreSpecificAuthorization) {
+                // 继承来的 ignore 不能抵消子类新增的类级授权要求；接口上的授权
+                // 是实现契约，具体类和方法都不能用 ignore 将其关闭。
+                if ($interfaceAttributes === []
+                    && ($targetMethodDeclaration === $reflectionClass->getName() || !$hasMoreSpecificAuthorization)) {
                     return;
                 }
             }
@@ -51,8 +53,10 @@ class SaAnnotationProcessor
             if ($hasIgnore) {
                 // Concrete class opt-out remains authoritative. An inherited
                 // opt-out cannot cancel a stricter class/method declaration
-                // added by a subclass.
-                if ($c->getName() === $reflectionClass->getName() || !$hasMoreSpecificAuthorization) {
+                // added by a subclass. Interface authorization is a contract
+                // requirement and cannot be disabled by an implementing class.
+                if ($interfaceAttributes === []
+                    && ($c->getName() === $reflectionClass->getName() || !$hasMoreSpecificAuthorization)) {
                     return;
                 }
                 continue;
@@ -78,7 +82,8 @@ class SaAnnotationProcessor
             }
             $seenMethodDeclarations[$declaration] = true;
             $attributes = $reflectedMethod->getAttributes();
-            if ($declaration !== $targetMethodDeclaration
+            if ($interfaceAttributes !== []
+                || $declaration !== $targetMethodDeclaration
                 || ($hasMoreSpecificAuthorization && $declaration !== $reflectionClass->getName())) {
                 $attributes = array_values(array_filter(
                     $attributes,
