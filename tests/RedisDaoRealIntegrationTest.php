@@ -119,6 +119,32 @@ class RedisDaoRealIntegrationTest extends TestCase
         $this->assertFalse($this->dao->exists($key));
     }
 
+    public function testSensitiveOtpGenerationAndVerificationUseRedisCompareAndSet(): void
+    {
+        SaToken::reset();
+        SaToken::getConfig()->setSignKey('redis-sensitive-verify-sign-key-32-bytes');
+        SaToken::setDao($this->dao);
+        SaSensitiveVerify::reset();
+
+        $scene = 'redis-otp-' . bin2hex(random_bytes(6));
+        $loginId = 'redis-otp-user-' . bin2hex(random_bytes(6));
+        $key = SaSensitiveVerify::getKey($scene, $loginId);
+
+        try {
+            $code = SaSensitiveVerify::generateCode($scene, $loginId);
+
+            self::assertTrue(SaSensitiveVerify::verifyCode($scene, $code, $loginId));
+            self::assertFalse(SaSensitiveVerify::verifyCode($scene, $code, $loginId));
+        } finally {
+            $this->dao->delete($key);
+            $this->dao->delete($key . ':att');
+            $this->dao->delete($key . ':verified');
+            $this->dao->delete($key . ':state-lock');
+            SaSensitiveVerify::reset();
+            SaToken::reset();
+        }
+    }
+
     public function testRefreshTokenReplayRevokesRotatedSessionAgainstRealRedis(): void
     {
         SaToken::reset();

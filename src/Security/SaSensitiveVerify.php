@@ -73,10 +73,18 @@ class SaSensitiveVerify
     public static function generateCode(string $scene, mixed $loginId, string $loginType = 'login'): string
     {
         $dao = SaToken::getDao();
+        if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface) {
+            throw new SaTokenException('DAO 必须实现安全比较设置接口才能生成验证码');
+        }
         $key = self::getKey($scene, $loginId, $loginType);
         $lockValue = self::acquireStateLock($key);
 
         try {
+            $currentRecord = $dao->get($key);
+            if ($dao->get($key . ':state-lock') !== $lockValue) {
+                throw new SaTokenException('验证码状态锁已过期，请重试');
+            }
+
             $code = self::generateRandomCode();
             $codeHash = password_hash($code, PASSWORD_DEFAULT);
 
@@ -88,7 +96,15 @@ class SaSensitiveVerify
                 'verified' => false,
             ];
 
-            $dao->set($key, self::encodeSensitiveState($data, $key), self::$validSeconds + 60);
+            $newRecord = self::encodeSensitiveState($data, $key);
+            // A lock is a lease: if a storage write stalls past its TTL, a
+            // later request may already have replaced the OTP. Compare the
+            // snapshot atomically so a resumed stale worker cannot restore
+            // the previous generation over a newer code.
+            if ($dao->get($key . ':state-lock') !== $lockValue
+                || !$dao->compareAndSet($key, $currentRecord, $newRecord, self::$validSeconds + 60)) {
+                throw new SaTokenException('验证码状态已并发更新，请重试');
+            }
             $dao->delete($key . ':att');
             $dao->delete($key . ':verified');
 

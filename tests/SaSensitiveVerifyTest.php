@@ -21,6 +21,8 @@ class SensitiveVerifyInterleavingDao extends SaTokenDaoMemory
 
     private ?string $replaceRateKeyOnStateLock = null;
 
+    private ?string $interleaveNextOtpWrite = null;
+
     public function afterNextGet(callable $callback): void
     {
         $this->afterNextGet = $callback;
@@ -45,6 +47,27 @@ class SensitiveVerifyInterleavingDao extends SaTokenDaoMemory
     public function replaceRateKeyOnNextStateLock(string $rateKey): void
     {
         $this->replaceRateKeyOnStateLock = $rateKey;
+    }
+
+    public function interleaveNextOtpWrite(string $key, callable $callback): void
+    {
+        $this->interleaveNextOtpWrite = $key;
+        $this->beforeOtpWrite = $callback;
+    }
+
+    /** @var callable(): void|null */
+    private $beforeOtpWrite = null;
+
+    public function compareAndSet(string $key, ?string $expectedValue, ?string $newValue, ?int $timeout = null): bool
+    {
+        if ($key === $this->interleaveNextOtpWrite && $this->beforeOtpWrite !== null) {
+            $callback = $this->beforeOtpWrite;
+            $this->interleaveNextOtpWrite = null;
+            $this->beforeOtpWrite = null;
+            $callback();
+        }
+
+        return parent::compareAndSet($key, $expectedValue, $newValue, $timeout);
     }
 
     public function setIfNotExists(string $key, string $value, ?int $timeout = null): bool
@@ -193,6 +216,34 @@ class SaSensitiveVerifyTest extends TestCase
         $this->assertFalse(SaSensitiveVerify::isVerified($scene, $loginId));
         $this->assertFalse(SaSensitiveVerify::verifyCode($scene, $oldCode, $loginId));
         $this->assertTrue(SaSensitiveVerify::verifyCode($scene, $newCode, $loginId));
+    }
+
+    public function testExpiredGenerationLockCannotRestoreAnOlderOtpAfterResend(): void
+    {
+        $dao = new SensitiveVerifyInterleavingDao();
+        SaToken::setDao($dao);
+        $scene = 'expired-generation-lock';
+        $loginId = 'alice';
+        $key = SaSensitiveVerify::getKey($scene, $loginId);
+        $newCode = null;
+
+        $dao->interleaveNextOtpWrite($key, function () use ($dao, $key, $scene, $loginId, &$newCode): void {
+            // Model the first worker's 30-second lease expiring while its DAO
+            // write is stalled. A later resend commits before the stale write
+            // resumes.
+            $dao->delete($key . ':state-lock');
+            $newCode = SaSensitiveVerify::generateCode($scene, $loginId);
+        });
+
+        try {
+            SaSensitiveVerify::generateCode($scene, $loginId);
+            self::fail('A stale generator must not overwrite a newer OTP state');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('并发更新', $exception->getMessage());
+        }
+
+        self::assertIsString($newCode);
+        self::assertTrue(SaSensitiveVerify::verifyCode($scene, $newCode, $loginId));
     }
 
     public function testSendIntervalZeroDisablesRateLimitWithoutCreatingPermanentKey(): void
