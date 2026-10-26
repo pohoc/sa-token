@@ -1285,19 +1285,25 @@ class SaOAuth2Handle
     }
 
     /**
-     * 校验客户端被授权使用该 grant_type。
-     * 客户端未注册 grantTypes 时回退到全局配置检查
+     * 校验全局和客户端都允许使用该 grant_type。
+     * 客户端未注册 grantTypes 时继承全局配置；全局配置仍是管理员的
+     * 最终开关，便于紧急关闭某种授权模式。
      */
     protected function validateGrantTypeForClient(SaOAuth2Client $client, string $grantType): void
     {
+        if (!in_array($grantType, $this->config->getGrantTypes(), true)) {
+            $message = $grantType === 'implicit'
+                ? '该授权模式未被授权使用此授权模式（全局配置未启用）'
+                : '该授权模式未被授权（全局配置未启用）';
+            throw new SaTokenException($message);
+        }
+
         if ($client->getClientSecret() === '' && $grantType !== 'authorization_code') {
             throw new SaTokenException('公开客户端只允许使用授权码模式并强制 PKCE');
         }
 
         $allowed = $client->getGrantTypes();
-        if ($allowed === []) {
-            $allowed = $this->config->getGrantTypes();
-        }
+        $allowed = $allowed === [] ? $this->config->getGrantTypes() : $allowed;
         if (!in_array($grantType, $allowed, true)) {
             throw new SaTokenException('该客户端未被授权使用此授权模式');
         }

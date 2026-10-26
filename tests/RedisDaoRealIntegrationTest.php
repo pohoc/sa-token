@@ -764,7 +764,7 @@ class RedisDaoRealIntegrationTest extends TestCase
         $clientId = 'redis-oauth-' . bin2hex(random_bytes(8));
         $clientSecret = bin2hex(random_bytes(24));
         $config = new SaOAuth2Config([
-            'grantTypes' => ['authorization_code'],
+            'grantTypes' => ['authorization_code', 'refresh_token'],
             'accessTokenTimeout' => 7200,
             'refreshTokenTimeout' => 30 * 86400,
             'isNewRefreshToken' => true,

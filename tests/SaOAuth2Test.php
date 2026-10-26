@@ -49,7 +49,7 @@ class SaOAuth2Test extends TestCase
         SaToken::setDao(new SaTokenDaoMemory());
 
         $this->config = new SaOAuth2Config([
-            'grantTypes'          => ['authorization_code', 'password', 'client_credentials'],
+            'grantTypes'          => ['authorization_code', 'password', 'client_credentials', 'refresh_token'],
             'codeTimeout'         => 300,
             'accessTokenTimeout'  => 7200,
             'refreshTokenTimeout' => 86400,
@@ -693,6 +693,30 @@ class SaOAuth2Test extends TestCase
         $newAccessToken = $this->handle->refreshToken($refreshToken, 'test-client', $this->clientSecret);
         $this->assertNotEmpty($newAccessToken->getAccessToken());
         $this->assertNotEquals($accessToken->getAccessToken(), $newAccessToken->getAccessToken());
+    }
+
+    public function testGloballyDisabledGrantCannotBeUsedByPreviouslyRegisteredClient(): void
+    {
+        $code = $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback');
+        $accessToken = $this->handle->exchangeTokenByCode(
+            $code->getCode(),
+            'test-client',
+            $this->clientSecret,
+            'https://example.com/callback'
+        );
+        $refreshToken = $accessToken->getRefreshToken();
+        self::assertNotNull($refreshToken);
+
+        // Runtime global policy must still be able to disable a grant even if
+        // a client's persisted allowlist has not yet been updated.
+        $this->config->setGrantTypes(['authorization_code']);
+
+        try {
+            $this->handle->refreshToken($refreshToken, 'test-client', $this->clientSecret);
+            self::fail('全局关闭 refresh_token 后不得继续使用已有客户端凭据');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('全局配置未启用', $exception->getMessage());
+        }
     }
 
     public function testRefreshFamilyMetadataStaysBoundedAndOldReuseRevokesCurrentDescendants(): void

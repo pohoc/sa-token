@@ -55,7 +55,7 @@ class SaOAuth2OpenIdTest extends TestCase
         SaToken::setDao(new SaTokenDaoMemory());
 
         $this->config = new SaOAuth2Config([
-            'grantTypes'          => ['authorization_code', 'password', 'client_credentials'],
+            'grantTypes'          => ['authorization_code', 'password', 'client_credentials', 'implicit'],
             'codeTimeout'         => 300,
             'accessTokenTimeout'  => 7200,
             'refreshTokenTimeout' => 86400,
