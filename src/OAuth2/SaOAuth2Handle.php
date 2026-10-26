@@ -1517,11 +1517,11 @@ class SaOAuth2Handle
 
     protected function scopeContainsOpenid(string $scope): bool
     {
-        $scopes = preg_split('/\s+/', $scope);
-        if ($scopes === false) {
-            return false;
+        if (strlen($scope) > self::MAX_SCOPE_LENGTH) {
+            throw new SaTokenException('scope 长度不能超过 ' . self::MAX_SCOPE_LENGTH . ' 字节');
         }
-        return in_array('openid', $scopes, true);
+
+        return preg_match('/(?:^|\s)openid(?:\s|$)/', $scope) === 1;
     }
 
     /**

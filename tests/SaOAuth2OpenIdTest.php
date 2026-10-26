@@ -343,6 +343,30 @@ class SaOAuth2OpenIdTest extends TestCase
         );
     }
 
+    public function testPasswordGrantRejectsOversizedScopeBeforeCredentialValidation(): void
+    {
+        $credentialValidatorCalled = false;
+        $this->handle->setUserCredentialsValidator(static function () use (&$credentialValidatorCalled): int {
+            $credentialValidatorCalled = true;
+            return 10001;
+        });
+
+        try {
+            $this->handle->tokenByPassword(
+                'test-client',
+                $this->clientSecret,
+                'user',
+                'password',
+                str_repeat('read ', 820)
+            );
+            self::fail('Expected oversized scope to be rejected');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('scope 长度不能超过', $exception->getMessage());
+        }
+
+        self::assertFalse($credentialValidatorCalled);
+    }
+
     public function testImplicitOpenIdFlowRequiresNonceAndIncludesAccessTokenHash(): void
     {
         $implicitClient = new SaOAuth2Client([
