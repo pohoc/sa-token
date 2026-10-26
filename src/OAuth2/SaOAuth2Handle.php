@@ -331,7 +331,13 @@ class SaOAuth2Handle
         $this->validateGrantTypeForClient($client, 'refresh_token');
 
         $rtKey = $this->buildRefreshTokenKey($refreshToken);
-        $markerTimeout = $this->config->getRefreshTokenTimeout() > 0 ? $this->config->getRefreshTokenTimeout() : 86400;
+        // Keep replay evidence for at least as long as either the descendant
+        // access token or its refresh token can remain valid.
+        $markerTimeout = max(
+            1,
+            $this->config->getAccessTokenTimeout(),
+            $this->config->getRefreshTokenTimeout()
+        );
 
         // 消费前预读取：scope 收紧等配置变更时，让失败发生在 RT 被消费之前，
         // 避免客户端因运维操作被迫整体重新授权

@@ -685,6 +685,26 @@ class SaOAuth2Test extends TestCase
         }
     }
 
+    public function testRefreshReplayMarkersOutliveLongerAccessTokens(): void
+    {
+        $this->config->setAccessTokenTimeout(7200);
+        $this->config->setRefreshTokenTimeout(60);
+        $code = $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback');
+        $initial = $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
+        $oldRefreshToken = (string) $initial->getRefreshToken();
+        $getRefreshData = new \ReflectionMethod($this->handle, 'getRefreshTokenData');
+        $initialData = $getRefreshData->invoke($this->handle, $oldRefreshToken);
+        self::assertInstanceOf(SaOAuth2RefreshToken::class, $initialData);
+        $rotated = $this->handle->refreshToken($oldRefreshToken, 'test-client', $this->clientSecret);
+
+        $markerKey = 'oauth2:family:' . hash('sha256', $initialData->getFamilyId());
+        $consumedKey = 'oauth2:rt:consumed:' . hash('sha256', $oldRefreshToken);
+
+        self::assertGreaterThanOrEqual(7200, SaToken::getDao()->getTimeout($markerKey));
+        self::assertGreaterThanOrEqual(7200, SaToken::getDao()->getTimeout($consumedKey));
+        self::assertNotSame('', $rotated->getAccessToken());
+    }
+
     public function testRefreshTokenLeaseExpiryCannotResurrectARevokedFamily(): void
     {
         $dao = new class () extends SaTokenDaoMemory {
