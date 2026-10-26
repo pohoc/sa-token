@@ -155,6 +155,21 @@ class SaSessionCleanerTest extends TestCase
         $this->assertNotNull($dao->get('satoken:session:valid-session'));
     }
 
+    public function testCleanOnceRemovesExpiredDistributedLocksAndSloNonces(): void
+    {
+        $dao = SaToken::getDao();
+        $expiredLock = 'satoken:lock:expired-account-lock';
+        $expiredNonce = 'satoken:sso:slo:nonce:' . hash('sha256', 'expired-slo-nonce');
+        $dao->set($expiredLock, 'owner', 10);
+        $dao->set($expiredNonce, '1', 10);
+        $this->backdate($dao, $expiredLock);
+        $this->backdate($dao, $expiredNonce);
+
+        self::assertSame(2, SaSessionCleaner::cleanOnce());
+        self::assertNull($dao->get($expiredLock));
+        self::assertNull($dao->get($expiredNonce));
+    }
+
     public function testCleanOnceSkipsValidAndPermanentRecords(): void
     {
         $dao = SaToken::getDao();
