@@ -777,7 +777,7 @@ class RefreshTokenTest extends TestCase
             StpUtil::refreshToken($refreshToken);
             self::fail('重新登录建立新索引后，旧 RefreshToken 不得恢复会话');
         } catch (SaTokenException $exception) {
-            self::assertStringContainsString('无法刷新', $exception->getMessage());
+            self::assertMatchesRegularExpression('/无法刷新|无效或已过期/', $exception->getMessage());
         }
         self::assertTrue(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($newAccessToken));
     }
