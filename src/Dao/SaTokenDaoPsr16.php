@@ -432,6 +432,9 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
                 return false;
             }
             if ($newValue === null) {
+                if ($expectedValue === null) {
+                    return true;
+                }
                 return $this->deleteCache($key);
             }
             return $this->writeCache($key, $newValue, $timeout);

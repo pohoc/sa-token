@@ -82,6 +82,23 @@ class SaTokenDaoPsr16Test extends TestCase
         }
     }
 
+    public function testCompareAndSetMissingValueToMissingValueSucceedsWhenCacheDeleteReturnsFalse(): void
+    {
+        $cache = new class () extends ArrayPsr16Cache {
+            public function delete(string $key): bool
+            {
+                if (!$this->has($key)) {
+                    return false;
+                }
+                return parent::delete($key);
+            }
+        };
+        $dao = new SaTokenDaoPsr16($cache);
+
+        self::assertTrue($dao->compareAndSet('empty-cas', null, null));
+        self::assertNull($dao->get('empty-cas'));
+    }
+
     public function testCompareAndExpireOnlyRenewsMatchingValue(): void
     {
         $this->dao->set('lock', 'owner-a', 60);

@@ -16,6 +16,7 @@
 
 ### 修复
 - 文件 DAO 对缺失记录执行 `compareAndSet(key, null, null)` 时按接口约定成功返回，不再因尝试删除不存在的文件而抛错。
+- PSR-16 DAO 对缺失记录执行 `compareAndSet(key, null, null)` 时成功返回，不依赖缓存实现对不存在键的删除返回值。
 
 本文件由脚本自动生成，基于 git tag 和 commit 记录。
 
