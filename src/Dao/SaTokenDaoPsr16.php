@@ -173,7 +173,14 @@ class SaTokenDaoPsr16 implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
 
     public function delete(string $key): void
     {
-        $this->withAtomicLock($key, fn () => $this->deleteCache($key));
+        $this->withAtomicLock($key, function () use ($key): void {
+            $cacheKey = $this->normalizeKey($key);
+            $existed = $this->cache->get($cacheKey) !== null;
+            $deleted = $this->deleteCache($key);
+            if ($existed && (!$deleted || $this->cache->get($cacheKey) !== null)) {
+                throw new SaTokenException('PSR-16 缓存删除失败');
+            }
+        });
     }
 
     protected function deleteCache(string $key): bool

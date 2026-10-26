@@ -309,7 +309,15 @@ class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteI
 
     public function delete(string $key): void
     {
-        $this->withLock($key, fn () => @unlink($this->dataFile($key)));
+        $this->withLock($key, function () use ($key): void {
+            $path = $this->dataFile($key);
+            if ($this->assertRegularFileOrMissing($path, '文件存储记录') === null) {
+                return;
+            }
+            if (!@unlink($path)) {
+                throw new SaTokenException("文件存储记录删除失败：{$path}");
+            }
+        });
     }
 
     public function getTimeout(string $key): int

@@ -187,7 +187,10 @@ LUA;
 
     public function delete(string $key): void
     {
-        ($this->saRedis ?? $this->client)->del([$key]);
+        $result = ($this->saRedis ?? $this->client)->del([$key]);
+        if ($result === false) {
+            throw new SaTokenException('Redis 删除失败');
+        }
     }
 
     public function getTimeout(string $key): int
@@ -463,7 +466,9 @@ LUA;
             return;
         }
         $client = $this->saRedis ?? $this->client;
-        $client->del($keys);
+        if ($client->del($keys) === false) {
+            throw new SaTokenException('Redis 批量删除失败');
+        }
     }
 
     public function setIfNotExists(string $key, string $value, ?int $timeout = null): bool

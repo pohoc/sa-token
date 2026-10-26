@@ -111,6 +111,33 @@ class RedisDaoTest extends TestCase
         $this->dao->increment('test:failed-increment');
     }
 
+    public function testDeleteRejectsFailedRedisCommand(): void
+    {
+        $this->mockRedis
+            ->expects($this->once())
+            ->method('del')
+            ->with(['test:failed-delete'])
+            ->willReturn(false);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('Redis 删除失败');
+        $this->dao->delete('test:failed-delete');
+    }
+
+    public function testDeleteMultipleRejectsFailedRedisCommand(): void
+    {
+        $keys = ['test:failed-delete-one', 'test:failed-delete-two'];
+        $this->mockRedis
+            ->expects($this->once())
+            ->method('del')
+            ->with($keys)
+            ->willReturn(false);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('Redis 批量删除失败');
+        $this->dao->deleteMultiple($keys);
+    }
+
     public function testDelete(): void
     {
         $key = 'test:delete';
@@ -118,7 +145,8 @@ class RedisDaoTest extends TestCase
         $this->mockRedis
             ->expects($this->once())
             ->method('del')
-            ->with([$key]);
+            ->with([$key])
+            ->willReturn(1);
 
         $this->dao->delete($key);
     }
@@ -130,7 +158,8 @@ class RedisDaoTest extends TestCase
         $this->mockRedis
             ->expects($this->once())
             ->method('del')
-            ->with($keys);
+            ->with($keys)
+            ->willReturn(count($keys));
 
         $this->dao->deleteMultiple($keys);
     }

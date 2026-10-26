@@ -57,6 +57,22 @@ class SaTokenDaoFileTest extends TestCase
         $this->assertSame(-2, $this->dao->getTimeout('k:basic'));
     }
 
+    public function testDeleteRejectsNonRegularRecordInsteadOfReportingSuccess(): void
+    {
+        $dataFile = (new \ReflectionMethod(SaTokenDaoFile::class, 'dataFile'))
+            ->invoke($this->dao, 'blocked-delete');
+        self::assertIsString($dataFile);
+        self::assertTrue(mkdir($dataFile));
+
+        try {
+            $this->expectException(SaTokenException::class);
+            $this->expectExceptionMessage('不能是符号链接或非普通文件');
+            $this->dao->delete('blocked-delete');
+        } finally {
+            rmdir($dataFile);
+        }
+    }
+
     public function testExistingStorageDirectoriesAreRestricted(): void
     {
         $path = $this->basePath;

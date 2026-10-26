@@ -57,6 +57,31 @@ class SaTokenDaoPsr16Test extends TestCase
         $this->assertNull($this->dao->get('nonexistent'));
     }
 
+    public function testDeleteRejectsCacheThatLeavesExistingCredentialInPlace(): void
+    {
+        $cache = new class () extends ArrayPsr16Cache {
+            public bool $rejectDeletes = false;
+
+            public function delete(string $key): bool
+            {
+                if ($this->rejectDeletes) {
+                    return false;
+                }
+                return parent::delete($key);
+            }
+        };
+        $dao = new SaTokenDaoPsr16($cache);
+        $dao->set('refresh-token', 'still-valid');
+        $cache->rejectDeletes = true;
+
+        try {
+            $dao->delete('refresh-token');
+            self::fail('DAO must report a failed credential deletion');
+        } catch (\SaToken\Exception\SaTokenException $exception) {
+            self::assertSame('still-valid', $dao->get('refresh-token'));
+        }
+    }
+
     public function testCompareAndExpireOnlyRenewsMatchingValue(): void
     {
         $this->dao->set('lock', 'owner-a', 60);
