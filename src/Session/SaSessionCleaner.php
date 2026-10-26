@@ -27,6 +27,9 @@ class SaSessionCleaner
     protected static int $batchSize = 100;
     protected static int $totalCleaned = 0;
 
+    /** @var array<string, int> Per-prefix scan offsets, reset when a prefix wraps. */
+    protected static array $scanOffsets = [];
+
     /** @var array<string> */
     protected static array $sweptPrefixes = [
         'satoken:login:token:',
@@ -69,6 +72,9 @@ class SaSessionCleaner
 
     public static function setBatchSize(int $size): void
     {
+        if ($size < 1) {
+            throw new \InvalidArgumentException('清理批次大小必须大于 0');
+        }
         self::$batchSize = $size;
     }
 
@@ -103,9 +109,9 @@ class SaSessionCleaner
      */
     protected static function sweepExpired(SaTokenDaoInterface $dao, string $prefix): int
     {
-        $keys = $dao->searchKeys($prefix, '', 0, self::$batchSize);
+        $offset = self::$scanOffsets[$prefix] ?? 0;
+        $keys = $dao->searchKeys($prefix, '', $offset, self::$batchSize);
         $cleaned = 0;
-
         foreach ($keys as $key) {
             if ($key === '') {
                 continue;
@@ -114,6 +120,13 @@ class SaSessionCleaner
                 $cleaned++;
             }
         }
+
+        // Deleting entries shifts later pages toward this offset. Keep the
+        // cursor in place after any deletion so those shifted entries are not
+        // skipped; advance only when the current page contained no removals.
+        self::$scanOffsets[$prefix] = $cleaned > 0
+            ? $offset
+            : (count($keys) < self::$batchSize ? 0 : $offset + self::$batchSize);
 
         return $cleaned;
     }
@@ -147,5 +160,6 @@ class SaSessionCleaner
         self::$running = false;
         self::$stopped = false;
         self::$totalCleaned = 0;
+        self::$scanOffsets = [];
     }
 }

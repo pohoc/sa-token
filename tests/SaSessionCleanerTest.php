@@ -122,6 +122,30 @@ class SaSessionCleanerTest extends TestCase
         $this->assertNotNull($dao->get('satoken:login:token:valid-token'));
     }
 
+    public function testCleanOnceRotatesPagesSoLeadingLiveRecordsCannotStarveExpiredRecords(): void
+    {
+        $dao = SaToken::getDao();
+        self::assertInstanceOf(LazyTtlDaoStub::class, $dao);
+        SaSessionCleaner::setBatchSize(2);
+
+        $dao->set('satoken:login:token:live-a', 'user-a', 1000);
+        $dao->set('satoken:login:token:live-b', 'user-b', 1000);
+        $dao->set('satoken:login:token:expired-c', 'user-c', 10);
+        $this->backdate($dao, 'satoken:login:token:expired-c');
+
+        self::assertSame(0, SaSessionCleaner::cleanOnce());
+        self::assertSame(1, SaSessionCleaner::cleanOnce());
+        self::assertNull($dao->get('satoken:login:token:expired-c'));
+        self::assertNotNull($dao->get('satoken:login:token:live-a'));
+        self::assertNotNull($dao->get('satoken:login:token:live-b'));
+    }
+
+    public function testSetBatchSizeRejectsNonPositiveValues(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        SaSessionCleaner::setBatchSize(0);
+    }
+
     public function testCleanOnceRemovesExpiredVersionedLoginIdIndex(): void
     {
         $dao = SaToken::getDao();
