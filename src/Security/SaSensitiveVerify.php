@@ -54,11 +54,20 @@ class SaSensitiveVerify
 
     public static function getKey(string $scene, mixed $loginId, string $loginType = 'login'): string
     {
-        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $loginIdStr = self::normalizeLoginId($loginId);
         return self::$keyPrefix
             . \SaToken\TokenManager::encodeKeyComponent($loginType) . ':'
             . \SaToken\TokenManager::encodeKeyComponent($scene) . ':'
             . hash('sha256', $loginIdStr);
+    }
+
+    protected static function normalizeLoginId(mixed $loginId): string
+    {
+        if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
+            throw new SaTokenException('敏感验证 loginId 不能为空且必须是非布尔标量');
+        }
+
+        return (string) $loginId;
     }
 
     public static function generateCode(string $scene, mixed $loginId, string $loginType = 'login'): string
@@ -399,7 +408,7 @@ class SaSensitiveVerify
     {
         self::validateLifetime($validSeconds);
         $token = bin2hex(random_bytes(32));
-        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $loginIdStr = self::normalizeLoginId($loginId);
         $key = self::$keyPrefix . \SaToken\TokenManager::encodeKeyComponent($loginType)
             . ':safe-token:' . \SaToken\TokenManager::encodeKeyComponent($scene)
             . ':' . hash('sha256', $loginIdStr) . ':' . substr($token, 0, 16);
@@ -421,7 +430,7 @@ class SaSensitiveVerify
 
     public static function verifySafeToken(string $scene, string $token, mixed $loginId, string $loginType = 'login'): bool
     {
-        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $loginIdStr = self::normalizeLoginId($loginId);
         $key = self::$keyPrefix . \SaToken\TokenManager::encodeKeyComponent($loginType)
             . ':safe-token:' . \SaToken\TokenManager::encodeKeyComponent($scene)
             . ':' . hash('sha256', $loginIdStr) . ':' . substr($token, 0, 16);

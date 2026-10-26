@@ -98,6 +98,25 @@ class SaSensitiveVerifyTest extends TestCase
         $this->assertMatchesRegularExpression('/^\d{6}$/', $code);
     }
 
+    public function testSensitiveVerificationRejectsInvalidLoginIdsInsteadOfAliasingThem(): void
+    {
+        foreach ([null, '', false, true, [], new \stdClass()] as $loginId) {
+            try {
+                SaSensitiveVerify::generateCode('invalid-login-id', $loginId);
+                self::fail('Invalid loginId values must not share a sensitive verification state');
+            } catch (SaTokenException $exception) {
+                self::assertStringContainsString('loginId', $exception->getMessage());
+            }
+        }
+
+        try {
+            SaSensitiveVerify::createSafeToken('invalid-login-id', false);
+            self::fail('Safe tokens must not bind to a normalized invalid identity');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('loginId', $exception->getMessage());
+        }
+    }
+
     public function testGeneratedCodeIsStoredAsOneWayHash(): void
     {
         $scene = 'hashed-code-scene';
