@@ -7,6 +7,7 @@ namespace SaToken\Tests;
 use PHPUnit\Framework\TestCase;
 use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoMemory;
+use SaToken\Exception\DisableServiceException;
 use SaToken\Exception\NotLoginException;
 use SaToken\Exception\NotSafeException;
 use SaToken\Exception\SaTokenException;
@@ -562,6 +563,59 @@ class SecurityRegressionTest extends TestCase
 
         self::assertTrue($logic->isDisable($loginId, 'login'));
         self::assertSame([], (new TokenManager())->getTokenListByLoginId($loginId, 'login'));
+    }
+
+    public function testTemporaryTokenCannotBeIssuedAfterDisableTakesOverExpiredAccountLock(): void
+    {
+        $loginId = 'temp-token-disable-lock-expiry';
+        $tokenManager = new class () extends TokenManager {
+            public ?\Closure $afterTokenSaved = null;
+
+            public string $issuedToken = '';
+
+            public function saveToken(
+                string $tokenValue,
+                mixed $loginId,
+                string $loginType,
+                string $deviceType = '',
+                ?int $timeout = null,
+                ?string $sessionId = null
+            ): string {
+                $savedToken = parent::saveToken($tokenValue, $loginId, $loginType, $deviceType, $timeout, $sessionId);
+                $this->issuedToken = $savedToken;
+                if ($this->afterTokenSaved !== null) {
+                    $callback = $this->afterTokenSaved;
+                    $this->afterTokenSaved = null;
+                    $callback();
+                }
+
+                return $savedToken;
+            }
+        };
+        $logic = new StpLogic('login', $tokenManager);
+        $tokenManager->afterTokenSaved = function () use ($loginId): void {
+            // Pause immediately after persistence, then let a different
+            // request take over the expired account lease and disable login.
+            SaToken::getDao()->delete(
+                TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId)
+            );
+            SaTokenContext::setContextId('disable-admin');
+            try {
+                (new StpLogic('login', new TokenManager()))->disable($loginId, 'login', 1, 3600);
+            } finally {
+                SaTokenContext::setContextId('default');
+            }
+        };
+
+        try {
+            $logic->createTempToken($loginId, 600);
+            self::fail('账号封禁完成后，临时登录不能签发 Token');
+        } catch (DisableServiceException) {
+            self::assertTrue($logic->isDisable($loginId, 'login'));
+        }
+
+        self::assertFalse($tokenManager->isTokenValid($tokenManager->issuedToken));
+        self::assertSame([], $tokenManager->getTokenListByLoginId($loginId, 'login'));
     }
 
     // ======== C1: mixed JWT 模式下会话必须可终止 ========

@@ -886,11 +886,42 @@ class StpLogic
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
 
+        $tokenValue = null;
         try {
             $this->checkDisableForLogin($loginId);
             $tokenValue = $this->tokenManager->createTokenValue($loginId, $this->loginType);
             // mixed 模式下实际存储的是 JWT，必须返回真实值
-            return $this->tokenManager->saveToken($tokenValue, $loginId, $this->loginType, 'temp', $timeout);
+            $tokenValue = $this->tokenManager->saveToken($tokenValue, $loginId, $this->loginType, 'temp', $timeout);
+            $this->checkDisableForLogin($loginId);
+            if (!$this->tokenManager->renewLock($lockKey, 30)) {
+                throw new SaTokenException('账号会话锁已失效，拒绝签发临时登录凭证');
+            }
+
+            return $tokenValue;
+        } catch (\Throwable $exception) {
+            if ($tokenValue !== null && $this->tokenManager->isTokenValid($tokenValue)) {
+                try {
+                    $this->removeTokenAndRefreshToken($tokenValue, $loginId);
+                } catch (\Throwable $cleanupException) {
+                    $invalidated = $this->tokenManager->invalidateTokenIfOwnedByLoginType(
+                        $tokenValue,
+                        $loginId,
+                        $this->loginType
+                    );
+                    if (!$invalidated) {
+                        throw $cleanupException;
+                    }
+
+                    try {
+                        $this->removeTokenAndRefreshToken($tokenValue, $loginId);
+                    } catch (\Throwable) {
+                        // The exact bearer is blacklisted if physical cleanup
+                        // cannot safely run after another lock owner took over.
+                    }
+                }
+            }
+
+            throw $exception;
         } finally {
             $this->tokenManager->releaseLock($lockKey);
         }
