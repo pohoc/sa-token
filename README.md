@@ -835,7 +835,7 @@ $apiKey->checkApiKey();
 ```
 
 API Key/Secret 验证失败也会使用 `antiBruteMaxFailures` / `antiBruteLockDuration`，按 API Key 和可信来源 IP 限制连续错误的 Secret 尝试；验证成功会清除该 API Key 当前来源的失败计数。
-内置注册表要求 API Secret 至少 32 字节；生产环境应为每个 Key 独立生成随机 Secret。使用自定义验证器时，也应在应用侧执行同等强度的密钥策略。
+所有 API Secret（包括自定义验证器收到的凭据）都必须至少 32 字节；生产环境应为每个 Key 独立生成随机 Secret。自定义验证器还应将 Secret 安全存储并使用恒时比较。
 
 自定义验证器：
 

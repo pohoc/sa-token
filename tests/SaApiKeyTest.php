@@ -169,7 +169,7 @@ class SaApiKeyTest extends TestCase
         SaTokenContext::setRequest($this->mockRequestWithHeaders([
             'satoken' => $bearerToken,
             'api-key' => 'service-key',
-            'api-secret' => 'wrong-secret',
+            'api-secret' => 'wrong-api-secret-value-at-least-32-bytes',
         ]));
 
         try {
@@ -248,7 +248,7 @@ class SaApiKeyTest extends TestCase
     {
         $request = $this->mockRequestWithHeaders([
             'api-key' => 'my-key',
-            'api-secret' => 'wrong-secret',
+            'api-secret' => 'wrong-api-secret-value-at-least-32-bytes',
         ]);
         SaTokenContext::setRequest($request);
 
@@ -262,7 +262,7 @@ class SaApiKeyTest extends TestCase
     {
         SaTokenContext::setRequest($this->mockRequestWithHeaders([
             'api-key' => 'throwing-key',
-            'api-secret' => 'wrong-secret',
+            'api-secret' => 'wrong-api-secret-value-at-least-32-bytes',
         ]));
         $api = (new SaApiKey())->setValidator(static function (): never {
             throw new SaTokenException('credential rejected');
@@ -287,7 +287,7 @@ class SaApiKeyTest extends TestCase
         foreach ([1, 2] as $attempt) {
             SaTokenContext::setRequest($this->mockRequestWithHeaders([
                 'api-key' => 'known-api-key',
-                'api-secret' => 'wrong-secret-' . $attempt,
+                'api-secret' => 'wrong-api-secret-value-at-least-32-bytes-' . $attempt,
             ]));
             try {
                 $api->checkApiKey();
@@ -314,7 +314,7 @@ class SaApiKeyTest extends TestCase
 
         SaTokenContext::setRequest($this->mockRequestWithHeaders([
             'api-key' => 'known-api-key',
-            'api-secret' => 'wrong-secret',
+            'api-secret' => 'wrong-api-secret-value-at-least-32-bytes',
         ]));
         try {
             $api->checkApiKey();
@@ -345,6 +345,23 @@ class SaApiKeyTest extends TestCase
         });
 
         $this->expectException(SaTokenException::class);
+        $api->checkApiKey();
+    }
+
+    public function testCheckApiKeyRejectsShortSecretBeforeCallingCustomValidator(): void
+    {
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'api-key' => 'my-key',
+            'api-secret' => 'short-secret',
+        ]));
+
+        $api = new SaApiKey();
+        $api->setValidator(static function (): never {
+            self::fail('短 Secret 不得传递给自定义校验器');
+        });
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('至少需要 32 字节');
         $api->checkApiKey();
     }
 
@@ -454,7 +471,7 @@ class SaApiKeyTest extends TestCase
     {
         SaTokenContext::setRequest($this->mockRequestWithHeaders([
             'api-key' => 'invalid-key',
-            'api-secret' => 'invalid-secret',
+            'api-secret' => 'invalid-api-secret-value-at-least-32-bytes',
         ]));
         $api = new SaApiKey();
         $api->setValidator(static fn (): bool => false);
@@ -467,7 +484,7 @@ class SaApiKeyTest extends TestCase
     {
         SaTokenContext::setRequest($this->mockRequestWithHeaders([
             'api-key' => 'key',
-            'api-secret' => 'secret',
+            'api-secret' => 'api-secret-value-at-least-32-bytes',
         ]));
         $api = new SaApiKey();
         $api->setValidator(static fn (): bool => true);

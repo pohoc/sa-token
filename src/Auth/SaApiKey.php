@@ -55,6 +55,11 @@ class SaApiKey
 
         SaAntiBruteUtil::checkAndThrow($apiKey, 'api-key');
 
+        if (strlen($apiSecret) < self::MIN_SECRET_BYTES) {
+            SaAntiBruteUtil::recordFailure($apiKey, 'api-key');
+            throw new SaTokenException('API Secret 至少需要 32 字节');
+        }
+
         if ($this->validator !== null) {
             try {
                 $loginId = ($this->validator)($apiKey, $apiSecret);
