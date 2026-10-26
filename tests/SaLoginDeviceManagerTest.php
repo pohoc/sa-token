@@ -31,6 +31,16 @@ class SaLoginDevicePausingDao extends SaTokenDaoMemory
 
         parent::update($key, $value);
     }
+
+    public function compareAndUpdate(string $key, string $expectedValue, string $newValue): bool
+    {
+        if ($key === $this->pauseUpdateKey) {
+            $this->pauseUpdateKey = null;
+            \Fiber::suspend();
+        }
+
+        return parent::compareAndUpdate($key, $expectedValue, $newValue);
+    }
 }
 
 class SaLoginDeviceFailingDao extends SaTokenDaoMemory
@@ -779,6 +789,42 @@ class SaLoginDeviceManagerTest extends TestCase
         $this->logic->kickoutDevice(10001, $deviceId);
         $this->assertFalse($this->logic->getTokenManager()->isTokenValid($firstToken));
         $this->assertFalse($this->logic->getTokenManager()->isTokenValid($secondToken));
+    }
+
+    public function testExpiredUpdateLastActiveCannotOverwriteRecreatedDeviceRecord(): void
+    {
+        $loginId = 'expired-device-activity-update';
+        $this->dao = new SaLoginDevicePausingDao();
+        SaToken::setDao($this->dao);
+        $device = new SaLoginDevice(['deviceType' => 'pc', 'deviceName' => 'stable device']);
+        $firstToken = $this->logic->login($loginId, (new SaLoginParameter())->setDevice($device))->getAccessToken();
+        $deviceId = $device->getDeviceId();
+        $deviceKey = SaLoginDeviceManager::getKey($loginId, 'login') . ':' . $deviceId;
+        $this->dao->pauseUpdateKey = $deviceKey;
+
+        $staleUpdate = new \Fiber(static fn () => SaLoginDeviceManager::updateLastActive($loginId, $deviceId, 'login'));
+        $staleUpdate->start();
+        self::assertTrue($staleUpdate->isSuspended());
+
+        // Simulate the activity updater's account-lock lease expiring while its
+        // compare-and-update is stalled. A newer kickout and login replace the
+        // device record before the old worker resumes.
+        $accountLockKey = TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId);
+        $this->dao->delete($accountLockKey);
+        $newerLogic = new StpLogic('login');
+        $newerLogic->kickoutDevice($loginId, $deviceId);
+        self::assertFalse($this->logic->getTokenManager()->isTokenValid($firstToken));
+
+        $newToken = $newerLogic->login($loginId, (new SaLoginParameter())->setDevice($device))->getAccessToken();
+        try {
+            $staleUpdate->resume();
+            self::fail('过期锁持有者不得用旧设备快照覆盖重新创建的设备记录');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('设备记录已并发变更', $exception->getMessage());
+        }
+
+        $newerLogic->kickoutDevice($loginId, $deviceId);
+        self::assertFalse($this->logic->getTokenManager()->isTokenValid($newToken));
     }
 
     public function testExpiredDeviceRegistrationCannotOverwriteNewerTokenList(): void

@@ -432,15 +432,28 @@ class SaLoginDeviceManager
         }
 
         try {
-            $device = self::loadDevice($loginId, $deviceId, $loginType, true);
-            if ($device === null) {
+            $dao = SaToken::getDao();
+            $key = self::getKey($loginId, $loginType) . ':' . $deviceId;
+            $expectedRecord = $dao->get($key);
+            if ($expectedRecord === null) {
                 return;
             }
 
+            $data = @json_decode($expectedRecord, true);
+            if (!is_array($data) || ($data['loginType'] ?? 'login') !== $loginType) {
+                return;
+            }
+            $device = new SaLoginDevice(self::decodeDeviceData($data, true));
+
             $device->setLastActiveTime(time());
-            $dao = SaToken::getDao();
-            $key = self::getKey($loginId, $loginType) . ':' . $deviceId;
-            $dao->update($key, self::encodeDevice($device, self::loadDeviceTokenValues($key)));
+            if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndUpdateInterface
+                || !$dao->compareAndUpdate(
+                    $key,
+                    $expectedRecord,
+                    self::encodeDevice($device, self::loadDeviceTokenValues($key, $expectedRecord))
+                )) {
+                throw new SaTokenException('设备记录已并发变更或 DAO 不支持原子条件更新，请重试');
+            }
         } finally {
             $tokenManager->releaseLock($lockKey);
         }
