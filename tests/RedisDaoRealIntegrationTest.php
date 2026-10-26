@@ -8,9 +8,11 @@ use PHPUnit\Framework\TestCase;
 use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoRedis;
 use SaToken\Data\SaLoginDevice;
+use SaToken\Exception\SaTokenException;
 use SaToken\SaLoginParameter;
 use SaToken\SaToken;
 use SaToken\Security\SaLoginDeviceManager;
+use SaToken\Security\SaSensitiveVerify;
 use SaToken\StpLogic;
 use SaToken\StpUtil;
 use SaToken\TokenManager;
@@ -681,6 +683,48 @@ class RedisDaoRealIntegrationTest extends TestCase
         sleep(2);
         $this->assertTrue($this->dao->setIfNotExists($key, 'third', 30));
         $this->assertSame('third', $this->dao->get($key));
+    }
+
+    public function testSensitiveOtpAttemptsAndSuccessStateAgainstRealRedis(): void
+    {
+        SaToken::reset();
+        SaToken::getConfig()->setSignKey('redis-sensitive-verify-test-sign-key-32-bytes');
+        SaToken::setDao($this->dao);
+        SaSensitiveVerify::reset();
+
+        $scene = $this->prefix . 'otp-atomic';
+        $loginId = 'redis-login-' . bin2hex(random_bytes(8));
+        $key = SaSensitiveVerify::getKey($scene, $loginId);
+
+        try {
+            SaSensitiveVerify::generateCode($scene, $loginId);
+            self::assertFalse(SaSensitiveVerify::verifyCode($scene, 'wrong-code', $loginId));
+            self::assertFalse(SaSensitiveVerify::verifyCode($scene, 'wrong-code', $loginId));
+            self::assertFalse(SaSensitiveVerify::verifyCode($scene, 'wrong-code', $loginId));
+            self::assertSame(0, SaSensitiveVerify::getRemainingAttempts($scene, $loginId));
+
+            try {
+                SaSensitiveVerify::verifyCode($scene, 'wrong-code', $loginId);
+                self::fail('Redis OTP verification must enforce the persisted attempt limit');
+            } catch (SaTokenException $exception) {
+                self::assertStringContainsString('验证码尝试次数过多', $exception->getMessage());
+            }
+
+            $validScene = $this->prefix . 'otp-success';
+            $validCode = SaSensitiveVerify::generateCode($validScene, $loginId);
+            self::assertTrue(SaSensitiveVerify::verifyCode($validScene, $validCode, $loginId));
+            self::assertTrue(SaSensitiveVerify::isVerified($validScene, $loginId));
+        } finally {
+            foreach ([$key, $key . ':att', $key . ':verified', $key . ':state-lock'] as $stateKey) {
+                $this->dao->delete($stateKey);
+            }
+            $validKey = SaSensitiveVerify::getKey($this->prefix . 'otp-success', $loginId);
+            foreach ([$validKey, $validKey . ':att', $validKey . ':verified', $validKey . ':state-lock'] as $stateKey) {
+                $this->dao->delete($stateKey);
+            }
+            SaToken::reset();
+            SaSensitiveVerify::reset();
+        }
     }
 
     public function testRedisUrlSelectsConfiguredHostAndDatabase(): void

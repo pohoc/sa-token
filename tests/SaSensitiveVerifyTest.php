@@ -252,6 +252,36 @@ class SaSensitiveVerifyTest extends TestCase
         $this->assertFalse($result);
     }
 
+    public function testExpiredStateLockCannotLoseFailedOtpAttempts(): void
+    {
+        $dao = new SensitiveVerifyInterleavingDao();
+        SaToken::setDao($dao);
+        $scene = 'expired-state-lock-attempt-count';
+        $loginId = 'alice';
+        SaSensitiveVerify::generateCode($scene, $loginId);
+        $stateKey = SaSensitiveVerify::getKey($scene, $loginId);
+
+        $dao->afterNextGet(function (string $key) use ($dao, $stateKey, $scene, $loginId): void {
+            if ($key !== $stateKey) {
+                return;
+            }
+
+            // Simulate the first worker's lease expiring after its snapshot
+            // read. The nested worker records a failed attempt first.
+            $dao->delete($stateKey . ':state-lock');
+            self::assertFalse(SaSensitiveVerify::verifyCode($scene, 'wrong-code', $loginId));
+        });
+
+        self::assertFalse(SaSensitiveVerify::verifyCode($scene, 'wrong-code', $loginId));
+        self::assertSame(1, SaSensitiveVerify::getRemainingAttempts($scene, $loginId));
+        self::assertFalse(SaSensitiveVerify::verifyCode($scene, 'wrong-code', $loginId));
+        self::assertSame(0, SaSensitiveVerify::getRemainingAttempts($scene, $loginId));
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('验证码尝试次数过多');
+        SaSensitiveVerify::verifyCode($scene, 'wrong-code', $loginId);
+    }
+
     public function testMaxAttemptsLimitThrowsException(): void
     {
         $scene = 'test-scene';

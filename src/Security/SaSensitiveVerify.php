@@ -153,64 +153,89 @@ class SaSensitiveVerify
     public static function verifyCode(string $scene, string $code, mixed $loginId, string $loginType = 'login'): bool
     {
         $dao = SaToken::getDao();
+        if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndUpdateInterface
+            || !$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface) {
+            throw new SaTokenException('DAO 必须实现安全比较更新接口才能验证验证码');
+        }
         $key = self::getKey($scene, $loginId, $loginType);
         $lockValue = self::acquireStateLock($key);
         try {
-            $data = $dao->get($key);
+            // The lock is a lease and may expire while a DAO call is stalled.
+            // CAS keeps concurrent workers from overwriting each other's
+            // authenticated attempt count even after that lease expires.
+            for ($retry = 0; $retry < 16; $retry++) {
+                $record = $dao->get($key);
+                if ($record === null) {
+                    return false;
+                }
+                if ($dao->exists($key . ':verified')) {
+                    return false;
+                }
 
-            if ($data === null) {
+                $info = self::decodeSensitiveState($record, $key);
+                if (!is_array($info) || ($info['verified'] ?? false) === true) {
+                    return false;
+                }
+
+                $expiresAt = $info['expiresAt'] ?? null;
+                if (!is_int($expiresAt) || $expiresAt <= time()) {
+                    if ($dao->compareAndSet($key, $record, null)) {
+                        $dao->delete($key . ':att');
+                    }
+                    return false;
+                }
+
+                $attempts = is_int($info['attempts'] ?? null) ? $info['attempts'] + 1 : 1;
+                if ($attempts > self::$maxAttempts) {
+                    if (!$dao->compareAndSet($key, $record, null)) {
+                        continue;
+                    }
+                    $dao->delete($key . ':att');
+                    $dao->delete($key . ':verified');
+                    throw new SaTokenException('验证码尝试次数过多，请重新获取', -1);
+                }
+
+                $info['attempts'] = $attempts;
+                $attemptRecord = self::encodeSensitiveState($info, $key);
+                if (!$dao->compareAndUpdate($key, $record, $attemptRecord)) {
+                    continue;
+                }
+
+                $codeHash = $info['codeHash'] ?? null;
+                if (!is_string($codeHash) || !password_verify($code, $codeHash)) {
+                    return false;
+                }
+
+                // Mark success with another CAS. If another attempt changed
+                // the record, retry only while this exact OTP generation is
+                // still current; never write a stale snapshot over new state.
+                for ($successRetry = 0; $successRetry < 16; $successRetry++) {
+                    $currentRecord = $dao->get($key);
+                    if ($currentRecord === null) {
+                        return false;
+                    }
+                    $current = self::decodeSensitiveState($currentRecord, $key);
+                    if (!is_array($current)
+                        || ($current['verified'] ?? false) === true
+                        || ($current['codeHash'] ?? null) !== $codeHash
+                        || !is_int($current['expiresAt'] ?? null)
+                        || $current['expiresAt'] <= time()) {
+                        return false;
+                    }
+
+                    $current['verified'] = true;
+                    $current['verifiedAt'] = time();
+                    if ($dao->compareAndUpdate($key, $currentRecord, self::encodeSensitiveState($current, $key))) {
+                        $dao->delete($key . ':att');
+                        $dao->delete($key . ':verified');
+                        return true;
+                    }
+                }
+
                 return false;
             }
 
-            $info = self::decodeSensitiveState($data, $key);
-            if (!is_array($info)) {
-                return false;
-            }
-
-            if (($info['verified'] ?? false) === true) {
-                return false;
-            }
-
-            $expiresAt = $info['expiresAt'] ?? null;
-            if (!is_int($expiresAt) || $expiresAt <= time()) {
-                $dao->delete($key);
-                $dao->delete($key . ':att');
-                return false;
-            }
-
-            // State lock serializes verification attempts. Keep the counter in
-            // the authenticated record so a cache writer cannot reset the
-            // separate counter key and brute-force a short numeric OTP.
-            $attempts = is_int($info['attempts'] ?? null) ? $info['attempts'] + 1 : 1;
-            $info['attempts'] = $attempts;
-            if ($attempts > self::$maxAttempts) {
-                $dao->delete($key);
-                $dao->delete($key . ':att');
-                throw new SaTokenException('验证码尝试次数过多，请重新获取', -1);
-            }
-            $dao->set($key, self::encodeSensitiveState($info, $key), max(60, $expiresAt - time() + 60));
-
-            $codeHash = $info['codeHash'] ?? null;
-            if (!is_string($codeHash) || !password_verify($code, $codeHash)) {
-                return false;
-            }
-            if ($expiresAt <= time()) {
-                $dao->delete($key);
-                $dao->delete($key . ':verified');
-                return false;
-            }
-
-            // 先用原子门闩消费成功机会，避免并发请求同时读到 verified=false 后都通过。
-            if (!$dao->setIfNotExists($key . ':verified', '1', self::$validSeconds + 60)) {
-                return false;
-            }
-
-            $info['verified'] = true;
-            $info['verifiedAt'] = time();
-            $dao->set($key, self::encodeSensitiveState($info, $key), 60);
-            $dao->delete($key . ':att');
-
-            return true;
+            throw new SaTokenException('验证码状态竞争过多，请重试');
         } finally {
             self::releaseStateLock($key, $lockValue);
         }
