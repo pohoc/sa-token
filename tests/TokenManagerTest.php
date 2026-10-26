@@ -708,6 +708,31 @@ class TokenManagerTest extends TestCase
         $this->assertFalse($this->manager->isDisable(10001, 'comment', 'login'));
     }
 
+    public function testUntieDisableSerializesWithAnInProgressAccountOperation(): void
+    {
+        $loginId = 'disable-unlock-race';
+        $this->manager->disable($loginId, 'login', 1, 3600, 'login');
+        $lockKey = 'login:login:' . hash('sha256', $loginId);
+
+        SaTokenContext::setContextId('disable-lock-owner');
+        $otherManager = new TokenManager();
+        self::assertTrue($otherManager->acquireLock($lockKey, 30));
+        SaTokenContext::setContextId('default');
+
+        try {
+            $this->manager->untieDisable($loginId, 'login', 'login');
+            self::fail('账号锁被其他请求持有时，解封必须等待而不能越过封禁状态变更');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('处理中', $exception->getMessage());
+        } finally {
+            SaTokenContext::setContextId('disable-lock-owner');
+            $otherManager->releaseLock($lockKey);
+            SaTokenContext::setContextId('default');
+        }
+
+        self::assertTrue($this->manager->isDisable($loginId, 'login', 'login'));
+    }
+
     public function testSafeAuth(): void
     {
         $token = $this->manager->createTokenValue(10001, 'login');

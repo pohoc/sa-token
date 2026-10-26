@@ -1224,7 +1224,17 @@ class TokenManager
     {
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
         $key = self::buildDisableKey($loginType, $loginIdStr, $service);
-        $this->getDao()->delete($key);
+        // Ban and unban must serialize with login and each other. Otherwise a
+        // delayed unban can delete a newer ban while disable() is publishing it.
+        $lockKey = 'login:' . $loginType . ':' . hash('sha256', $loginIdStr);
+        if (!$this->acquireLock($lockKey, 30)) {
+            throw new SaTokenException('同账号会话正在处理中，请稍后重试');
+        }
+        try {
+            $this->getDao()->delete($key);
+        } finally {
+            $this->releaseLock($lockKey);
+        }
     }
 
     public function openSafe(string $tokenValue, string $service, int $safeTime, string $loginType): void
