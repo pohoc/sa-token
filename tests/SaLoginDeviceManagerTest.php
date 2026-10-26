@@ -82,6 +82,20 @@ class SaLoginDevicePausingSetDao extends SaTokenDaoMemory
     }
 }
 
+class SaLoginFailingResponseStpLogic extends StpLogic
+{
+    public ?SaTokenDaoMemory $failureDao = null;
+
+    public ?string $accountLockKey = null;
+
+    public function writeTokenToResponse(string $tokenValue, SaLoginParameter $parameter): void
+    {
+        $this->failureDao?->delete((string) $this->accountLockKey);
+        $this->failureDao?->set((string) $this->accountLockKey, 'concurrent-owner', 30);
+        throw new \RuntimeException('simulated response credential failure');
+    }
+}
+
 class SaLoginDeviceManagerTest extends TestCase
 {
     protected StpLogic $logic;
@@ -194,6 +208,55 @@ class SaLoginDeviceManagerTest extends TestCase
             $name = $header['name'] ?? null;
             self::assertIsString($name);
             self::assertNotSame('satoken', strtolower($name));
+        }
+    }
+
+    public function testFailedLoginDoesNotPublishRefreshHeaderBeforeAccessHeaderWriteSucceeds(): void
+    {
+        SaTokenContext::clear();
+        $loginId = 'failed-login-response-write';
+        SaToken::getConfig()->setIsWriteHeader(true);
+        SaToken::getConfig()->setRefreshToken(true);
+        $this->dao = new SaTokenDaoMemory();
+        SaToken::setDao($this->dao);
+
+        $logic = new SaLoginFailingResponseStpLogic('login');
+        $logic->failureDao = $this->dao;
+        $logic->accountLockKey = TokenManager::LOCK_PREFIX
+            . 'login:login:' . hash('sha256', $loginId);
+
+        try {
+            $logic->login($loginId);
+            self::fail('响应凭据写入失败时登录应失败');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('simulated response credential failure', $exception->getMessage());
+        }
+
+        $refreshKeys = $this->dao->searchKeys(TokenManager::REFRESH_TOKEN_PREFIX, '', 0, 10);
+        self::assertCount(1, $refreshKeys);
+        $refreshToken = substr($refreshKeys[0], strlen(TokenManager::REFRESH_TOKEN_PREFIX));
+        $refreshData = $logic->getTokenManager()->getRefreshTokenData($refreshToken);
+        self::assertIsArray($refreshData);
+        $accessToken = $refreshData['accessToken'] ?? null;
+        self::assertIsString($accessToken);
+        self::assertTrue($logic->getTokenManager()->isBlacklisted($accessToken));
+        try {
+            $logic->refreshToken($refreshToken);
+            self::fail('失败登录残留的 RefreshToken 不得签发新会话');
+        } catch (SaTokenException) {
+            // The refresh credential remains unusable because its parent is revoked.
+        }
+
+        $pendingHeaders = new \ReflectionProperty(SaTokenContext::class, 'pendingHeadersMap');
+        $headersByContext = $pendingHeaders->getValue();
+        self::assertIsArray($headersByContext);
+        $headers = $headersByContext[SaTokenContext::getContextId()] ?? [];
+        self::assertIsArray($headers);
+        foreach ($headers as $header) {
+            self::assertIsArray($header);
+            $name = $header['name'] ?? null;
+            self::assertIsString($name);
+            self::assertNotSame('satoken-refresh', strtolower($name));
         }
     }
 

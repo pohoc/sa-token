@@ -160,6 +160,10 @@ class StpLogic
             // token in a partially built response.
             if ($parameter->shouldWriteResponseCredentials()) {
                 $this->writeTokenToResponse($tokenValue, $parameter);
+                $refreshToken = $result->getRefreshToken();
+                if ($refreshToken !== '') {
+                    SaTokenContext::setHeader('satoken-refresh', $refreshToken);
+                }
             }
         } catch (\Throwable $exception) {
             // Login setup spans token persistence, device metadata, response
@@ -252,7 +256,6 @@ class StpLogic
             $refreshTokenValue = $this->tokenManager->createTokenValue($loginId, $this->loginType, 'srt_');
             $refreshTimeout = $config->getRefreshTokenTimeout();
             $this->tokenManager->saveRefreshToken($refreshTokenValue, $tokenValue, $loginId, $this->loginType, $refreshTimeout);
-            SaTokenContext::setHeader('satoken-refresh', $refreshTokenValue);
             $result->setRefreshToken($refreshTokenValue)
                 ->setRefreshExpire($refreshTimeout > 0 ? $refreshTimeout : 0);
         }
