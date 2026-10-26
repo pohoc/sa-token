@@ -1151,7 +1151,12 @@ class StpLogic
             ? null
             : $this->tokenManager->getTokenSessionBinding($tokenValue, $this->loginType);
         $sessionId = $sessionBinding['sessionId'] ?? null;
-        $loginId = $this->tokenManager->getLoginIdByToken($tokenValue) ?? ($sessionBinding['loginId'] ?? null);
+        // Stateless JWTs have no DAO token record, so derive their owner from
+        // the verified subject. This ensures revocation shares the account
+        // lock with refresh and cannot race a replacement credential.
+        $loginId = $this->getConfig()->isJwtStateless()
+            ? $this->getStatelessLoginIdByToken($tokenValue)
+            : ($this->tokenManager->getLoginIdByToken($tokenValue) ?? ($sessionBinding['loginId'] ?? null));
         if (!$this->getConfig()->isJwtStateless()
             && ($loginId === null
                 || (!$this->isTokenOwnedByLoginType($tokenValue, $loginId) && $sessionBinding === null))) {
@@ -1184,6 +1189,10 @@ class StpLogic
                 throw new SaTokenException('同账号会话正在处理中，请稍后重试');
             }
             try {
+                if ($this->getConfig()->isJwtStateless()
+                    && $this->getStatelessLoginIdByToken($tokenValue) !== $loginIdStr) {
+                    return $this->tokenManager->isBlacklisted($tokenValue);
+                }
                 $this->tokenManager->addToBlacklist($tokenValue, $blacklistTimeout);
                 // 锁内清理 RefreshToken 与会话记录，和并发刷新形成线性顺序。
                 $this->removeTokenAndRefreshToken($tokenValue, $loginId, $sessionId);

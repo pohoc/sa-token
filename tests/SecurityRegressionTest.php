@@ -924,6 +924,47 @@ class SecurityRegressionTest extends TestCase
         $this->assertFalse(StpUtil::isLogin());
     }
 
+    public function testStatelessTokenRevocationWaitsForRefreshAccountLockAndDeletesRefreshToken(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'jwtStateless'         => true,
+            'jwtSecretKey'         => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'refreshToken'         => true,
+            'refreshTokenRotation' => true,
+            'refreshTokenTimeout'  => 3600,
+        ])));
+        $logic = new StpLogic('login');
+        $loginId = 'stateless-single-logout-refresh-race';
+        $accessToken = $logic->loginStateless($loginId);
+        $refreshToken = $logic->createRefreshToken($accessToken, 3600);
+        $lockKey = 'login:login:' . hash('sha256', $loginId);
+        $this->actAsToken($accessToken);
+
+        SaTokenContext::setContextId('refresh-owner');
+        $refreshOwner = new TokenManager();
+        self::assertTrue($refreshOwner->acquireLock($lockKey, 30));
+        SaTokenContext::setContextId('default');
+
+        try {
+            try {
+                $logic->logout();
+                self::fail('单 Token 撤销必须与账号刷新共用账号锁');
+            } catch (SaTokenException $exception) {
+                self::assertStringContainsString('正在处理', $exception->getMessage());
+            }
+            self::assertFalse($logic->isTokenRevoked($accessToken));
+            self::assertTrue($logic->isRefreshTokenValid($refreshToken));
+        } finally {
+            SaTokenContext::setContextId('refresh-owner');
+            $refreshOwner->releaseLock($lockKey);
+            SaTokenContext::setContextId('default');
+        }
+
+        $logic->logout();
+        self::assertTrue($logic->isTokenRevoked($accessToken));
+        self::assertFalse($logic->isRefreshTokenValid($refreshToken));
+    }
+
     public function testRevokedStatelessJwtCannotBeReissuedThroughSignatureEncodingAlias(): void
     {
         SaToken::setConfig(new SaTokenConfig([
