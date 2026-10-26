@@ -12,6 +12,7 @@ use SaToken\Exception\SaTokenException;
 
 class SaTokenEncryptor
 {
+    private const CONTEXT_CIPHERTEXT_MAGIC = 'STC1';
     protected string $key;
 
     protected string $macKey;
@@ -231,6 +232,60 @@ class SaTokenEncryptor
             return null;
         }
         return $plaintext;
+    }
+
+    /** Encrypt a value whose integrity must be bound to its storage key. */
+    public function encryptForContext(string $plaintext, string $context): string
+    {
+        if (!$this->enabled) {
+            return $plaintext;
+        }
+        $this->assertStrongKeyMaterial();
+        $encoded = base64_decode($this->encrypt($plaintext), true);
+        if ($encoded === false || strlen($encoded) < 48) {
+            throw new SaTokenException('Token 内容加密失败');
+        }
+        $ivAndCiphertext = substr($encoded, 32);
+        $mac = $this->contextMac($context, $ivAndCiphertext);
+        return base64_encode(self::CONTEXT_CIPHERTEXT_MAGIC . $mac . $ivAndCiphertext);
+    }
+
+    /** Decrypt only a context-bound value; legacy unbound ciphertext fails closed. */
+    public function decryptCheckedForContext(string $data, string $context): ?string
+    {
+        if (!$this->enabled) {
+            return $data;
+        }
+        if (!$this->keyMaterialStrong) {
+            return null;
+        }
+        $decoded = base64_decode($data, true);
+        if ($decoded === false || strlen($decoded) < 52
+            || substr($decoded, 0, 4) !== self::CONTEXT_CIPHERTEXT_MAGIC) {
+            return null;
+        }
+        $mac = substr($decoded, 4, 32);
+        $ivAndCiphertext = substr($decoded, 36);
+        if (!hash_equals($this->contextMac($context, $ivAndCiphertext), $mac)) {
+            return null;
+        }
+        $standardMac = $this->useSm
+            ? hex2bin(HmacSm3::hmac($this->macKey, bin2hex(substr($ivAndCiphertext, 0, 16)) . bin2hex(substr($ivAndCiphertext, 16))))
+            : hash_hmac('sha256', $ivAndCiphertext, $this->macKey, true);
+        return $this->decryptChecked(base64_encode($standardMac . $ivAndCiphertext));
+    }
+
+    private function contextMac(string $context, string $payload): string
+    {
+        $message = "sa-token-context-v1\0" . pack('N', strlen($context)) . $context . $payload;
+        if (!$this->useSm) {
+            return hash_hmac('sha256', $message, $this->macKey, true);
+        }
+        $mac = hex2bin(HmacSm3::hmac($this->macKey, bin2hex($message)));
+        if ($mac === false) {
+            throw new SaTokenException('Token 内容完整性校验生成失败');
+        }
+        return $mac;
     }
 
     protected function assertStrongKeyMaterial(): void

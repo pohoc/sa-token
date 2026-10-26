@@ -129,6 +129,25 @@ class StpLogicAdvancedTest extends TestCase
         $this->assertEquals('10001', $loginId);
     }
 
+    public function testEncryptedTokenRecordCannotBeCopiedToAnotherToken(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenEncrypt' => true,
+            'tokenEncryptKey' => str_repeat('t', 32),
+            'aesKey' => str_repeat('t', 32),
+        ]));
+        $owner = $this->logic->login('owner')->getAccessToken();
+        $other = $this->logic->login('other')->getAccessToken();
+        $ownerRecord = $this->dao->get(TokenManager::TOKEN_PREFIX . $owner);
+        $ownerLineage = $this->dao->get(TokenManager::TOKEN_SESSION_LINEAGE_PREFIX . $owner);
+        self::assertNotNull($ownerRecord);
+        self::assertNotNull($ownerLineage);
+        $this->dao->set(TokenManager::TOKEN_PREFIX . $other, $ownerRecord);
+        $this->dao->set(TokenManager::TOKEN_SESSION_LINEAGE_PREFIX . $other, $ownerLineage);
+
+        self::assertNull($this->logic->getTokenManager()->getLoginIdByToken($other));
+    }
+
     public function testLoginWithTokenEncryptSmCryptoType(): void
     {
         if (!class_exists(\CryptoSm\SM4\Sm4::class)) {

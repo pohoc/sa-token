@@ -281,7 +281,7 @@ class SaSession
         }
 
         $encryptor = self::getEncryptor();
-        $decrypted = $encryptor->decryptChecked($json);
+        $decrypted = $encryptor->decryptCheckedForContext($json, $this->id);
         if ($decrypted === null) {
             // 密文被篡改或密钥错配：拒绝静默清空后盲写（那会掩盖完整性破坏）
             throw new \SaToken\Exception\SaTokenException('会话数据完整性校验失败，拒绝修改（请检查加密配置或存储是否被篡改）');
@@ -307,7 +307,7 @@ class SaSession
 
         $json = SaToken::getDao()->get($this->id);
         if ($json !== null) {
-            $decrypted = self::getEncryptor()->decryptChecked($json);
+            $decrypted = self::getEncryptor()->decryptCheckedForContext($json, $this->id);
             if ($decrypted === null) {
                 throw new \SaToken\Exception\SaTokenException('会话数据完整性校验失败');
             }
@@ -325,7 +325,7 @@ class SaSession
                     if ($latest === null) {
                         return;
                     }
-                    $latestData = self::getEncryptor()->decryptChecked($latest);
+                    $latestData = self::getEncryptor()->decryptCheckedForContext($latest, $this->id);
                     if ($latestData === null) {
                         throw new \SaToken\Exception\SaTokenException('会话数据完整性校验失败');
                     }
@@ -342,7 +342,7 @@ class SaSession
                         $this->generation = bin2hex(random_bytes(16));
                         $dao = SaToken::getDao();
                         if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndUpdateInterface
-                            || !$dao->compareAndUpdate($this->id, $latest, self::getEncryptor()->encrypt($this->encodeRecord()))) {
+                            || !$dao->compareAndUpdate($this->id, $latest, self::getEncryptor()->encryptForContext($this->encodeRecord(), $this->id))) {
                             throw new \SaToken\Exception\SaTokenException('会话已并发变更或 DAO 不支持原子条件更新，请重试');
                         }
                     }
@@ -364,7 +364,7 @@ class SaSession
     protected function saveData(?string $expectedRaw = null): void
     {
         $encryptor = self::getEncryptor();
-        $encrypted = $encryptor->encrypt($this->encodeRecord());
+        $encrypted = $encryptor->encryptForContext($this->encodeRecord(), $this->id);
 
         if ($this->persisted) {
             // update preserves the storage record's TTL and never creates a

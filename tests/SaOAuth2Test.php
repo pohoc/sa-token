@@ -1291,6 +1291,23 @@ class SaOAuth2Test extends TestCase
         $this->assertEquals('test-client', $validated->getClientId());
     }
 
+    public function testAccessTokenRecordCannotBeCopiedToAnotherTokenKey(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenEncrypt' => true,
+            'tokenEncryptKey' => str_repeat('o', 32),
+        ]));
+        $this->handle->registerClient($this->testClient);
+        $owner = $this->handle->tokenByClientCredentials('test-client', $this->clientSecret, 'read');
+        $sourceKey = 'oauth2:at:' . $owner->getAccessToken();
+        $otherToken = str_repeat('x', 64);
+        $raw = SaToken::getDao()->get($sourceKey);
+        self::assertNotNull($raw);
+        SaToken::getDao()->set('oauth2:at:' . $otherToken, $raw, 7200);
+
+        self::assertNull($this->handle->validateAccessToken($otherToken));
+    }
+
     public function testOAuth2HandleUsesRotatedStorageEncryptionKey(): void
     {
         $oldKey = 'old-oauth2-storage-encryption-key-32-bytes';

@@ -103,6 +103,24 @@ class SaSessionEncryptTest extends TestCase
         SaSession::getBySessionId('tampered-session');
     }
 
+    public function testEncryptedSessionCannotBeCopiedToAnotherSessionKey(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenEncrypt' => true,
+            'tokenEncryptKey' => str_repeat('s', 32),
+        ]));
+        $dao = new SaTokenDaoMemory();
+        SaToken::setDao($dao);
+        $owner = new SaSession('owner-session');
+        $owner->set('role', 'admin');
+        $ownerRecord = $dao->get('owner-session');
+        self::assertNotNull($ownerRecord);
+        $dao->set('other-session', $ownerRecord);
+
+        $this->expectException(SaTokenException::class);
+        SaSession::getBySessionId('other-session');
+    }
+
     public function testSessionWithTokenEncryptAndSmCryptoType(): void
     {
         if (!class_exists(\CryptoSm\SM4\Sm4::class)) {

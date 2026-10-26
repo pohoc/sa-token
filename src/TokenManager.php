@@ -168,6 +168,20 @@ class TokenManager
         return $decrypted;
     }
 
+    protected function encryptBoundValue(string $key, string $value): string
+    {
+        return $this->getEncryptor()->encryptForContext($value, $key);
+    }
+
+    protected function decryptBoundValue(string $key, string $value): string
+    {
+        $decrypted = $this->getEncryptor()->decryptCheckedForContext($value, $key);
+        if ($decrypted === null) {
+            throw new SaTokenException('Token 存储记录完整性校验失败');
+        }
+        return $decrypted;
+    }
+
     public function createTokenValue(mixed $loginId, string $loginType, string $prefix = ''): string
     {
         $action = SaToken::getAction();
@@ -262,7 +276,7 @@ class TokenManager
                     if (!$this->isBlacklisted($tokenValue) && !$dao->exists($tokenKey)) {
                         $this->clearTokenBoundState($tokenValue, $loginType);
                         $lineageKey = self::TOKEN_SESSION_LINEAGE_PREFIX . $tokenValue;
-                        $lineageValue = $this->encryptValue(SaFoxUtil::toJson([
+                        $lineageValue = $this->encryptBoundValue($lineageKey, SaFoxUtil::toJson([
                             'loginId' => $loginIdStr,
                             'loginType' => $loginType,
                             'sessionId' => $sessionId,
@@ -273,7 +287,7 @@ class TokenManager
                         // a stale account index can claim it for its old type.
                         $dao->set($lineageKey, $lineageValue, $effectiveTimeout);
                         try {
-                            if ($dao->setIfNotExists($tokenKey, $this->encryptValue($loginIdStr), $effectiveTimeout)) {
+                            if ($dao->setIfNotExists($tokenKey, $this->encryptBoundValue($tokenKey, $loginIdStr), $effectiveTimeout)) {
                                 try {
                                     $finalizedToken = $this->finalizeToken(
                                         $tokenValue,
@@ -424,14 +438,14 @@ class TokenManager
         $dao = $this->getDao();
         $tokenKey = self::TOKEN_PREFIX . $tokenValue;
         $storedValue = $dao->get($tokenKey);
-        if ($storedValue === null || $this->decryptValue($storedValue) !== $loginId) {
+        if ($storedValue === null || $this->decryptBoundValue($tokenKey, $storedValue) !== $loginId) {
             return;
         }
 
         $lineageKey = self::TOKEN_SESSION_LINEAGE_PREFIX . $tokenValue;
         $lineageValue = $dao->get($lineageKey);
         if ($lineageValue !== null) {
-            $lineage = SaFoxUtil::fromJson($this->decryptValue($lineageValue));
+            $lineage = SaFoxUtil::fromJson($this->decryptBoundValue($lineageKey, $lineageValue));
             if (!is_array($lineage)
                 || ($lineage['loginId'] ?? null) !== $loginId
                 || ($lineage['loginType'] ?? null) !== $loginType) {
@@ -467,12 +481,13 @@ class TokenManager
     {
         // Dao 记录是会话存在性的唯一权威来源：
         // logout/kickout/吊销均通过删除该记录实现，因此不存在记录的 Token 一律无效
-        $value = $this->getDao()->get(self::TOKEN_PREFIX . $tokenValue);
+        $tokenKey = self::TOKEN_PREFIX . $tokenValue;
+        $value = $this->getDao()->get($tokenKey);
         if ($value === null) {
             return null;
         }
         try {
-            $loginId = $this->decryptValue($value);
+            $loginId = $this->decryptBoundValue($tokenKey, $value);
         } catch (SaTokenException) {
             return null;
         }
@@ -552,12 +567,13 @@ class TokenManager
      */
     public function getTokenSessionBinding(string $tokenValue, string $loginType): ?array
     {
-        $tokenRecord = $this->getDao()->get(self::TOKEN_PREFIX . $tokenValue);
+        $tokenKey = self::TOKEN_PREFIX . $tokenValue;
+        $tokenRecord = $this->getDao()->get($tokenKey);
         if ($tokenRecord === null) {
             return null;
         }
         try {
-            $loginId = $this->decryptValue($tokenRecord);
+            $loginId = $this->decryptBoundValue($tokenKey, $tokenRecord);
         } catch (SaTokenException) {
             return null;
         }
@@ -572,7 +588,7 @@ class TokenManager
         $legacyBindingValue = null;
         if ($sessionValue !== null) {
             try {
-                $sessionData = SaFoxUtil::fromJson($this->decryptValue($sessionValue));
+                $sessionData = SaFoxUtil::fromJson($this->decryptBoundValue($sessionLineageKey, $sessionValue));
                 if (!is_array($sessionData)
                     || ($sessionData['loginId'] ?? null) !== $loginId
                     || ($sessionData['loginType'] ?? null) !== $loginType
@@ -653,7 +669,7 @@ class TokenManager
             $tokenTimeout = $this->getDao()->getTimeout(self::TOKEN_PREFIX . $tokenValue);
             $this->getDao()->set(
                 $sessionLineageKey,
-                $this->encryptValue(SaFoxUtil::toJson([
+                $this->encryptBoundValue($sessionLineageKey, SaFoxUtil::toJson([
                     'loginId' => $loginId,
                     'loginType' => $loginType,
                     'sessionId' => $sessionId,
@@ -680,12 +696,13 @@ class TokenManager
      */
     public function getTokenSessionLoginType(string $tokenValue): ?string
     {
-        $tokenRecord = $this->getDao()->get(self::TOKEN_PREFIX . $tokenValue);
+        $tokenKey = self::TOKEN_PREFIX . $tokenValue;
+        $tokenRecord = $this->getDao()->get($tokenKey);
         if ($tokenRecord === null) {
             return '';
         }
         try {
-            $loginId = $this->decryptValue($tokenRecord);
+            $loginId = $this->decryptBoundValue($tokenKey, $tokenRecord);
         } catch (SaTokenException) {
             return '';
         }
@@ -696,7 +713,7 @@ class TokenManager
         $lineage = $this->getDao()->get(self::TOKEN_SESSION_LINEAGE_PREFIX . $tokenValue);
         if ($lineage !== null) {
             try {
-                $data = SaFoxUtil::fromJson($this->decryptValue($lineage));
+                $data = SaFoxUtil::fromJson($this->decryptBoundValue(self::TOKEN_SESSION_LINEAGE_PREFIX . $tokenValue, $lineage));
             } catch (SaTokenException) {
                 return '';
             }

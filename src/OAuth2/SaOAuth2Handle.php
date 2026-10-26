@@ -914,6 +914,9 @@ class SaOAuth2Handle
         }
         /** @var array<string, mixed> $data */
         $tokenData = new SaOAuth2AccessToken($data);
+        if (!hash_equals($accessToken, $tokenData->getAccessToken())) {
+            return null;
+        }
         if ($tokenData->isExpired()) {
             $this->getDao()->delete($this->buildAccessTokenKey($accessToken));
             return null;

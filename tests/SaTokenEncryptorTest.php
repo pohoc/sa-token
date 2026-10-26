@@ -101,6 +101,17 @@ class SaTokenEncryptorTest extends TestCase
         $this->assertEquals($plaintext, $encryptor->decrypt($encrypted));
     }
 
+    public function testContextBoundCiphertextRejectsDifferentStorageKeyAndUnboundLegacyValue(): void
+    {
+        foreach (['intl', 'sm'] as $mode) {
+            $encryptor = new SaTokenEncryptor(true, 'context-binding-test-key-32-bytes!!', $mode);
+            $ciphertext = $encryptor->encryptForContext('owner', 'record:key:one');
+            self::assertSame('owner', $encryptor->decryptCheckedForContext($ciphertext, 'record:key:one'));
+            self::assertNull($encryptor->decryptCheckedForContext($ciphertext, 'record:key:two'));
+            self::assertNull($encryptor->decryptCheckedForContext($encryptor->encrypt('owner'), 'record:key:one'));
+        }
+    }
+
     public function testAesEncryptProducesBase64(): void
     {
         $encryptor = $this->createAesEncryptor();
