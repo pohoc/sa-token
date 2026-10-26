@@ -26,6 +26,10 @@ use SaToken\Util\SaTokenEncryptor;
  */
 class SaOAuth2Handle
 {
+    protected const MAX_SCOPE_LENGTH = 4096;
+
+    protected const MAX_OIDC_NONCE_LENGTH = 1024;
+
     protected SaOAuth2Config $config;
 
     protected const CLIENT_PREFIX = 'oauth2:client:';
@@ -106,7 +110,8 @@ class SaOAuth2Handle
         $client = $this->validateClient($clientId);
         $this->validateGrantTypeForClient($client, 'authorization_code');
         $this->validateRedirectUri($clientId, $redirectUri);
-        $this->validateScopeForClient($client, $scope);
+        $scope = $this->validateScopeForClient($client, $scope);
+        $this->validateOidcNonce($nonce);
 
         // 公开客户端（无 secret）必须使用 PKCE，否则授权码可被任意持有 client_id 者兑换
         if ($client->getClientSecret() === '' && $codeChallenge === '') {
@@ -204,7 +209,10 @@ class SaOAuth2Handle
             throw new SaTokenException('公开客户端必须使用 PKCE（授权请求需携带 code_challenge）');
         }
 
-        if ($this->config->isOpenIdMode() && $this->scopeContainsOpenid($codeData->getScope())) {
+        $scope = $this->validateScopeForClient($client, $codeData->getScope());
+        $nonce = $codeData->getNonce();
+        $this->validateOidcNonce($nonce);
+        if ($this->config->isOpenIdMode() && $this->scopeContainsOpenid($scope)) {
             $this->validateIdTokenIssuer();
         }
 
@@ -219,10 +227,10 @@ class SaOAuth2Handle
         return $this->generateAccessToken(
             $clientId,
             $codeData->getLoginId(),
-            $codeData->getScope(),
+            $scope,
             '',
             true,
-            $codeData->getNonce()
+            $nonce
         );
     }
 
@@ -376,7 +384,8 @@ class SaOAuth2Handle
                 }
                 $preScope = is_string($preData['scope'] ?? null) ? $preData['scope'] : '';
                 try {
-                    $this->validateScopeForClient($client, $preScope);
+                    $preScope = $this->validateScopeForClient($client, $preScope);
+                    $preRtData->setScope($preScope);
                 } catch (SaTokenException $e) {
                     throw new SaTokenException('刷新令牌的 scope 已不在客户端授权范围内：' . $e->getMessage());
                 }
@@ -821,7 +830,7 @@ class SaOAuth2Handle
 
         $client = $this->validateClientWithSecret($clientId, $clientSecret);
         $this->validateGrantTypeForClient($client, 'client_credentials');
-        $this->validateScopeForClient($client, $scope);
+        $scope = $this->validateScopeForClient($client, $scope);
         if ($this->scopeContainsOpenid($scope)) {
             throw new SaTokenException('client_credentials 不允许请求 openid scope');
         }
@@ -983,6 +992,11 @@ class SaOAuth2Handle
         $this->validateGrantTypeForClient($this->validateClient($clientId), $grantType);
     }
 
+    public function validateScopePublic(string $clientId, string $scope): string
+    {
+        return $this->validateScopeForClient($this->validateClient($clientId), $scope);
+    }
+
     public function checkScope(string $accessToken, string $requiredScope): bool
     {
         if ($requiredScope === '' || trim($requiredScope) !== $requiredScope || preg_match('/\s/', $requiredScope) === 1) {
@@ -1033,7 +1047,8 @@ class SaOAuth2Handle
         bool $includeAtHash = false
     ): SaOAuth2AccessToken {
         $client = $this->validateClient($clientId);
-        $this->validateScopeForClient($client, $scope);
+        $scope = $this->validateScopeForClient($client, $scope);
+        $this->validateOidcNonce($idTokenNonce);
         if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
             throw new SaTokenException('loginId 不能为空且必须是非布尔标量');
         }
@@ -1215,10 +1230,13 @@ class SaOAuth2Handle
      * 校验请求 scope 是客户端注册 scopes 的子集。
      * 未配置 scope 白名单的客户端只能请求空 scope，防止客户端自行声明权限。
      */
-    protected function validateScopeForClient(SaOAuth2Client $client, string $scope): void
+    protected function validateScopeForClient(SaOAuth2Client $client, string $scope): string
     {
         if ($scope === '') {
-            return;
+            return '';
+        }
+        if (strlen($scope) > self::MAX_SCOPE_LENGTH) {
+            throw new SaTokenException('scope 长度不能超过 ' . self::MAX_SCOPE_LENGTH . ' 字节');
         }
         if (trim($scope) === '') {
             throw new SaTokenException('scope 不能只包含空白字符');
@@ -1228,10 +1246,25 @@ class SaOAuth2Handle
             throw new SaTokenException('客户端未配置 scope 白名单，不能请求非空 scope');
         }
         $requested = preg_split('/\s+/', trim($scope)) ?: [];
+        $normalized = [];
+        $seen = [];
         foreach ($requested as $item) {
             if ($item !== '' && !in_array($item, $registered, true)) {
                 throw new SaTokenException('请求了未授予的 scope');
             }
+            if ($item !== '' && !isset($seen[$item])) {
+                $seen[$item] = true;
+                $normalized[] = $item;
+            }
+        }
+
+        return implode(' ', $normalized);
+    }
+
+    protected function validateOidcNonce(string $nonce): void
+    {
+        if (strlen($nonce) > self::MAX_OIDC_NONCE_LENGTH) {
+            throw new SaTokenException('OIDC nonce 长度不能超过 ' . self::MAX_OIDC_NONCE_LENGTH . ' 字节');
         }
     }
 
@@ -1403,11 +1436,15 @@ class SaOAuth2Handle
     public function generateIdToken(string $clientId, mixed $loginId, string $scope = '', string $nonce = '', string $accessToken = ''): SaOAuth2IdToken
     {
         $this->validateIdTokenIssuer();
-        if (!$this->config->isOpenIdMode() || !$this->scopeContainsOpenid($scope)) {
+        if (!$this->config->isOpenIdMode()) {
             throw new SaTokenException('生成 ID Token 必须启用 OpenID Connect 并请求 openid scope');
         }
         $client = $this->validateClient($clientId);
-        $this->validateScopeForClient($client, $scope);
+        $scope = $this->validateScopeForClient($client, $scope);
+        if (!$this->scopeContainsOpenid($scope)) {
+            throw new SaTokenException('生成 ID Token 必须启用 OpenID Connect 并请求 openid scope');
+        }
+        $this->validateOidcNonce($nonce);
         if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
             throw new SaTokenException('loginId 不能为空且必须是非布尔标量');
         }

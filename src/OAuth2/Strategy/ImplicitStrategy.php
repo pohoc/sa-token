@@ -74,7 +74,8 @@ class ImplicitStrategy
             throw new SaTokenException('隐式授权必须提供已注册的 redirect_uri');
         }
         $this->handle->validateRedirectUriPublic($clientId, $redirectUri);
-        $scopes = preg_split('/\s+/', trim($scope)) ?: [];
+        $scope = $this->handle->validateScopePublic($clientId, $scope);
+        $scopes = $scope === '' ? [] : explode(' ', $scope);
         $isOpenIdRequest = $this->handle->isOpenIdMode() && in_array('openid', $scopes, true);
         if ($isOpenIdRequest && $nonce === '') {
             throw new SaTokenException('OpenID Connect 隐式授权必须提供 nonce');

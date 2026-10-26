@@ -404,6 +404,44 @@ class SaOAuth2Test extends TestCase
         $this->assertFalse($code->isExpired());
     }
 
+    public function testScopeIsDeduplicatedBeforePersistenceAndTokenIssuance(): void
+    {
+        $code = $this->handle->generateAuthorizationCode(
+            'test-client',
+            10001,
+            'https://example.com/callback',
+            'write read read write'
+        );
+        self::assertSame('write read', $code->getScope());
+
+        $token = $this->handle->generateAccessToken('test-client', 10001, 'write read read');
+        self::assertSame('write read', $token->getScope());
+    }
+
+    public function testOversizedScopeIsRejectedBeforeTokenIssuance(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('scope 长度不能超过');
+
+        $this->handle->generateAccessToken('test-client', 10001, str_repeat('read ', 820));
+    }
+
+    public function testOversizedOidcNonceIsRejectedBeforeAuthorizationCodePersistence(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('OIDC nonce 长度不能超过');
+
+        $this->handle->generateAuthorizationCode(
+            'test-client',
+            10001,
+            'https://example.com/callback',
+            'read',
+            '',
+            '',
+            str_repeat('n', 1025)
+        );
+    }
+
     public function testAuthorizationCodeIssuanceHonorsClientGrantAllowList(): void
     {
         $this->handle->registerClient(new SaOAuth2Client([
