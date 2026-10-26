@@ -87,15 +87,6 @@ class ImplicitStrategy
         $this->handle->validateRedirectUriPublic($clientId, $redirectUri);
         $scope = $this->handle->validateScopePublic($clientId, $scope);
 
-        return $this->handle->generateAccessToken(
-            $clientId,
-            $loginId,
-            $scope,
-            '',
-            false,
-            $nonce,
-            $isOpenIdRequest,
-            'implicit'
-        );
+        return $this->handle->generateImplicitAccessToken($clientId, $loginId, $redirectUri, $scope, $nonce);
     }
 }

@@ -702,6 +702,8 @@ SaToken::init([
 
 新部署只启用所需的 grant。尤其不要为了方便默认开启 `password`：它会把用户密码验证暴露在 Token 端点；旧系统确需使用时，必须显式配置用户凭据验证回调、来源限速和账户锁定策略。密码模式不会签发 OpenID Connect `id_token`。
 
+访问令牌和 ID Token 必须经 grant 专用入口签发。`SaOAuth2Handle::generateAccessToken()` 与 `generateIdToken()` 是已弃用的低层 API，现在会拒绝直接签发；请使用授权码兑换、密码或客户端凭证流程，避免跳过客户端认证、授权码和 PKCE 校验。
+
 ### 使用
 
 使用前必须先注册客户端（机密客户端 `clientSecret` 至少 32 字节；公开客户端可留空，但仅能使用授权码 + PKCE；redirectUris 必须 HTTPS 且在白名单内，grantTypes/scopes 为白名单）：

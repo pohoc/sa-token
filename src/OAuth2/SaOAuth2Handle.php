@@ -247,7 +247,7 @@ class SaOAuth2Handle
             throw new SaTokenException('无效的授权码');
         }
 
-        return $this->generateAccessToken(
+        return $this->issueAccessToken(
             $clientId,
             $codeData->getLoginId(),
             $scope,
@@ -543,7 +543,7 @@ class SaOAuth2Handle
         }
 
         // 刷新时先签发不带 RT 的访问令牌，随后按轮换配置创建唯一 RT 并与 AT 一起持久化。
-        $accessToken = $this->generateAccessToken(
+        $accessToken = $this->issueAccessToken(
             $clientId,
             $rtData->getLoginId(),
             $rtData->getScope(),
@@ -894,7 +894,7 @@ class SaOAuth2Handle
         $this->validateGrantTypeForClient($client, 'password');
         $scope = $this->validateScopeForClient($client, $scope);
 
-        $accessToken = $this->generateAccessToken($clientId, $loginId, $scope, '', true, '', false, 'password');
+        $accessToken = $this->issueAccessToken($clientId, $loginId, $scope, '', true, '', false, 'password');
         SaAntiBruteUtil::clearCurrentSourceFailures($username);
 
         return $accessToken;
@@ -934,7 +934,7 @@ class SaOAuth2Handle
 
         // Client credentials authenticate the client, not a resource owner;
         // they therefore cannot issue refresh credentials for later delegation.
-        return $this->generateAccessToken($clientId, 'client:' . $clientId, $scope, '', false, '', false, 'client_credentials');
+        return $this->issueAccessToken($clientId, 'client:' . $clientId, $scope, '', false, '', false, 'client_credentials');
     }
 
     public function isOpenIdMode(): bool
@@ -1131,13 +1131,47 @@ class SaOAuth2Handle
 
     // ---- 内部方法 ----
 
-    /**
-     * 生成访问令牌
-     *
-     * scope 在此做最终兜底校验：请求 scope 必须是客户端注册 scopes 的子集，
-     * 防止任何入口（策略类/直接调用）自授权未授予的权限
-     */
+    /** @deprecated Use a grant-specific flow; this method cannot prove authorization. */
     public function generateAccessToken(
+        string $clientId,
+        mixed $loginId,
+        string $scope = '',
+        string $refreshFamilyId = '',
+        bool $includeRefreshToken = true,
+        string $idTokenNonce = '',
+        bool $includeAtHash = false,
+        ?string $grantType = null
+    ): SaOAuth2AccessToken {
+        throw new SaTokenException('通用访问令牌签发仅供内部授权流程使用');
+    }
+
+    /** Issue an access token after validating an implicit authorization request. */
+    public function generateImplicitAccessToken(
+        string $clientId,
+        mixed $loginId,
+        string $redirectUri,
+        string $scope = '',
+        string $nonce = ''
+    ): SaOAuth2AccessToken {
+        $client = $this->validateClient($clientId);
+        $this->validateGrantTypeForClient($client, 'implicit');
+        $this->validateRedirectUriForClient($client, $redirectUri);
+        $scope = $this->validateScopeForClient($client, $scope);
+        $this->validateOidcNonce($nonce);
+        $scopes = $scope === '' ? [] : explode(' ', $scope);
+        $isOpenIdRequest = $this->config->isOpenIdMode() && in_array('openid', $scopes, true);
+        if ($isOpenIdRequest && $nonce === '') {
+            throw new SaTokenException('OpenID Connect 隐式授权必须提供 nonce');
+        }
+
+        return $this->issueAccessToken($clientId, $loginId, $scope, '', false, $nonce, $isOpenIdRequest, 'implicit');
+    }
+
+    /**
+     * Internal signer. Public entry points must establish client authentication
+     * or authorization-code/PKCE proof before reaching this method.
+     */
+    protected function issueAccessToken(
         string $clientId,
         mixed $loginId,
         string $scope = '',
@@ -1192,7 +1226,7 @@ class SaOAuth2Handle
         // OIDC 规范：id_token 仅在请求包含 openid scope 时签发，
         // 防止未请求身份信息的流程被附带下发 sub 等身份声明
         if ($this->config->isOpenIdMode() && $this->scopeContainsOpenid($scope)) {
-            $idTokenObj = $this->generateIdToken(
+            $idTokenObj = $this->issueIdToken(
                 $clientId,
                 $loginId,
                 $scope,
@@ -1565,14 +1599,20 @@ class SaOAuth2Handle
     }
 
     /**
-     * 生成 ID Token（OpenID Connect）
-     *
-     * @param  string          $clientId 客户端 ID
-     * @param  mixed           $loginId  资源所有者登录 ID
-     * @param  string          $scope    权限范围
+     * @deprecated ID Tokens are issued only as part of a validated OAuth grant.
+     * @param  string          $clientId    Client identifier.
+     * @param  mixed           $loginId     Resource owner identifier.
+     * @param  string          $scope       Requested scope.
+     * @param  string          $nonce       OIDC nonce.
+     * @param  string          $accessToken Access token for at_hash.
      * @return SaOAuth2IdToken
      */
     public function generateIdToken(string $clientId, mixed $loginId, string $scope = '', string $nonce = '', string $accessToken = ''): SaOAuth2IdToken
+    {
+        throw new SaTokenException('ID Token 必须通过已验证的 OAuth 授权流程签发');
+    }
+
+    protected function issueIdToken(string $clientId, mixed $loginId, string $scope = '', string $nonce = '', string $accessToken = ''): SaOAuth2IdToken
     {
         $this->validateIdTokenIssuer();
         if (!$this->config->isOpenIdMode()) {

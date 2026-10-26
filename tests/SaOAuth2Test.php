@@ -232,23 +232,18 @@ class SaOAuth2Test extends TestCase
         $otherHandle->tokenByClientCredentials('test-client', $this->clientSecret);
     }
 
-    public function testAccessTokenIssuanceRequiresRegisteredClientAndValidLoginId(): void
+    public function testGenericAccessTokenSignerCannotBeCalledDirectly(): void
     {
-        try {
-            $this->handle->generateAccessToken('unknown-client', 10001);
-            $this->fail('不能为未注册客户端签发令牌');
-        } catch (SaTokenException $e) {
-            $this->assertStringContainsString('未注册的客户端', $e->getMessage());
-        }
+        $this->handle->registerClient(new SaOAuth2Client([
+            'clientId' => 'public-pkce-client',
+            'clientSecret' => '',
+            'redirectUris' => ['https://example.com/callback'],
+            'grantTypes' => ['authorization_code'],
+        ]));
 
-        foreach ([null, '', false, true, [], new \stdClass()] as $loginId) {
-            try {
-                $this->handle->generateAccessToken('test-client', $loginId, '', '', true, '', false, 'authorization_code');
-                $this->fail('无效 loginId 不得获得 OAuth 令牌');
-            } catch (SaTokenException $e) {
-                $this->assertStringContainsString('loginId', $e->getMessage());
-            }
-        }
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('通用访问令牌签发仅供内部授权流程使用');
+        $this->handle->generateAccessToken('public-pkce-client', 'attacker-chosen-user', '', '', true, '', false, 'authorization_code');
     }
 
     public function testAccessTokenIssuanceEnforcesExplicitClientGrantType(): void
@@ -262,15 +257,12 @@ class SaOAuth2Test extends TestCase
         $this->handle->registerClient($client);
 
         try {
-            $this->handle->generateAccessToken(
+            $this->handle->generateImplicitAccessToken(
                 'authorization-code-only-client',
                 10001,
+                'https://example.com/callback',
                 'read',
-                '',
-                false,
-                '',
-                false,
-                'implicit'
+                ''
             );
             self::fail('直接签发入口不得绕过客户端的授权类型白名单');
         } catch (SaTokenException $exception) {
@@ -288,7 +280,7 @@ class SaOAuth2Test extends TestCase
         $this->handle->registerClient($client);
 
         $this->expectException(SaTokenException::class);
-        $this->expectExceptionMessage('必须明确指定授权类型');
+        $this->expectExceptionMessage('通用访问令牌签发仅供内部授权流程使用');
         $this->handle->generateAccessToken('client-credentials-only', 'arbitrary-user');
     }
 
@@ -395,13 +387,13 @@ class SaOAuth2Test extends TestCase
         $this->handle->registerClient($client);
 
         try {
-            $this->handle->generateAccessToken('scope-less-client', 'service', 'admin', '', true, '', false, 'client_credentials');
+            $this->handle->tokenByClientCredentials('scope-less-client', 'scope-less-client-secret-at-least-32-bytes', 'admin');
             self::fail('未配置 scope 白名单的客户端不能自行声明权限');
         } catch (SaTokenException $e) {
             self::assertStringContainsString('scope 白名单', $e->getMessage());
         }
 
-        self::assertNotEmpty($this->handle->generateAccessToken('scope-less-client', 'service', '', '', true, '', false, 'client_credentials')->getAccessToken());
+        self::assertNotEmpty($this->handle->tokenByClientCredentials('scope-less-client', 'scope-less-client-secret-at-least-32-bytes')->getAccessToken());
     }
 
     public function testImplicitStrategyHonorsGlobalGrantTypeAllowList(): void
@@ -523,7 +515,8 @@ class SaOAuth2Test extends TestCase
         );
         self::assertSame('write read', $code->getScope());
 
-        $token = $this->handle->generateAccessToken('test-client', 10001, 'write read read', '', true, '', false, 'authorization_code');
+        $code = $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback', 'write read read');
+        $token = $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
         self::assertSame('write read', $token->getScope());
     }
 
@@ -532,7 +525,7 @@ class SaOAuth2Test extends TestCase
         $this->expectException(SaTokenException::class);
         $this->expectExceptionMessage('scope 长度不能超过');
 
-        $this->handle->generateAccessToken('test-client', 10001, str_repeat('read ', 820), '', true, '', false, 'authorization_code');
+        $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback', str_repeat('read ', 820));
     }
 
     public function testOversizedOidcNonceIsRejectedBeforeAuthorizationCodePersistence(): void
