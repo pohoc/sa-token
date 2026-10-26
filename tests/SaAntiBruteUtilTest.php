@@ -96,6 +96,43 @@ class SaAntiBruteUtilTest extends TestCase
         SaAntiBruteUtil::checkAndThrow('random-user-3');
     }
 
+    public function testConcurrentFailuresDoNotAllocateAccountCountersAfterSourceLimit(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'antiBruteMaxFailures' => 5,
+            'antiBruteIpMaxFailures' => 1,
+            'antiBruteLockDuration' => 600,
+        ]));
+
+        $makeRequest = fn (): object => $this->requestFromIp('192.0.2.60');
+        $first = new \Fiber(function () use ($makeRequest): void {
+            SaTokenContext::setRequest($makeRequest());
+            SaAntiBruteUtil::checkAndThrow('random-user-1');
+            \Fiber::suspend();
+            SaAntiBruteUtil::recordFailure('random-user-1');
+        });
+        $second = new \Fiber(function () use ($makeRequest): void {
+            SaTokenContext::setRequest($makeRequest());
+            SaAntiBruteUtil::checkAndThrow('random-user-2');
+            \Fiber::suspend();
+            SaAntiBruteUtil::recordFailure('random-user-2');
+        });
+
+        // Both requests pass the pre-authentication check before either
+        // credential validator returns a failure.
+        $first->start();
+        $second->start();
+        $first->resume();
+        $second->resume();
+
+        SaTokenContext::setRequest($makeRequest());
+        $this->assertSame(0, SaAntiBruteUtil::getFailCount('random-user-1'));
+        $this->assertSame(0, SaAntiBruteUtil::getFailCount('random-user-2'));
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('当前来源失败次数过多');
+        SaAntiBruteUtil::checkAndThrow('random-user-3');
+    }
+
     public function testSourceFailureLimitIsIsolatedByIpAndLoginType(): void
     {
         SaToken::setConfig(new SaTokenConfig([

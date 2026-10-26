@@ -130,14 +130,12 @@ class SaAntiBruteUtil
             throw new SaTokenException('无法识别客户端 IP，拒绝处理认证失败以避免共享未知来源锁');
         }
 
-        // 限制按账号+来源 IP 计数，避免任何人仅凭已知账号名就锁死受害者。
-        // 单来源仍按原子计数阻止在线爆破；分布式防护需在上游配置全局速率限制。
-        $failCount = $dao->increment(self::getIpCountKey($account, $loginType), 1, 86400);
-
         // Account+IP counters alone let an attacker create a fresh persistent key
         // for every guessed username. Bound that key growth with one counter per
         // source and login type; after the cap, reject new attempts before they
-        // can allocate another account counter.
+        // can allocate another account counter. This must happen before writing
+        // the account counter because concurrent requests may all pass
+        // checkAndThrow() before any of them records its failed credential.
         $sourceProtectionEnabled = $sourceProtectionEnabled && $sourceIdentity !== null;
         if ($sourceProtectionEnabled && $sourceIdentity !== null) {
             $sourceCount = $dao->increment(self::getSourceFailureKey($sourceIdentity), 1, $lockDuration);
@@ -147,8 +145,14 @@ class SaAntiBruteUtil
                     (string) (time() + $lockDuration),
                     $lockDuration + 60
                 );
+                return;
             }
         }
+
+        // Limit account+source-IP counters to avoid letting one known account
+        // be locked from unrelated source addresses. Distributed protection
+        // still requires a shared DAO and any global rate limits at the edge.
+        $failCount = $dao->increment(self::getIpCountKey($account, $loginType), 1, 86400);
 
         if ($maxFailures > 0 && $lockDuration > 0 && $failCount >= $maxFailures) {
             $dao->set(
