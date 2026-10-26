@@ -288,7 +288,13 @@ class TokenManager
                         // record. Otherwise a reused token becomes visible
                         // between setIfNotExists() and finalizeToken(), while
                         // a stale account index can claim it for its old type.
-                        $dao->set($lineageKey, $lineageValue, $effectiveTimeout);
+                        // The token-value lock is a lease and can expire while
+                        // this worker is paused. Claim lineage conditionally so
+                        // a stale lock owner cannot overwrite the owner metadata
+                        // published by the worker that took over the lease.
+                        if (!$dao->setIfNotExists($lineageKey, $lineageValue, $effectiveTimeout)) {
+                            continue;
+                        }
                         try {
                             if ($dao->setIfNotExists($tokenKey, $this->encryptBoundValue($tokenKey, $loginIdStr), $effectiveTimeout)) {
                                 try {

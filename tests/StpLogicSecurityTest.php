@@ -23,6 +23,23 @@ class TestableStpLogic extends StpLogic
     }
 }
 
+class SaTokenDaoPausingTokenLineageWrite extends SaTokenDaoMemory
+{
+    public ?\Closure $beforeLineageWrite = null;
+
+    public function setIfNotExists(string $key, string $value, ?int $timeout = null): bool
+    {
+        if (str_starts_with($key, TokenManager::TOKEN_SESSION_LINEAGE_PREFIX)
+            && $this->beforeLineageWrite !== null) {
+            $callback = $this->beforeLineageWrite;
+            $this->beforeLineageWrite = null;
+            $callback();
+        }
+
+        return parent::setIfNotExists($key, $value, $timeout);
+    }
+}
+
 class StpLogicSecurityTest extends TestCase
 {
     protected TestableStpLogic $stp;
@@ -56,6 +73,31 @@ class StpLogicSecurityTest extends TestCase
         SaTokenContext::setContextId('test');
         SaTokenContext::clear();
         SaToken::reset();
+    }
+
+    public function testExpiredTokenLockCannotOverwriteNewOwnersLineage(): void
+    {
+        $dao = new SaTokenDaoPausingTokenLineageWrite();
+        $this->dao = $dao;
+        SaToken::setDao($dao);
+        $token = 'lineage-lease-race-token';
+        $tokenLockKey = TokenManager::LOCK_PREFIX . 'token-value:' . hash('sha256', $token);
+        $dao->beforeLineageWrite = function () use ($dao, $tokenLockKey, $token): void {
+            // Model the token lock lease expiring after the old owner checked
+            // the bearer, then let a different login type publish the token.
+            $dao->delete($tokenLockKey);
+            SaTokenContext::setContextId('replacement-worker');
+            try {
+                $this->manager->saveToken($token, 'new-owner', 'new-type', 'PC', 3600);
+            } finally {
+                SaTokenContext::setContextId('test');
+            }
+        };
+
+        $this->manager->saveToken($token, 'stale-owner', 'old-type', 'PC', 3600);
+
+        self::assertSame('new-owner', $this->manager->getLoginIdByToken($token));
+        self::assertSame('new-type', $this->manager->getTokenSessionLoginType($token));
     }
 
     public function testOpenSensitiveVerifyCannotMintProofBeforeOtpVerification(): void
