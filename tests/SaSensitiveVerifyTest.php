@@ -110,6 +110,24 @@ class SaSensitiveVerifyTest extends TestCase
         SaSensitiveVerify::reset();
     }
 
+    private function issueSafeToken(string $scene, mixed $loginId, string $loginType = 'login', int $validSeconds = 600, ?string $tokenBinding = null): string
+    {
+        $token = (new \ReflectionMethod(SaSensitiveVerify::class, 'issueSafeToken'))
+            ->invoke(null, $scene, $loginId, $loginType, $validSeconds, $tokenBinding);
+        if (!is_string($token)) {
+            throw new \LogicException('Safe token test fixture was not issued');
+        }
+
+        return $token;
+    }
+
+    public function testDirectSafeTokenIssuanceFailsClosed(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('必须通过已验证的 OTP 流程');
+        SaSensitiveVerify::createSafeToken('direct-issue', 'alice');
+    }
+
     public function testGenerateCodeReturnsNumericString(): void
     {
         $scene = 'test-scene';
@@ -133,7 +151,7 @@ class SaSensitiveVerifyTest extends TestCase
         }
 
         try {
-            SaSensitiveVerify::createSafeToken('invalid-login-id', false);
+            $this->issueSafeToken('invalid-login-id', false);
             self::fail('Safe tokens must not bind to a normalized invalid identity');
         } catch (SaTokenException $exception) {
             self::assertStringContainsString('loginId', $exception->getMessage());
@@ -437,7 +455,7 @@ class SaSensitiveVerifyTest extends TestCase
         $loginId = 10001;
         $loginType = 'login';
 
-        $token = SaSensitiveVerify::createSafeToken($scene, $loginId, $loginType);
+        $token = $this->issueSafeToken($scene, $loginId, $loginType);
         $this->assertEquals(64, strlen($token));
 
         $result = SaSensitiveVerify::verifySafeToken($scene, $token, $loginId, $loginType);
@@ -449,7 +467,7 @@ class SaSensitiveVerifyTest extends TestCase
         $scene = 'test-scene';
         $loginId = 10001;
 
-        SaSensitiveVerify::createSafeToken($scene, $loginId);
+        $this->issueSafeToken($scene, $loginId);
         $result = SaSensitiveVerify::verifySafeToken($scene, 'wrong-token', $loginId);
 
         $this->assertFalse($result);
@@ -460,7 +478,7 @@ class SaSensitiveVerifyTest extends TestCase
         $scene = 'test-scene';
         $loginId = 10001;
 
-        $token = SaSensitiveVerify::createSafeToken($scene, $loginId);
+        $token = $this->issueSafeToken($scene, $loginId);
 
         $firstResult = SaSensitiveVerify::verifySafeToken($scene, $token, $loginId);
         $this->assertTrue($firstResult);
@@ -472,7 +490,7 @@ class SaSensitiveVerifyTest extends TestCase
     public function testSafeTokenStateCannotBeCopiedToAnotherLoginId(): void
     {
         $scene = 'copied-safe-token-state';
-        $token = SaSensitiveVerify::createSafeToken($scene, 'alice');
+        $token = $this->issueSafeToken($scene, 'alice');
         $sourceKey = 'satoken:sensitive:login:safe-token:' . $scene . ':' . hash('sha256', 'alice') . ':' . substr($token, 0, 16);
         $targetKey = 'satoken:sensitive:login:safe-token:' . $scene . ':' . hash('sha256', 'bob') . ':' . substr($token, 0, 16);
         $sourceState = SaToken::getDao()->get($sourceKey);
@@ -488,7 +506,7 @@ class SaSensitiveVerifyTest extends TestCase
         SaToken::setDao($dao);
         $scene = 'safe-token-expiry-race';
         $loginId = 'alice';
-        $token = SaSensitiveVerify::createSafeToken($scene, $loginId);
+        $token = $this->issueSafeToken($scene, $loginId);
         $key = 'satoken:sensitive:login:safe-token:' . $scene . ':' . hash('sha256', $loginId) . ':' . substr($token, 0, 16);
         $encodeState = new \ReflectionMethod(SaSensitiveVerify::class, 'encodeSensitiveState');
 
@@ -515,7 +533,7 @@ class SaSensitiveVerifyTest extends TestCase
     {
         $scene = 'test-scene';
         $loginId = 10001;
-        $token = SaSensitiveVerify::createSafeToken($scene, $loginId);
+        $token = $this->issueSafeToken($scene, $loginId);
         $key = 'satoken:sensitive:login:safe-token:' . $scene . ':' . hash('sha256', (string) $loginId) . ':' . substr($token, 0, 16);
 
         SaToken::getDao()->set($key, json_encode([
@@ -560,7 +578,7 @@ class SaSensitiveVerifyTest extends TestCase
         $scene = 'test-scene';
         $loginId = 10001;
 
-        SaSensitiveVerify::createSafeToken($scene, $loginId);
+        $this->issueSafeToken($scene, $loginId);
 
         $this->expectException(NotSafeException::class);
         SaSensitiveVerify::verifySafeTokenAndThrow($scene, 'wrong-token', $loginId);
@@ -595,7 +613,7 @@ class SaSensitiveVerifyTest extends TestCase
     public function testSafeTokenCannotCrossLoginTypesThroughSceneDelimiterCollision(): void
     {
         $loginId = 10002;
-        $token = SaSensitiveVerify::createSafeToken('admin:safe-token:otp', $loginId, 'user');
+        $token = $this->issueSafeToken('admin:safe-token:otp', $loginId, 'user');
 
         $this->assertFalse(SaSensitiveVerify::verifySafeToken('otp', $token, $loginId, 'user:safe-token:admin'));
         $this->assertTrue(SaSensitiveVerify::verifySafeToken('admin:safe-token:otp', $token, $loginId, 'user'));
@@ -773,14 +791,14 @@ class SaSensitiveVerifyTest extends TestCase
     public function testSafeTokenRejectsNonPositiveLifetime(): void
     {
         $this->expectException(SaTokenException::class);
-        SaSensitiveVerify::createSafeToken('invalid-expiry-safe-token', 10032, 'login', 0);
+        $this->issueSafeToken('invalid-expiry-safe-token', 10032, 'login', 0);
     }
 
     public function testTamperedSafeTokenStateFailsClosed(): void
     {
         $scene = 'invalid-expiry-safe-token';
         $loginId = 10033;
-        $token = SaSensitiveVerify::createSafeToken($scene, $loginId);
+        $token = $this->issueSafeToken($scene, $loginId);
         $key = 'satoken:sensitive:login:safe-token:' . $scene . ':' . hash('sha256', (string) $loginId) . ':' . substr($token, 0, 16);
         SaToken::getDao()->set($key, json_encode([
             'scene' => $scene,

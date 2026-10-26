@@ -324,7 +324,7 @@ class SaSensitiveVerify
             throw new NotSafeException('请先完成该场景的一次性验证码验证');
         }
 
-        return self::createSafeToken($scene, $loginId, $loginType, $validSeconds, $tokenBinding);
+        return self::issueSafeToken($scene, $loginId, $loginType, $validSeconds, $tokenBinding);
     }
 
     /** Atomically consume a successful OTP verification before issuing a safe token. */
@@ -495,7 +495,16 @@ class SaSensitiveVerify
         return hash_hkdf('sha256', $signKey, 32, 'sa-token-sensitive-verify-state', '');
     }
 
+    /**
+     * @deprecated Direct safe-token issuance bypasses OTP verification. Use createSafeTokenAfterVerified().
+     */
     public static function createSafeToken(string $scene, mixed $loginId, string $loginType = 'login', int $validSeconds = 600, ?string $tokenBinding = null): string
+    {
+        throw new SaTokenException('安全令牌必须通过已验证的 OTP 流程签发');
+    }
+
+    /** Issue the bearer only after the verified OTP state has been consumed. */
+    protected static function issueSafeToken(string $scene, mixed $loginId, string $loginType = 'login', int $validSeconds = 600, ?string $tokenBinding = null): string
     {
         self::validateLifetime($validSeconds);
         $token = bin2hex(random_bytes(32));

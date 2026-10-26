@@ -186,18 +186,37 @@ class RedisDaoRealIntegrationTest extends TestCase
 
         $scene = 'redis-otp-' . bin2hex(random_bytes(6));
         $loginId = 'redis-otp-user-' . bin2hex(random_bytes(6));
+        $tokenBinding = 'redis-otp-access-token';
         $key = SaSensitiveVerify::getKey($scene, $loginId);
+        $safeTokenKey = null;
 
         try {
             $code = SaSensitiveVerify::generateCode($scene, $loginId);
 
-            self::assertTrue(SaSensitiveVerify::verifyCode($scene, $code, $loginId));
-            self::assertFalse(SaSensitiveVerify::verifyCode($scene, $code, $loginId));
+            self::assertTrue(SaSensitiveVerify::verifyCode($scene, $code, $loginId, 'login', $tokenBinding));
+            self::assertFalse(SaSensitiveVerify::verifyCode($scene, $code, $loginId, 'login', $tokenBinding));
+
+            $safeToken = SaSensitiveVerify::createSafeTokenAfterVerified(
+                $scene,
+                $loginId,
+                'login',
+                600,
+                $tokenBinding
+            );
+            $safeTokenKey = 'satoken:sensitive:login:safe-token:'
+                . \SaToken\TokenManager::encodeKeyComponent($scene) . ':'
+                . hash('sha256', $loginId) . ':' . substr($safeToken, 0, 16)
+                . ':binding:' . hash('sha256', $tokenBinding);
+            self::assertTrue(SaSensitiveVerify::verifySafeToken($scene, $safeToken, $loginId, 'login', $tokenBinding));
+            self::assertFalse(SaSensitiveVerify::verifySafeToken($scene, $safeToken, $loginId, 'login', $tokenBinding));
         } finally {
             $this->dao->delete($key);
             $this->dao->delete($key . ':att');
             $this->dao->delete($key . ':verified');
             $this->dao->delete($key . ':state-lock');
+            if ($safeTokenKey !== null) {
+                $this->dao->delete($safeTokenKey);
+            }
             SaSensitiveVerify::reset();
             SaToken::reset();
         }

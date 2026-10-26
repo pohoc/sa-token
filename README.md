@@ -1149,6 +1149,8 @@ StpUtil::checkSensitiveVerify('payment', $token);
 
 `sendOtpCode()` 要求当前请求已登录，并按当前登录账号投递验证码，不会把验证码返回给调用方。底层静态方法 `SaSensitiveVerify::sendCode()` 可由服务端指定任意 `loginId`，本身不验证调用者身份或目标归属；只应从可信服务端流程调用，不要暴露为允许匿名用户任意指定手机号/邮箱的接口。对外发送端点还应校验目标归属并设置来源级限流。`generateOtpCode()` 同样仅供可信服务端自定义投递流程使用；验证码属于秘密凭据，不要将其放入 HTTP/RPC 响应返回给用户。
 
+一次性安全令牌必须在 OTP 成功验证后通过 `createSafeTokenAfterVerified()`（或 `StpUtil::openSensitiveVerify()`）签发。旧的 `SaSensitiveVerify::createSafeToken()` 入口现 fail-closed，因为直接调用会绕过 OTP 验证；请迁移到受验证状态保护的签发流程。
+
 ## 审计日志
 
 记录登录、登出、踢人、封禁、身份切换等操作：
