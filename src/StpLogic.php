@@ -164,6 +164,11 @@ class StpLogic
             // step fails, do not leave a usable session behind for a login
             // request that reported failure.
             if ($tokenValue !== null && $this->tokenManager->isTokenValid($tokenValue)) {
+                // The account lock may have expired while a DAO operation was
+                // stalled. Drop stale local ownership before retrying cleanup
+                // under a fresh lease; otherwise a failed login could leave a
+                // usable token after a later step correctly rejects its write.
+                $this->tokenManager->renewLock($lockKey, 30);
                 $this->removeTokenAndRefreshToken($tokenValue, $loginId);
             }
             throw $exception;

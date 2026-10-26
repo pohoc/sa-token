@@ -78,7 +78,8 @@ class SaLoginDeviceManager
         $kickoutEvents = [];
         try {
             $tokenValues = [];
-            foreach (self::loadDeviceTokenValues($key) as $existingToken) {
+            $expectedRecord = $dao->get($key);
+            foreach (self::loadDeviceTokenValues($key, $expectedRecord) as $existingToken) {
                 if ($logic->getLoginIdByToken($existingToken) === $loginIdStr) {
                     $tokenValues[] = $existingToken;
                 }
@@ -91,7 +92,15 @@ class SaLoginDeviceManager
             }
             $tokenValues = array_values(array_unique($tokenValues));
 
-            $dao->set($key, self::encodeDevice($device, $tokenValues), $timeout > 0 ? $timeout + 60 : null);
+            if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface
+                || !$dao->compareAndSet(
+                    $key,
+                    $expectedRecord,
+                    self::encodeDevice($device, $tokenValues),
+                    $timeout > 0 ? $timeout + 60 : null
+                )) {
+                throw new SaTokenException('设备记录已并发变更或 DAO 不支持原子条件写入，请重试');
+            }
         } finally {
             $tokenManager->releaseLock($lockKey);
         }
