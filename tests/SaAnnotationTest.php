@@ -230,6 +230,28 @@ class SaAnnotationTestProtectedIgnoreMethodSubclassController extends SaAnnotati
     }
 }
 
+interface SaAnnotationTestSecuredInterface
+{
+    #[SaCheckLogin]
+    public function execute(): string;
+}
+
+class SaAnnotationTestInterfaceController implements SaAnnotationTestSecuredInterface
+{
+    public function execute(): string
+    {
+        return 'executed';
+    }
+}
+
+class SaAnnotationTestProtectedIgnoreInterfaceController extends SaAnnotationTestIgnoredBaseController implements SaAnnotationTestSecuredInterface
+{
+    public function execute(): string
+    {
+        return 'executed';
+    }
+}
+
 class SaAnnotationTestMixedController
 {
     #[SaCheckLogin]
@@ -512,6 +534,18 @@ class SaAnnotationTest extends TestCase
         SaAnnotationProcessor::process(SaAnnotationTestProtectedInheritedIgnoreMethodController::class, 'overridablePublicAction');
     }
 
+    public function testInterfaceMethodLoginRequirementIsEnforced(): void
+    {
+        $this->expectException(NotLoginException::class);
+        SaAnnotationProcessor::process(SaAnnotationTestInterfaceController::class, 'execute');
+    }
+
+    public function testInterfaceAuthorizationOverridesInheritedIgnore(): void
+    {
+        $this->expectException(NotLoginException::class);
+        SaAnnotationProcessor::process(SaAnnotationTestProtectedIgnoreInterfaceController::class, 'execute');
+    }
+
     public function testOverriddenMethodInheritsSecurityAnnotations(): void
     {
         $attributes = SaAnnotationProcessor::getMethodAttributes(
@@ -600,6 +634,13 @@ class SaAnnotationTest extends TestCase
         }
         $this->assertTrue($hasLogin);
         $this->assertTrue($hasPermission);
+    }
+
+    public function testGetMethodAttributesIncludesInterfaceAuthorization(): void
+    {
+        $attrs = SaAnnotationProcessor::getMethodAttributes(SaAnnotationTestInterfaceController::class, 'execute');
+        $this->assertCount(1, $attrs);
+        $this->assertInstanceOf(SaCheckLogin::class, $attrs[0]);
     }
 
     public function testGetMethodAttributesIncludesClassLevel(): void

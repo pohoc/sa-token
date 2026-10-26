@@ -20,9 +20,11 @@ class SaAnnotationProcessor
         $targetMethod = $reflectionClass->hasMethod($method) ? $reflectionClass->getMethod($method) : null;
         $targetMethodDeclaration = $targetMethod?->getDeclaringClass()->getName();
         $targetMethodAttributes = $targetMethod?->getAttributes() ?? [];
+        $interfaceAttributes = self::getInterfaceAuthorizationAttributes($reflectionClass, $method);
         $hasMoreSpecificAuthorization = self::hasAuthorizationAttribute($reflectionClass->getAttributes())
             || ($targetMethodDeclaration === $reflectionClass->getName()
-                && self::hasAuthorizationAttribute($targetMethodAttributes));
+                && self::hasAuthorizationAttribute($targetMethodAttributes))
+            || $interfaceAttributes !== [];
         foreach ($targetMethodAttributes as $attr) {
             if ($attr->getName() === SaIgnore::class) {
                 // 当前类直接声明的 method-level ignore 是明确的 opt-out；
@@ -98,7 +100,7 @@ class SaAnnotationProcessor
             }
         }
 
-        $allAttributes = array_merge($classAttributes, $methodAttributes);
+        $allAttributes = array_merge($classAttributes, $methodAttributes, $interfaceAttributes);
 
         foreach ($allAttributes as $attr) {
             $instance = $attr->newInstance();
@@ -178,6 +180,44 @@ class SaAnnotationProcessor
         return false;
     }
 
+    /**
+     * Interface authorization attributes are contract requirements. Interface
+     * SaIgnore attributes are deliberately excluded so an implemented
+     * interface cannot opt a controller out of class or method authorization.
+     *
+     * @param  ReflectionClass<object>             $class
+     * @return array<\ReflectionAttribute<object>>
+     */
+    protected static function getInterfaceAuthorizationAttributes(ReflectionClass $class, string $method): array
+    {
+        $result = [];
+        $seenMethodDeclarations = [];
+        foreach ($class->getInterfaces() as $interface) {
+            foreach ($interface->getAttributes() as $attribute) {
+                if (self::hasAuthorizationAttribute([$attribute])) {
+                    $result[] = $attribute;
+                }
+            }
+
+            if (!$interface->hasMethod($method)) {
+                continue;
+            }
+            $interfaceMethod = $interface->getMethod($method);
+            $declaration = $interfaceMethod->getDeclaringClass()->getName();
+            if (isset($seenMethodDeclarations[$declaration])) {
+                continue;
+            }
+            $seenMethodDeclarations[$declaration] = true;
+            foreach ($interfaceMethod->getAttributes() as $attribute) {
+                if (self::hasAuthorizationAttribute([$attribute])) {
+                    $result[] = $attribute;
+                }
+            }
+        }
+
+        return $result;
+    }
+
     public static function processCallable(callable $callable): void
     {
         if (is_array($callable) && count($callable) === 2) {
@@ -224,6 +264,8 @@ class SaAnnotationProcessor
             $seenMethodDeclarations[$declaration] = true;
             $methodAttrs = array_merge($methodAttrs, $reflectedMethod->getAttributes());
         }
+
+        $methodAttrs = array_merge($methodAttrs, self::getInterfaceAuthorizationAttributes($reflectionClass, $method));
 
         foreach (array_merge($classAttrs, $methodAttrs) as $attr) {
             if (str_starts_with($attr->getName(), 'SaToken\\Annotation\\')) {
