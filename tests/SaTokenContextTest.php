@@ -79,6 +79,24 @@ class SaTokenContextTest extends TestCase
         $this->assertSame('192.0.2.9', SaTokenContext::getClientIp());
     }
 
+    public function testTrustedProxyAddressesUseCanonicalIpv6Matching(): void
+    {
+        SaTokenContext::setTrustedProxies([
+            '2001:0db8:0:0:0:0:0:1',
+            '2001:db8::2',
+        ]);
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '2001:db8::1']);
+        $request->method('getHeader')->willReturnCallback(static function (string $name): array {
+            return strcasecmp($name, 'X-Forwarded-For') === 0
+                ? ['2001:0db8:0:0:0:0:0:9, 2001:0db8:0:0:0:0:0:2']
+                : [];
+        });
+        SaTokenContext::setRequest($request);
+
+        self::assertSame('2001:db8::9', SaTokenContext::getClientIp());
+    }
+
     public function testTrustedProxyDoesNotTrustResolvedFrameworkIpWithoutRawPeerAddress(): void
     {
         SaTokenContext::setTrustedProxies(['198.51.100.1']);

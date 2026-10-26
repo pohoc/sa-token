@@ -282,8 +282,8 @@ class SaTokenContext
             return $remoteAddr;
         }
 
-        if ($remoteAddr === null || !in_array($remoteAddr, self::$trustedProxies, true)) {
-            return $remoteAddr;
+        if ($remoteAddr === null || !self::isTrustedProxyIp($remoteAddr)) {
+            return self::normalizeIpAddress($remoteAddr);
         }
 
         $forwarded = self::getForwardedHeader('X-Forwarded-For');
@@ -298,8 +298,8 @@ class SaTokenContext
                     // behind the proxy.
                     return null;
                 }
-                if (!in_array($ip, self::$trustedProxies, true)) {
-                    return $ip;
+                if (!self::isTrustedProxyIp($ip)) {
+                    return self::normalizeIpAddress($ip);
                 }
             }
             // No client address can be established when every hop is itself
@@ -310,12 +310,48 @@ class SaTokenContext
 
         $realIp = self::getForwardedHeader('X-Real-IP');
         if ($realIp !== null) {
-            return filter_var($realIp, FILTER_VALIDATE_IP) !== false ? $realIp : null;
+            return self::normalizeIpAddress($realIp);
         }
 
         // A trusted proxy without a usable client-address header cannot be
         // distinguished from every other client behind that proxy.
         return null;
+    }
+
+    /** Compare proxy addresses by their packed IP representation, not text form. */
+    protected static function isTrustedProxyIp(string $ip): bool
+    {
+        $normalizedIp = self::normalizeIpAddress($ip);
+        if ($normalizedIp === null) {
+            return false;
+        }
+
+        foreach (self::$trustedProxies as $trustedProxy) {
+            if (!is_string($trustedProxy)) {
+                continue;
+            }
+            if ($normalizedIp === self::normalizeIpAddress($trustedProxy)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** Return a canonical IPv4/IPv6 string; malformed adapter values fail closed. */
+    protected static function normalizeIpAddress(?string $ip): ?string
+    {
+        if ($ip === null || filter_var($ip, FILTER_VALIDATE_IP) === false) {
+            return null;
+        }
+
+        $packed = inet_pton($ip);
+        if ($packed === false) {
+            return null;
+        }
+
+        $normalized = inet_ntop($packed);
+        return is_string($normalized) ? strtolower($normalized) : null;
     }
 
     protected static function getForwardedHeader(string $name): ?string
