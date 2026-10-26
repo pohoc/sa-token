@@ -12,6 +12,8 @@ class SaAntiBruteUtil
 {
     protected static string $keyPrefix = 'satoken:security:brute:';
 
+    protected const SOURCE_RESERVATIONS_ATTRIBUTE = 'sa-token:anti-brute:source-reservations';
+
     public static function setKeyPrefix(string $prefix): void
     {
         self::$keyPrefix = $prefix;
@@ -136,6 +138,94 @@ class SaAntiBruteUtil
         return self::getIpLockPrefix($account, $loginType) . $epoch . ':' . $ipEpoch . ':' . self::getIpSuffix();
     }
 
+    protected static function createSourceAttemptReservation(string $counterKey, int $timeout): string
+    {
+        $reservationKey = $counterKey . ':reservation:' . bin2hex(random_bytes(16));
+        if (!SaToken::getDao()->setIfNotExists($reservationKey, '1', $timeout)) {
+            throw new SaTokenException('无法创建来源并发认证租约，请重试');
+        }
+
+        return $reservationKey;
+    }
+
+    protected static function storeSourceAttemptReservation(string $account, string $loginType, string $reservationKey): void
+    {
+        $reservations = SaTokenContext::getRequestScopedValue(self::SOURCE_RESERVATIONS_ATTRIBUTE, []);
+        if (!is_array($reservations)) {
+            $reservations = [];
+        }
+
+        $ownerKey = hash('sha256', $loginType . "\0" . $account);
+        $ownerReservations = $reservations[$ownerKey] ?? [];
+        if (!is_array($ownerReservations)) {
+            $ownerReservations = [];
+        }
+        $ownerReservations[] = $reservationKey;
+        $reservations[$ownerKey] = $ownerReservations;
+        SaTokenContext::setRequestScopedValue(self::SOURCE_RESERVATIONS_ATTRIBUTE, $reservations);
+    }
+
+    protected static function releaseSourceAttemptReservation(
+        string $account,
+        string $loginType,
+        string $sourceIdentity,
+        int $timeout
+    ): void {
+        $reservations = SaTokenContext::getRequestScopedValue(self::SOURCE_RESERVATIONS_ATTRIBUTE, []);
+        if (!is_array($reservations)) {
+            $reservations = [];
+        }
+        $ownerKey = hash('sha256', $loginType . "\0" . $account);
+        $ownerReservations = is_array($reservations[$ownerKey] ?? null)
+            ? $reservations[$ownerKey]
+            : [];
+        $reservationKey = array_shift($ownerReservations);
+        if (!is_string($reservationKey)) {
+            return;
+        }
+
+        if ($ownerReservations === []) {
+            unset($reservations[$ownerKey]);
+        } else {
+            $reservations[$ownerKey] = $ownerReservations;
+        }
+        if ($reservations === []) {
+            SaTokenContext::removeRequestScopedValue(self::SOURCE_RESERVATIONS_ATTRIBUTE);
+        } else {
+            SaTokenContext::setRequestScopedValue(self::SOURCE_RESERVATIONS_ATTRIBUTE, $reservations);
+        }
+
+        $dao = SaToken::getDao();
+        // An expired marker means this request's lease is already gone. Do not
+        // decrement a counter that may now represent newer requests.
+        if ($dao->getAndDelete($reservationKey) === null) {
+            return;
+        }
+
+        self::decrementSourceAttemptCounter(self::getSourceAttemptKey($sourceIdentity), $timeout);
+    }
+
+    protected static function decrementSourceAttemptCounter(string $counterKey, int $timeout): void
+    {
+        $dao = SaToken::getDao();
+        if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface) {
+            throw new SaTokenException('DAO 必须实现安全比较设置接口才能释放来源并发限流');
+        }
+
+        for ($attempt = 0; $attempt < 16; $attempt++) {
+            $current = $dao->get($counterKey);
+            if ($current === null || !ctype_digit($current) || (int) $current <= 0) {
+                return;
+            }
+
+            if ($dao->compareAndSet($counterKey, $current, (string) ((int) $current - 1), $timeout)) {
+                return;
+            }
+        }
+
+        throw new SaTokenException('来源并发限流状态竞争过多，请重试');
+    }
+
     protected static function getLockUntil(string $key): int
     {
         $value = SaToken::getDao()->get($key);
@@ -188,13 +278,10 @@ class SaAntiBruteUtil
         // checkAndThrow() before any of them records its failed credential.
         $sourceProtectionEnabled = $sourceProtectionEnabled && $sourceIdentity !== null;
         if ($sourceIdentity !== null) {
-            // Release the pre-validation source slot while recording the
-            // completed failure. The cumulative source failure counter below
-            // remains independent and retains its existing semantics.
-            $sourceAttemptKey = self::getSourceAttemptKey($sourceIdentity);
-            if ($dao->get($sourceAttemptKey) !== null) {
-                $dao->increment($sourceAttemptKey, -1, $lockDuration);
-            }
+            // Release only the slot reserved by this request. A shared counter
+            // alone lets a slow request whose lease expired decrement a newer
+            // request's live reservation.
+            self::releaseSourceAttemptReservation($account, $loginType, $sourceIdentity, $lockDuration);
         }
         if ($sourceProtectionEnabled && $sourceIdentity !== null) {
             $sourceCount = $dao->increment(self::getSourceFailureKey($sourceIdentity), 1, $lockDuration);
@@ -252,16 +339,21 @@ class SaAntiBruteUtil
 
         $sourceSlotReserved = false;
         if ($sourceProtectionEnabled && $sourceIdentity !== null) {
+            $dao = SaToken::getDao();
+            if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface) {
+                throw new SaTokenException('DAO 必须实现安全比较设置接口才能维护来源并发限流');
+            }
+
             $sourceAttemptKey = self::getSourceAttemptKey($sourceIdentity);
-            $sourceAttemptCount = SaToken::getDao()->increment(
-                $sourceAttemptKey,
-                1,
-                $config->getAntiBruteLockDuration()
-            );
+            $reservationKey = self::createSourceAttemptReservation($sourceAttemptKey, $config->getAntiBruteLockDuration());
+            $sourceAttemptCount = $dao->increment($sourceAttemptKey, 1, $config->getAntiBruteLockDuration());
             if ($sourceAttemptCount > $config->getAntiBruteIpMaxFailures()) {
-                SaToken::getDao()->increment($sourceAttemptKey, -1, $config->getAntiBruteLockDuration());
+                if ($dao->getAndDelete($reservationKey) !== null) {
+                    self::decrementSourceAttemptCounter($sourceAttemptKey, $config->getAntiBruteLockDuration());
+                }
                 throw new SaTokenException('当前来源并发认证尝试过多，请稍后重试', -10);
             }
+            self::storeSourceAttemptReservation($account, $loginType, $reservationKey);
             $sourceSlotReserved = true;
         }
 
@@ -286,9 +378,10 @@ class SaAntiBruteUtil
                 // concurrent request.
                 SaToken::getDao()->increment($attemptKey, -1, $config->getAntiBruteLockDuration());
                 if ($sourceSlotReserved && $sourceIdentity !== null) {
-                    SaToken::getDao()->increment(
-                        self::getSourceAttemptKey($sourceIdentity),
-                        -1,
+                    self::releaseSourceAttemptReservation(
+                        $account,
+                        $loginType,
+                        $sourceIdentity,
                         $config->getAntiBruteLockDuration()
                     );
                 }
@@ -329,10 +422,12 @@ class SaAntiBruteUtil
         $dao = SaToken::getDao();
         $sourceIdentity = self::getSourceIdentity($loginType);
         if ($sourceIdentity !== null) {
-            $sourceAttemptKey = self::getSourceAttemptKey($sourceIdentity);
-            if ($dao->get($sourceAttemptKey) !== null) {
-                $dao->increment($sourceAttemptKey, -1);
-            }
+            self::releaseSourceAttemptReservation(
+                $account,
+                $loginType,
+                $sourceIdentity,
+                SaToken::getConfig()->getAntiBruteLockDuration()
+            );
         }
         $epoch = self::getEpoch($account, $loginType);
         $ipEpoch = self::getIpEpoch($account, $loginType, $epoch);

@@ -49,6 +49,9 @@ class SaTokenContext
     /** @var array<string, true> Requests that must not fall back to native bearer credentials after auth failure. */
     protected static array $tokenFallbackDeniedMap = [];
 
+    /** @var array<string, array<string, mixed>> Request-local extension state. */
+    protected static array $requestScopedValuesMap = [];
+
     /**
      * Cookie 存储键前缀
      * @var string
@@ -113,7 +116,8 @@ class SaTokenContext
             self::$pendingHeadersMap[$contextId],
             self::$pendingCookiesMap[$contextId],
             self::$tokenOverridesMap[$contextId],
-            self::$tokenFallbackDeniedMap[$contextId]
+            self::$tokenFallbackDeniedMap[$contextId],
+            self::$requestScopedValuesMap[$contextId]
         );
         // SaRouter caches the normalized request path by context ID. A long-
         // running worker may reuse that ID even if cleanup was skipped after
@@ -168,8 +172,28 @@ class SaTokenContext
             self::$pendingHeadersMap[$id],
             self::$pendingCookiesMap[$id],
             self::$tokenOverridesMap[$id],
-            self::$tokenFallbackDeniedMap[$id]
+            self::$tokenFallbackDeniedMap[$id],
+            self::$requestScopedValuesMap[$id]
         );
+    }
+
+    public static function setRequestScopedValue(string $key, mixed $value): void
+    {
+        self::$requestScopedValuesMap[self::getContextId()][$key] = $value;
+    }
+
+    public static function getRequestScopedValue(string $key, mixed $default = null): mixed
+    {
+        return self::$requestScopedValuesMap[self::getContextId()][$key] ?? $default;
+    }
+
+    public static function removeRequestScopedValue(string $key): void
+    {
+        $id = self::getContextId();
+        unset(self::$requestScopedValuesMap[$id][$key]);
+        if ((self::$requestScopedValuesMap[$id] ?? []) === []) {
+            unset(self::$requestScopedValuesMap[$id]);
+        }
     }
 
     public static function setTokenOverride(string $loginType, ?string $tokenValue): void
