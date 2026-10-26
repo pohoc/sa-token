@@ -213,7 +213,10 @@ class SaRouter
         $regex = str_replace('/\*\*', '(?:/.*)?', $regex);
         $regex = str_replace('\*\*', '.*', $regex);
         $regex = str_replace('\*', '[^/]*', $regex);
-        return '#^' . $regex . '$#';
+        // `$` also matches immediately before a final newline. A path such as
+        // `/admin%0A` is normalized to `/admin\n` and must not satisfy the
+        // exact `/admin` authorization rule.
+        return '#\\A' . $regex . '\\z#';
     }
 
     protected static function reset(): void
