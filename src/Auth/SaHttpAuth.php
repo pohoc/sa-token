@@ -210,8 +210,7 @@ class SaHttpAuth
 
     protected function denyAuthenticationFallback(): void
     {
-        $loginType = StpUtil::getStpLogic()->getLoginType();
-        SaTokenContext::setTokenOverride($loginType, '');
+        SaTokenContext::denyTokenFallback();
     }
 
     public function sendChallenge(string $realm): void

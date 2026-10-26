@@ -480,6 +480,25 @@ class SaApiKeyTest extends TestCase
         $api->checkApiKey();
     }
 
+    public function testFailedApiKeyAuthenticationBlocksBearerFallbackAcrossLoginTypes(): void
+    {
+        SaToken::setConfig(SaToken::getConfig()->setIsReadHeader(true));
+        $adminLogic = SaToken::getStpLogic('admin');
+        $adminToken = $adminLogic->login('admin-api-bearer')->getAccessToken();
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'api-key' => 'invalid-api-key',
+            'api-secret' => 'invalid-api-secret-value-at-least-32-bytes',
+            'satoken' => $adminToken,
+        ]));
+
+        try {
+            (new SaApiKey())->setValidator(static fn (): ?string => null)->checkApiKey();
+            self::fail('无效 API Key 必须拒绝认证');
+        } catch (SaTokenException) {
+            self::assertNull($adminLogic->getLoginId(), '认证失败后任何 loginType 都不得回退到原生 bearer token');
+        }
+    }
+
     public function testCheckApiKeyDoesNotTreatTrueAsLoginId(): void
     {
         SaTokenContext::setRequest($this->mockRequestWithHeaders([

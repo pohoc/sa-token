@@ -120,6 +120,28 @@ class SaHttpAuthTest extends TestCase
         }
     }
 
+    public function testFailedBasicAuthenticationBlocksBearerFallbackAcrossLoginTypes(): void
+    {
+        SaToken::setConfig(SaToken::getConfig()->setIsReadHeader(true));
+        $adminLogic = SaToken::getStpLogic('admin');
+        $adminToken = $adminLogic->login('admin-bearer-account')->getAccessToken();
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->willReturnCallback(static fn (string $name): array => match ($name) {
+            'Authorization' => ['Basic ' . base64_encode('attacker:wrong-password')],
+            'satoken' => [$adminToken],
+            default => [],
+        });
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '192.0.2.123']);
+        SaTokenContext::setRequest($request);
+
+        try {
+            (new SaHttpAuth())->setBasicValidator(static fn (): ?string => null)->checkBasic();
+            self::fail('无效 Basic 凭据必须拒绝认证');
+        } catch (SaTokenException) {
+            self::assertNull($adminLogic->getLoginId(), '认证失败后任何 loginType 都不得回退到原生 bearer token');
+        }
+    }
+
     public function testFailedDigestAuthenticationCannotFallBackToAnUnrelatedBearerToken(): void
     {
         SaToken::setConfig(SaToken::getConfig()->setIsReadHeader(true));

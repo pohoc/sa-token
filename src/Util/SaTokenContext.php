@@ -46,6 +46,9 @@ class SaTokenContext
     /** @var array<string, array<string, string>> Request-scoped authentication token overrides by login type. */
     protected static array $tokenOverridesMap = [];
 
+    /** @var array<string, true> Requests that must not fall back to native bearer credentials after auth failure. */
+    protected static array $tokenFallbackDeniedMap = [];
+
     /**
      * Cookie 存储键前缀
      * @var string
@@ -109,7 +112,8 @@ class SaTokenContext
             self::$responseMap[$contextId],
             self::$pendingHeadersMap[$contextId],
             self::$pendingCookiesMap[$contextId],
-            self::$tokenOverridesMap[$contextId]
+            self::$tokenOverridesMap[$contextId],
+            self::$tokenFallbackDeniedMap[$contextId]
         );
         // SaRouter caches the normalized request path by context ID. A long-
         // running worker may reuse that ID even if cleanup was skipped after
@@ -163,7 +167,8 @@ class SaTokenContext
             self::$responseMap[$id],
             self::$pendingHeadersMap[$id],
             self::$pendingCookiesMap[$id],
-            self::$tokenOverridesMap[$id]
+            self::$tokenOverridesMap[$id],
+            self::$tokenFallbackDeniedMap[$id]
         );
     }
 
@@ -183,7 +188,18 @@ class SaTokenContext
 
     public static function getTokenOverride(string $loginType): ?string
     {
-        return self::$tokenOverridesMap[self::getContextId()][$loginType] ?? null;
+        $id = self::getContextId();
+        if (array_key_exists($loginType, self::$tokenOverridesMap[$id] ?? [])) {
+            return self::$tokenOverridesMap[$id][$loginType];
+        }
+
+        return isset(self::$tokenFallbackDeniedMap[$id]) ? '' : null;
+    }
+
+    /** Prevent every login type in this request from falling back to native token sources. */
+    public static function denyTokenFallback(): void
+    {
+        self::$tokenFallbackDeniedMap[self::getContextId()] = true;
     }
 
     /** @var array<string> */

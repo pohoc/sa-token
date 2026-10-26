@@ -319,6 +319,23 @@ class SaRpcContextTest extends TestCase
         }
     }
 
+    public function testInvalidRpcTokenBlocksBearerFallbackAcrossLoginTypes(): void
+    {
+        $adminLogic = SaToken::getStpLogic('admin');
+        $adminToken = $adminLogic->login('admin-rpc-bearer')->getAccessToken();
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token' => 'invalid-rpc-token',
+            'satoken' => $adminToken,
+        ]));
+
+        try {
+            (new SaRpcInterceptor())->handleIncoming();
+            self::fail('无效 RPC Token 必须拒绝认证');
+        } catch (SaTokenException) {
+            self::assertNull($adminLogic->getLoginId(), 'RPC 认证失败后任何 loginType 都不得回退到原生 bearer token');
+        }
+    }
+
     public function testRpcInterceptorEnforcesConfiguredLoginType(): void
     {
         $token = SaToken::getStpLogic('user')->login(10004)->getAccessToken();

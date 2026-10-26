@@ -71,7 +71,7 @@ class SaRpcInterceptor
         } catch (\Throwable $exception) {
             // If application middleware catches the RPC failure, a native
             // bearer token on the same request must not become a fallback identity.
-            SaTokenContext::setTokenOverride($this->loginType, '');
+            SaTokenContext::denyTokenFallback();
             throw $exception;
         }
     }
