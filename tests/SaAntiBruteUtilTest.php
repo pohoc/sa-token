@@ -351,6 +351,22 @@ class SaAntiBruteUtilTest extends TestCase
         $key = SaAntiBruteUtil::getKey('testuser', 'login');
         $this->assertStringStartsWith('satoken:security:brute:', $key);
         $this->assertStringContainsString('login:', $key);
+        $this->assertSame(
+            'satoken:security:brute:v2:login:' . hash('sha256', 'testuser'),
+            $key
+        );
+    }
+
+    public function testAccountLockKeysUseDistinctHashAndEscapedLoginType(): void
+    {
+        $this->assertNotSame(
+            SaAntiBruteUtil::getKey('testuser', 'admin:read'),
+            SaAntiBruteUtil::getKey('testuser', 'admin')
+        );
+        $this->assertNotSame(
+            SaAntiBruteUtil::getKey('account-a'),
+            SaAntiBruteUtil::getKey('account-b')
+        );
     }
 
     public function testCustomKeyPrefix(): void

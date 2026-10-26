@@ -24,7 +24,13 @@ class SaAntiBruteUtil
 
     public static function getKey(string $account, string $loginType = 'login'): string
     {
-        return self::$keyPrefix . $loginType . ':' . md5($account);
+        // Account IDs are attacker-controlled in many integrations. MD5 chosen-
+        // prefix collisions can make two distinct accounts share lockout state.
+        // Version the namespace so legacy MD5 counters are not trusted as the
+        // owner of a new account's security state.
+        return self::$keyPrefix . 'v2:'
+            . \SaToken\TokenManager::encodeKeyComponent($loginType) . ':'
+            . hash('sha256', $account);
     }
 
     protected static function getLockKey(string $account, string $loginType = 'login'): string
