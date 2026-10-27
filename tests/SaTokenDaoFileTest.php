@@ -501,7 +501,7 @@ class SaTokenDaoFileTest extends TestCase
         ));
 
         self::assertSame(array_slice($expected, 0, 2), $limitedDao->searchKeys('scan:key:', '', 0, 10));
-        self::assertSame(2, $limitedDao->size());
+        self::assertSame(5, $limitedDao->size());
     }
 
     public function testPersistenceAcrossInstances(): void

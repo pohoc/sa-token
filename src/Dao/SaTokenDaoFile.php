@@ -516,7 +516,27 @@ class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteI
 
     public function size(): int
     {
-        return count($this->scanDataFiles(static fn (): bool => true));
+        $directory = @opendir($this->dataDir);
+        if ($directory === false) {
+            return 0;
+        }
+
+        $size = 0;
+        try {
+            while (($file = readdir($directory)) !== false) {
+                if (!str_ends_with($file, '.dat')) {
+                    continue;
+                }
+                $stat = @lstat($this->dataDir . '/' . $file);
+                if ($stat !== false && ($stat['mode'] & 0170000) === 0100000) {
+                    $size++;
+                }
+            }
+        } finally {
+            closedir($directory);
+        }
+
+        return $size;
     }
 
     public function deleteMultiple(array $keys): void
