@@ -1099,8 +1099,13 @@ class SaOAuth2Handle
             $this->getDao()->delete($this->buildAccessTokenKey($accessToken));
             return null;
         }
-        $familyId = $this->getAccessTokenFamilyId($accessToken);
-        if (is_string($familyId) && $familyId !== '' && $this->isTokenFamilyRevoked($familyId)) {
+        // Persisted family binding is authoritative. The side index remains a
+        // fallback for tokens issued before familyId was stored on the record.
+        $familyId = $tokenData->getFamilyId();
+        if ($familyId === '') {
+            $familyId = $this->getAccessTokenFamilyId($accessToken) ?? '';
+        }
+        if ($familyId !== '' && $this->isTokenFamilyRevoked($familyId)) {
             return null;
         }
         return $tokenData;
@@ -1122,7 +1127,9 @@ class SaOAuth2Handle
         $refreshToken = is_array($data) && is_string($data['refreshToken'] ?? null) ? $data['refreshToken'] : '';
 
         if ($refreshToken === '') {
-            $familyId = $this->getAccessTokenFamilyId($accessToken);
+            $familyId = is_array($data) && is_string($data['familyId'] ?? null) && $data['familyId'] !== ''
+                ? $data['familyId']
+                : $this->getAccessTokenFamilyId($accessToken);
             if (!is_string($familyId) || $familyId === '') {
                 $this->getDao()->delete($accessTokenKey);
                 return;
@@ -1150,7 +1157,9 @@ class SaOAuth2Handle
         $this->acquireRefreshLock($tokenLockKey, $lockValue);
 
         try {
-            $familyId = $this->getAccessTokenFamilyId($accessToken);
+            $familyId = is_array($data) && is_string($data['familyId'] ?? null) && $data['familyId'] !== ''
+                ? $data['familyId']
+                : $this->getAccessTokenFamilyId($accessToken);
             if (!is_string($familyId) || $familyId === '') {
                 $familyLockKey = 'oauth2:refresh:' . $this->getRefreshTokenFamilyLockIdentity($refreshToken);
             } else {
@@ -1386,12 +1395,14 @@ class SaOAuth2Handle
             'scope'       => $scope,
             'loginId'     => $loginId,
             'clientId'    => $clientId,
+            'familyId'    => $refreshFamilyId,
         ]);
 
         // 生成刷新令牌
         if ($includeRefreshToken && $this->config->getRefreshTokenTimeout() > 0) {
             $refreshToken = $this->createRefreshToken($clientId, $loginId, $tokenStr, $scope, $refreshFamilyId);
             $accessToken->setRefreshToken($refreshToken->getRefreshToken());
+            $accessToken->setFamilyId($refreshToken->getFamilyId());
         }
 
         // 保存到存储层（含 refreshToken 关联，便于撤销时联动）

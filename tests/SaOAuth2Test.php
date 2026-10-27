@@ -1187,6 +1187,50 @@ class SaOAuth2Test extends TestCase
         }
     }
 
+    public function testRevokedFamilyStillRejectsAccessTokenWhenFamilyIndexIsMissing(): void
+    {
+        $dao = new class () extends SaTokenDaoMemory {
+            public ?string $failDeleteKey = null;
+
+            public function delete(string $key): void
+            {
+                if ($key === $this->failDeleteKey) {
+                    $this->failDeleteKey = null;
+                    throw new \RuntimeException('simulated DAO delete failure');
+                }
+                parent::delete($key);
+            }
+        };
+        SaToken::setDao($dao);
+        $this->handle->registerClient($this->testClient);
+
+        $code = $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback');
+        $initial = $this->handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
+        $rotated = $this->handle->refreshToken((string) $initial->getRefreshToken(), 'test-client', $this->clientSecret);
+        $refreshData = (new \ReflectionMethod($this->handle, 'getRefreshTokenData'))->invoke($this->handle, (string) $rotated->getRefreshToken());
+        self::assertInstanceOf(SaOAuth2RefreshToken::class, $refreshData);
+
+        $familyMarkerKey = 'oauth2:family:' . hash('sha256', $refreshData->getFamilyId());
+        $familyIndexKey = 'oauth2:at:family:' . hash('sha256', $rotated->getAccessToken());
+        $accessTokenKey = 'oauth2:at:' . $rotated->getAccessToken();
+        $dao->failDeleteKey = $accessTokenKey;
+        try {
+            (new \ReflectionMethod($this->handle, 'revokeTokenFamily'))->invoke($this->handle, $familyMarkerKey);
+            self::fail('DAO 删除失败应中止撤销清理');
+        } catch (\ReflectionException $exception) {
+            throw $exception;
+        } catch (\RuntimeException $exception) {
+            self::assertSame('simulated DAO delete failure', $exception->getMessage());
+        }
+
+        self::assertNotNull($dao->get($accessTokenKey), '模拟删除失败后令牌记录仍存在');
+        $dao->delete($familyIndexKey);
+        self::assertNull(
+            $this->handle->validateAccessToken($rotated->getAccessToken()),
+            '家族索引缺失时必须使用访问令牌记录中的 familyId 检查撤销状态'
+        );
+    }
+
     public function testRefreshReplayMarkersOutliveLongerAccessTokens(): void
     {
         $this->config->setAccessTokenTimeout(7200);

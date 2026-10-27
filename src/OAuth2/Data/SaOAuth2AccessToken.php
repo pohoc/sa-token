@@ -18,6 +18,7 @@ class SaOAuth2AccessToken
     protected string $clientId = '';
     protected int $createTime = 0;
     protected string $idToken = '';
+    protected string $familyId = '';
 
     /**
      * @param array<string, mixed> $data
@@ -48,6 +49,7 @@ class SaOAuth2AccessToken
             'clientId'     => $this->clientId,
             'createTime'   => $this->createTime,
             'idToken'      => $this->idToken,
+            'familyId'     => $this->familyId,
         ];
     }
 
@@ -181,6 +183,17 @@ class SaOAuth2AccessToken
     public function setIdToken(string $idToken): static
     {
         $this->idToken = $idToken;
+        return $this;
+    }
+
+    public function getFamilyId(): string
+    {
+        return $this->familyId;
+    }
+
+    public function setFamilyId(string $familyId): static
+    {
+        $this->familyId = $familyId;
         return $this;
     }
 }
