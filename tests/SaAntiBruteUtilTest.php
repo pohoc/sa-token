@@ -155,6 +155,74 @@ class SaAntiBruteUtilTest extends TestCase
         self::assertSame(0, SaAntiBruteUtil::getFailCount('source-cleanup-race'));
     }
 
+    public function testSuccessfulAuthenticationClearsCurrentSourceFailureLock(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'antiBruteMaxFailures' => 0,
+            'antiBruteIpMaxFailures' => 2,
+            'antiBruteLockDuration' => 600,
+        ]));
+        $request = $this->requestFromIp('192.0.2.49');
+        SaTokenContext::setRequest($request);
+
+        SaAntiBruteUtil::recordFailure('random-user-1');
+        SaAntiBruteUtil::recordFailure('random-user-2');
+        try {
+            SaAntiBruteUtil::checkAndThrow('valid-user');
+            self::fail('来源失败上限应阻止达到阈值后的认证');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('来源失败次数过多', $exception->getMessage());
+        }
+
+        // An external credential verifier has authenticated this user. The
+        // documented successful-login cleanup must clear this source's state.
+        SaAntiBruteUtil::clearCurrentSourceFailures('valid-user');
+        SaTokenContext::setRequest($this->requestFromIp('192.0.2.49'));
+        SaAntiBruteUtil::checkAndThrow('another-user');
+        SaAntiBruteUtil::clearCurrentSourceFailures('another-user');
+    }
+
+    public function testStaleSourceFailureCannotRelockAfterSuccessfulCleanup(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'antiBruteMaxFailures' => 0,
+            'antiBruteIpMaxFailures' => 1,
+            'antiBruteLockDuration' => 600,
+        ]));
+        $dao = new class () extends SaTokenDaoMemory {
+            public bool $pauseAfterSourceFailureIncrement = false;
+
+            public function increment(string $key, int $amount = 1, ?int $timeout = null): int
+            {
+                $value = parent::increment($key, $amount, $timeout);
+                if ($this->pauseAfterSourceFailureIncrement && str_contains($key, ':source-fail:')) {
+                    $this->pauseAfterSourceFailureIncrement = false;
+                    \Fiber::suspend();
+                }
+
+                return $value;
+            }
+        };
+        SaToken::setDao($dao);
+        $makeRequest = fn (): object => $this->requestFromIp('192.0.2.48');
+        $fiber = new \Fiber(function () use ($makeRequest): void {
+            SaTokenContext::setRequest($makeRequest());
+            SaAntiBruteUtil::recordFailure('stale-source-failure');
+        });
+        $dao->pauseAfterSourceFailureIncrement = true;
+        $fiber->start();
+        self::assertTrue($fiber->isSuspended());
+
+        SaTokenContext::setRequest($makeRequest());
+        SaAntiBruteUtil::clearCurrentSourceFailures('successful-account');
+        $fiber->resume();
+
+        self::assertTrue($fiber->isTerminated());
+        SaTokenContext::setRequest($makeRequest());
+        SaAntiBruteUtil::checkAndThrow('next-account');
+        SaAntiBruteUtil::clearCurrentSourceFailures('next-account');
+    }
+
     public function testSourceFailureLimitBoundsCountersAcrossRandomAccounts(): void
     {
         SaToken::setConfig(new SaTokenConfig([

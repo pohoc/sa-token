@@ -80,14 +80,27 @@ class SaAntiBruteUtil
         return hash('sha256', $loginType . "\0" . $ip);
     }
 
-    protected static function getSourceFailureKey(string $identity): string
+    protected static function getSourceEpochKey(string $identity): string
     {
-        return self::$keyPrefix . 'source-fail:' . $identity;
+        return self::$keyPrefix . 'source-epoch:' . $identity;
     }
 
-    protected static function getSourceLockKey(string $identity): string
+    protected static function getSourceEpoch(string $identity): int
     {
-        return self::$keyPrefix . 'source-lock:' . $identity;
+        $epoch = SaToken::getDao()->get(self::getSourceEpochKey($identity));
+        return $epoch !== null && ctype_digit($epoch) ? (int) $epoch : 0;
+    }
+
+    protected static function getSourceFailureKey(string $identity, ?int $epoch = null): string
+    {
+        $epoch ??= self::getSourceEpoch($identity);
+        return self::$keyPrefix . 'source-fail:' . $identity . ':' . $epoch;
+    }
+
+    protected static function getSourceLockKey(string $identity, ?int $epoch = null): string
+    {
+        $epoch ??= self::getSourceEpoch($identity);
+        return self::$keyPrefix . 'source-lock:' . $identity . ':' . $epoch;
     }
 
     protected static function getSourceAttemptKey(string $identity): string
@@ -284,10 +297,11 @@ class SaAntiBruteUtil
             self::releaseSourceAttemptReservation($account, $loginType, $sourceIdentity, $lockDuration);
         }
         if ($sourceProtectionEnabled && $sourceIdentity !== null) {
-            $sourceCount = $dao->increment(self::getSourceFailureKey($sourceIdentity), 1, $lockDuration);
+            $sourceEpoch = self::getSourceEpoch($sourceIdentity);
+            $sourceCount = $dao->increment(self::getSourceFailureKey($sourceIdentity, $sourceEpoch), 1, $lockDuration);
             if ($sourceCount >= $sourceMax) {
                 $dao->set(
-                    self::getSourceLockKey($sourceIdentity),
+                    self::getSourceLockKey($sourceIdentity, $sourceEpoch),
                     (string) (time() + $lockDuration),
                     $lockDuration + 60
                 );
@@ -338,7 +352,8 @@ class SaAntiBruteUtil
         }
 
         if ($sourceIdentity !== null) {
-            $sourceLockUntil = self::getLockUntil(self::getSourceLockKey($sourceIdentity));
+            $sourceEpoch = self::getSourceEpoch($sourceIdentity);
+            $sourceLockUntil = self::getLockUntil(self::getSourceLockKey($sourceIdentity, $sourceEpoch));
             if ($sourceLockUntil > time()) {
                 $remaining = $sourceLockUntil - time();
                 throw new SaTokenException('当前来源失败次数过多，请 ' . $remaining . ' 秒后重试', -10);
@@ -444,6 +459,10 @@ class SaAntiBruteUtil
                 $sourceIdentity,
                 SaToken::getConfig()->getAntiBruteLockDuration()
             );
+            // Successful authentication clears source-level failures too. Use
+            // a generation switch so an already-running failed request can
+            // only finish writing to the old, now-ignored source state.
+            $dao->increment(self::getSourceEpochKey($sourceIdentity));
         }
         $epoch = self::getEpoch($account, $loginType);
         $ipEpoch = self::getIpEpoch($account, $loginType, $epoch);
