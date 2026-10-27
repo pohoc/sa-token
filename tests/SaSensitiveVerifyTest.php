@@ -584,6 +584,11 @@ class SaSensitiveVerifyTest extends TestCase
         $token = $this->issueSafeToken($scene, $loginId, $loginType);
         $this->assertEquals(64, strlen($token));
 
+        $keys = SaToken::getDao()->searchKeys('satoken:sensitive:login:safe-token:', '', 0, 10);
+        self::assertCount(1, $keys);
+        self::assertStringContainsString(hash('sha256', $token), $keys[0]);
+        self::assertStringNotContainsString(substr($token, 0, 16), $keys[0]);
+
         $result = SaSensitiveVerify::verifySafeToken($scene, $token, $loginId, $loginType);
         $this->assertTrue($result);
     }
@@ -617,8 +622,8 @@ class SaSensitiveVerifyTest extends TestCase
     {
         $scene = 'copied-safe-token-state';
         $token = $this->issueSafeToken($scene, 'alice');
-        $sourceKey = 'satoken:sensitive:login:safe-token:' . $scene . ':' . hash('sha256', 'alice') . ':' . substr($token, 0, 16);
-        $targetKey = 'satoken:sensitive:login:safe-token:' . $scene . ':' . hash('sha256', 'bob') . ':' . substr($token, 0, 16);
+        $sourceKey = 'satoken:sensitive:login:safe-token:' . $scene . ':' . hash('sha256', 'alice') . ':' . hash('sha256', $token);
+        $targetKey = 'satoken:sensitive:login:safe-token:' . $scene . ':' . hash('sha256', 'bob') . ':' . hash('sha256', $token);
         $sourceState = SaToken::getDao()->get($sourceKey);
         self::assertNotNull($sourceState);
         SaToken::getDao()->set($targetKey, $sourceState, 660);
@@ -633,7 +638,7 @@ class SaSensitiveVerifyTest extends TestCase
         $scene = 'safe-token-expiry-race';
         $loginId = 'alice';
         $token = $this->issueSafeToken($scene, $loginId);
-        $key = 'satoken:sensitive:login:safe-token:' . $scene . ':' . hash('sha256', $loginId) . ':' . substr($token, 0, 16);
+        $key = 'satoken:sensitive:login:safe-token:' . $scene . ':' . hash('sha256', $loginId) . ':' . hash('sha256', $token);
         $encodeState = new \ReflectionMethod(SaSensitiveVerify::class, 'encodeSensitiveState');
 
         $dao->afterNextGet(static function (string $readKey, ?string $ignoredValue) use ($dao, $key, $scene, $loginId, $token, $encodeState): void {
@@ -660,7 +665,7 @@ class SaSensitiveVerifyTest extends TestCase
         $scene = 'test-scene';
         $loginId = 10001;
         $token = $this->issueSafeToken($scene, $loginId);
-        $key = 'satoken:sensitive:login:safe-token:' . $scene . ':' . hash('sha256', (string) $loginId) . ':' . substr($token, 0, 16);
+        $key = 'satoken:sensitive:login:safe-token:' . $scene . ':' . hash('sha256', (string) $loginId) . ':' . hash('sha256', $token);
 
         SaToken::getDao()->set($key, json_encode([
             'scene' => $scene,
@@ -925,7 +930,7 @@ class SaSensitiveVerifyTest extends TestCase
         $scene = 'invalid-expiry-safe-token';
         $loginId = 10033;
         $token = $this->issueSafeToken($scene, $loginId);
-        $key = 'satoken:sensitive:login:safe-token:' . $scene . ':' . hash('sha256', (string) $loginId) . ':' . substr($token, 0, 16);
+        $key = 'satoken:sensitive:login:safe-token:' . $scene . ':' . hash('sha256', (string) $loginId) . ':' . hash('sha256', $token);
         SaToken::getDao()->set($key, json_encode([
             'scene' => $scene,
             'loginId' => (string) $loginId,

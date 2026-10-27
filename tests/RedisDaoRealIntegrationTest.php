@@ -241,7 +241,7 @@ class RedisDaoRealIntegrationTest extends TestCase
             );
             $safeTokenKey = 'satoken:sensitive:login:safe-token:'
                 . \SaToken\TokenManager::encodeKeyComponent($scene) . ':'
-                . hash('sha256', $loginId) . ':' . substr($safeToken, 0, 16)
+                . hash('sha256', $loginId) . ':' . hash('sha256', $safeToken)
                 . ':binding:' . hash('sha256', $tokenBinding);
             self::assertTrue(SaSensitiveVerify::verifySafeToken($scene, $safeToken, $loginId, 'login', $tokenBinding));
             self::assertFalse(SaSensitiveVerify::verifySafeToken($scene, $safeToken, $loginId, 'login', $tokenBinding));

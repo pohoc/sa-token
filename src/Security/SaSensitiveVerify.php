@@ -585,8 +585,8 @@ class SaSensitiveVerify
             return false;
         }
 
-        // 存储键只含 token 前 16 个 hex 字符，必须用完整 token 哈希校验。
-        // 缺少哈希的旧记录 fail closed，不能退回到仅 64 bit 前缀校验。
+        // 存储键不暴露 bearer 前缀；载荷仍用完整哈希校验令牌身份。
+        // 缺少哈希的旧记录 fail closed，避免退回到不完整的令牌校验。
         $tokenHash = $info['tokenHash'] ?? null;
         if (!is_string($tokenHash) || !hash_equals($tokenHash, hash('sha256', $token))) {
             return false;
@@ -616,7 +616,7 @@ class SaSensitiveVerify
     {
         $key = self::$keyPrefix . \SaToken\TokenManager::encodeKeyComponent($loginType)
             . ':safe-token:' . \SaToken\TokenManager::encodeKeyComponent($scene)
-            . ':' . hash('sha256', $loginId) . ':' . substr($token, 0, 16);
+            . ':' . hash('sha256', $loginId) . ':' . hash('sha256', $token);
 
         return $tokenBinding !== null ? $key . ':binding:' . hash('sha256', $tokenBinding) : $key;
     }
