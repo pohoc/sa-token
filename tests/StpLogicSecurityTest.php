@@ -538,14 +538,14 @@ class StpLogicSecurityTest extends TestCase
         $dao = new class () extends SaTokenDaoMemory {
             public bool $failNextRefreshDelete = false;
 
-            public function delete(string $key): void
+            public function compareAndDelete(string $key, string $expectedValue): bool
             {
                 if ($this->failNextRefreshDelete && str_starts_with($key, TokenManager::REFRESH_TOKEN_PREFIX)) {
                     $this->failNextRefreshDelete = false;
                     throw new \SaToken\Exception\SaTokenException('simulated refresh cleanup failure');
                 }
 
-                parent::delete($key);
+                return parent::compareAndDelete($key, $expectedValue);
             }
         };
         $this->dao = $dao;

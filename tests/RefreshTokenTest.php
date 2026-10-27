@@ -811,18 +811,18 @@ class RefreshTokenTest extends TestCase
         $this->assertFalse(StpUtil::isRefreshTokenValid($refreshToken));
     }
 
-    public function testRefreshTokenCannotRestoreSessionAfterAccountIndexWasRemovedBeforeBulkDeleteFailure(): void
+    public function testRefreshTokenCannotRestoreSessionAfterAccountIndexWasRemovedBeforeBearerDeleteFailure(): void
     {
         $dao = new class () extends \SaToken\Dao\SaTokenDaoMemory {
-            public bool $failNextDeleteMultiple = false;
+            public bool $failNextTokenDelete = false;
 
-            public function deleteMultiple(array $keys): void
+            public function compareAndDelete(string $key, string $expectedValue): bool
             {
-                if ($this->failNextDeleteMultiple) {
-                    $this->failNextDeleteMultiple = false;
-                    throw new \RuntimeException('simulated bulk-delete failure');
+                if ($this->failNextTokenDelete && str_starts_with($key, TokenManager::TOKEN_PREFIX)) {
+                    $this->failNextTokenDelete = false;
+                    throw new \RuntimeException('simulated bearer-delete failure');
                 }
-                parent::deleteMultiple($keys);
+                return parent::compareAndDelete($key, $expectedValue);
             }
         };
         SaToken::setDao($dao);
@@ -830,12 +830,12 @@ class RefreshTokenTest extends TestCase
         $accessToken = StpUtil::login($loginId)->getAccessToken();
         $refreshToken = StpUtil::createRefreshToken($accessToken);
 
-        $dao->failNextDeleteMultiple = true;
+        $dao->failNextTokenDelete = true;
         try {
             StpUtil::logoutByLoginId($loginId);
             self::fail('模拟批量删除故障必须向调用方报告');
         } catch (\RuntimeException $exception) {
-            self::assertSame('simulated bulk-delete failure', $exception->getMessage());
+            self::assertSame('simulated bearer-delete failure', $exception->getMessage());
         }
 
         // A later login recreates the account index; the old credential must

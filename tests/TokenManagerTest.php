@@ -92,17 +92,36 @@ class SaTokenDaoPausingRefreshDelete extends SaTokenDaoMemory
     }
 }
 
-class SaTokenDaoReplacingRefreshBeforeBulkDelete extends SaTokenDaoMemory
+class SaTokenDaoInterleavingTokenDelete extends SaTokenDaoMemory
 {
-    public ?\Closure $beforeBulkTokenDelete = null;
+    public ?\Closure $beforeTokenDelete = null;
+
+    protected function interleaveBeforeTokenDelete(): void
+    {
+        if ($this->beforeTokenDelete === null) {
+            return;
+        }
+        $callback = $this->beforeTokenDelete;
+        $this->beforeTokenDelete = null;
+        $callback();
+    }
+
+    public function compareAndDelete(string $key, string $expectedValue): bool
+    {
+        if (str_starts_with($key, TokenManager::TOKEN_PREFIX) && $this->beforeTokenDelete !== null) {
+            $this->interleaveBeforeTokenDelete();
+        }
+
+        return parent::compareAndDelete($key, $expectedValue);
+    }
 
     public function deleteMultiple(array $keys): void
     {
-        if ($this->beforeBulkTokenDelete !== null
-            && array_filter($keys, static fn (string $key): bool => str_starts_with($key, TokenManager::TOKEN_PREFIX)) !== []) {
-            $callback = $this->beforeBulkTokenDelete;
-            $this->beforeBulkTokenDelete = null;
-            $callback();
+        foreach ($keys as $key) {
+            if (is_string($key) && str_starts_with($key, TokenManager::TOKEN_PREFIX)) {
+                $this->interleaveBeforeTokenDelete();
+                break;
+            }
         }
 
         parent::deleteMultiple($keys);
@@ -175,7 +194,7 @@ class TokenManagerTest extends TestCase
 
     public function testAccountLogoutCannotBulkDeleteReusedRefreshCredential(): void
     {
-        $dao = new SaTokenDaoReplacingRefreshBeforeBulkDelete();
+        $dao = new SaTokenDaoInterleavingTokenDelete();
         $this->dao = $dao;
         SaToken::setDao($dao);
         $ownerA = 'bulk-logout-refresh-owner-a';
@@ -188,9 +207,9 @@ class TokenManagerTest extends TestCase
         $this->manager->saveRefreshToken($refresh, $accessA, $ownerA, 'login', 3600);
 
         $refreshKey = TokenManager::REFRESH_TOKEN_PREFIX . $refresh;
-        $dao->beforeBulkTokenDelete = function () use ($dao, $refreshKey, $refresh, $accessB, $ownerB): void {
-            // The logout already selected owner A's refresh key for deletion.
-            // Reuse the raw value for owner B just before the batch is applied.
+        $dao->beforeTokenDelete = function () use ($dao, $refreshKey, $refresh, $accessB, $ownerB): void {
+            // The logout selected owner A's refresh key. Reuse it for owner B
+            // immediately before the old access-token generation is revoked.
             $dao->delete($refreshKey);
             SaTokenContext::setContextId('bulk-delete-reissue-worker');
             try {
@@ -203,6 +222,36 @@ class TokenManagerTest extends TestCase
         $this->manager->deleteAllTokenByLoginId($ownerA, 'login');
 
         self::assertSame($ownerB, $this->manager->getRefreshTokenData($refresh)['loginId'] ?? null);
+    }
+
+    public function testAccountLogoutCannotDeleteReusedAccessTokenGeneration(): void
+    {
+        $dao = new SaTokenDaoInterleavingTokenDelete();
+        $this->dao = $dao;
+        SaToken::setDao($dao);
+        $ownerA = 'bulk-logout-token-owner-a';
+        $ownerB = 'bulk-logout-token-owner-b';
+        $token = 'bulk-logout-token-shared-value';
+        $this->manager->saveToken($token, $ownerA, 'old-type', 'PC', 3600);
+
+        $tokenKey = TokenManager::TOKEN_PREFIX . $token;
+        $tokenLockKey = TokenManager::LOCK_PREFIX . 'token-value:' . hash('sha256', $token);
+        $dao->beforeTokenDelete = function () use ($dao, $tokenKey, $tokenLockKey, $token, $ownerB): void {
+            $dao->delete($tokenKey);
+            $dao->delete(TokenManager::TOKEN_SESSION_LINEAGE_PREFIX . $token);
+            $dao->delete($tokenLockKey);
+            SaTokenContext::setContextId('bulk-token-reissue-worker');
+            try {
+                $this->manager->saveToken($token, $ownerB, 'new-type', 'PC', 3600);
+            } finally {
+                SaTokenContext::setContextId('default');
+            }
+        };
+
+        $this->manager->deleteAllTokenByLoginId($ownerA, 'old-type');
+
+        self::assertSame($ownerB, $this->manager->getLoginIdByToken($token));
+        self::assertSame('new-type', $this->manager->getTokenSessionLoginType($token));
     }
 
     public function testCreateTokenValue(): void
@@ -588,19 +637,19 @@ class TokenManagerTest extends TestCase
         $manager = new TokenManager();
         $token = $manager->createTokenValue('user-2', 'login');
         $manager->saveToken($token, 'user-2', 'login', 'PC', 3600);
-        $dao->failBulkTokenDelete = true;
+        $dao->failTokenDelete = true;
 
         try {
             $manager->deleteAllTokenByLoginId('user-2', 'login');
-            self::fail('Expected the simulated bulk bearer deletion failure');
+            self::fail('Expected the simulated bearer deletion failure');
         } catch (SaTokenException $exception) {
-            self::assertSame('simulated bulk token delete failure', $exception->getMessage());
+            self::assertSame('simulated token delete failure', $exception->getMessage());
         }
 
         self::assertSame('user-2', $manager->getLoginIdByToken($token));
         self::assertCount(1, $manager->getTokenListByLoginId('user-2', 'login'));
 
-        $dao->failBulkTokenDelete = false;
+        $dao->failTokenDelete = false;
         $manager->deleteAllTokenByLoginId('user-2', 'login');
         self::assertNull($manager->getLoginIdByToken($token));
     }

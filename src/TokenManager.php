@@ -462,12 +462,16 @@ class TokenManager
             }
         }
 
+        $boundStateSnapshots = $this->captureTokenBoundState(
+            $this->getTokenBoundStateKeys($tokenValue, $loginType)
+        );
+
         if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface
             || !$dao->compareAndDelete($tokenKey, $storedValue)) {
             return;
         }
 
-        $this->clearTokenBoundState($tokenValue, $loginType);
+        $this->deleteTokenBoundStateIfUnchanged($boundStateSnapshots);
     }
 
     protected function clearTokenBoundState(string $tokenValue, string $loginType): void
@@ -484,6 +488,56 @@ class TokenManager
             $dao->delete($this->safeStateKey($tokenValue, $service, $loginType));
         }
         $dao->delete($this->safeServicesKey($tokenValue, $loginType));
+    }
+
+    /** @return list<string> */
+    protected function getTokenBoundStateKeys(string $tokenValue, string $loginType): array
+    {
+        $keys = [
+            self::LAST_ACTIVE_PREFIX . $tokenValue,
+            self::TOKEN_SESSION_PREFIX . $tokenValue,
+            self::TOKEN_SESSION_LINEAGE_PREFIX . $tokenValue,
+            self::FINGERPRINT_PREFIX . $tokenValue,
+            self::buildSwitchKey($tokenValue, $loginType),
+            $this->safeServicesKey($tokenValue, $loginType),
+        ];
+        if (!str_contains($loginType, ':') && !str_contains($loginType, '%')
+            && !str_contains($tokenValue, ':') && !str_contains($tokenValue, '%')) {
+            $keys[] = self::buildLegacySwitchKey($tokenValue, $loginType);
+        }
+        foreach ($this->getSafeServices($tokenValue, $loginType) as $service) {
+            $keys[] = $this->safeStateKey($tokenValue, $service, $loginType);
+        }
+
+        return array_values(array_unique($keys));
+    }
+
+    /** @param list<string> $keys
+     * @return array<string, string>
+     */
+    protected function captureTokenBoundState(array $keys): array
+    {
+        $snapshots = [];
+        foreach ($keys as $key) {
+            $value = $this->getDao()->get($key);
+            if ($value !== null) {
+                $snapshots[$key] = $value;
+            }
+        }
+
+        return $snapshots;
+    }
+
+    /** @param array<string, string> $snapshots */
+    protected function deleteTokenBoundStateIfUnchanged(array $snapshots): void
+    {
+        $dao = $this->getDao();
+        if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
+            throw new SaTokenException('DAO 不支持 Token 状态的原子比较删除');
+        }
+        foreach ($snapshots as $key => $value) {
+            $dao->compareAndDelete($key, $value);
+        }
     }
 
     public function getLoginIdByToken(string $tokenValue): ?string
@@ -854,6 +908,9 @@ class TokenManager
                 return;
             }
             $newTokens = array_values(array_filter($existingTokens, fn ($item) => $item['tokenValue'] !== $tokenValue));
+            $boundStateSnapshots = $this->captureTokenBoundState(
+                $this->getTokenBoundStateKeys($tokenValue, $loginType)
+            );
 
             // A mixed JWT has no DAO-backed revocation state once this session
             // is deleted. Advance the account generation before removal so a
@@ -881,8 +938,7 @@ class TokenManager
                     throw new SaTokenException('账号会话列表已并发变更或 DAO 不支持原子条件写入，请重试');
                 }
             }
-
-            $this->clearTokenBoundState($tokenValue, $loginType);
+            $this->deleteTokenBoundStateIfUnchanged($boundStateSnapshots);
         } finally {
             $this->releaseLock($tokenLockKey);
         }
@@ -957,7 +1013,7 @@ class TokenManager
             throw $exception;
         }
 
-        $keysToDelete = [];
+        $tokenSnapshots = [];
         $refreshTokensToDelete = [];
         try {
             // Account-wide logout/kickout also invalidates mixed JWTs already
@@ -973,39 +1029,57 @@ class TokenManager
                 if ($tokenValue === '') {
                     continue;
                 }
+                $tokenKey = self::TOKEN_PREFIX . $tokenValue;
+                $tokenRecord = $this->getDao()->get($tokenKey);
+                if ($tokenRecord === null) {
+                    continue;
+                }
                 // The account index is a revocation aid, not proof that the
                 // globally unique bearer is still owned by this account. A
                 // stale index entry must not revoke a token that has since
                 // been assigned to another account or login type.
-                if ($this->getLoginIdByToken($tokenValue) !== $loginIdStr) {
+                if ($this->getLoginIdByToken($tokenValue) !== $loginIdStr
+                    || $this->getDao()->get($tokenKey) !== $tokenRecord) {
                     continue;
                 }
                 $binding = $this->getTokenSessionBinding($tokenValue, $loginType);
-                if ($binding === null || $binding['loginId'] !== $loginIdStr) {
+                if ($binding === null || $binding['loginId'] !== $loginIdStr
+                    || $this->getDao()->get($tokenKey) !== $tokenRecord) {
                     continue;
                 }
-                $keysToDelete[] = self::TOKEN_PREFIX . $tokenValue;
-                $keysToDelete[] = self::LAST_ACTIVE_PREFIX . $tokenValue;
-                $keysToDelete[] = self::TOKEN_SESSION_PREFIX . $tokenValue;
-                $keysToDelete[] = self::TOKEN_SESSION_LINEAGE_PREFIX . $tokenValue;
-                $keysToDelete[] = self::FINGERPRINT_PREFIX . $tokenValue;
+                $tokenSnapshots[$tokenValue] = [
+                    'record' => $tokenRecord,
+                    'boundState' => $this->captureTokenBoundState(
+                        $this->getTokenBoundStateKeys($tokenValue, $loginType)
+                    ),
+                ];
                 $refreshToken = $this->getRefreshTokenByAccessToken($loginId, $loginType, $tokenValue);
                 if ($refreshToken !== null) {
                     $refreshTokensToDelete[] = $refreshToken;
                 }
-
-                $deletedTokens[] = $tokenValue;
             }
 
             $dao = $this->getDao();
-            $keysToDelete[] = self::buildSessionId($loginType, $loginIdStr);
+            if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
+                throw new SaTokenException('DAO 不支持 Token 的原子比较删除');
+            }
+            $sessionIdKey = self::buildSessionId($loginType, $loginIdStr);
+            $sessionIdSnapshot = $dao->get($sessionIdKey);
+            // Force a lease check immediately before acting on captured
+            // generations; the normal renewal interval is intentionally lazy.
+            $lastRenewal = 0;
+            $renewLocks();
 
-            // Revoke bearer records before removing the account index. If the
-            // DAO fails during batch deletion, the index must remain available
-            // so the caller can retry and every still-live token is discoverable.
-            if (count($keysToDelete) > 0) {
+            foreach ($tokenSnapshots as $tokenValue => $snapshot) {
                 $renewLocks();
-                $dao->deleteMultiple($keysToDelete);
+                if (!$dao->compareAndDelete(self::TOKEN_PREFIX . $tokenValue, $snapshot['record'])) {
+                    continue;
+                }
+                $deletedTokens[] = $tokenValue;
+                $this->deleteTokenBoundStateIfUnchanged($snapshot['boundState']);
+            }
+            if ($sessionIdSnapshot !== null) {
+                $dao->compareAndDelete($sessionIdKey, $sessionIdSnapshot);
             }
 
             // Refresh credentials have their own value lock and may be reused
@@ -1023,9 +1097,6 @@ class TokenManager
                     || !$dao->compareAndSet($loginIdKey, $expectedList, null)) {
                     throw new SaTokenException('账号会话列表已并发变更或 DAO 不支持原子条件写入，请重试');
                 }
-            }
-            foreach ($deletedTokens as $tokenValue) {
-                $this->clearTokenBoundState($tokenValue, $loginType);
             }
         } finally {
             foreach ($acquiredLocks as $acquiredLock) {
