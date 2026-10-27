@@ -265,24 +265,47 @@ class SaOAuth2Handle
         $this->validateRedirectUriForClient($currentClient, $redirectUri);
         $scope = $this->validateScopeForClient($currentClient, $codeData->getScope());
 
-        // 绑定校验成功后再原子消费；并发兑换时只有一个请求能继续签发令牌。
-        $consumedCode = $this->consumeAuthorizationCode($code);
-        if ($consumedCode === null || $consumedCode->getCode() !== $code
-            || $consumedCode->getClientId() !== $clientId
-            || $consumedCode->getRedirectUri() !== $redirectUri) {
-            throw new SaTokenException('无效的授权码');
-        }
-
-        return $this->issueAccessToken(
+        return $this->issueForLoginAccount($codeData->getLoginId(), function () use (
+            $code,
             $clientId,
-            $codeData->getLoginId(),
-            $scope,
-            '',
-            true,
-            $nonce,
-            false,
-            'authorization_code'
-        );
+            $clientSecret,
+            $redirectUri,
+            $isPublicClient,
+            $codeData,
+            $nonce
+        ): SaOAuth2AccessToken {
+            // Recheck the client at the actual consume boundary, after taking
+            // the account lock. The code remains usable if the account is
+            // disabled or the client policy changes while this request waits.
+            $currentClient = $isPublicClient
+                ? $this->validateClient($clientId)
+                : $this->validateClientWithSecret($clientId, $clientSecret);
+            $this->validateGrantTypeForClient($currentClient, 'authorization_code');
+            if (($currentClient->getClientSecret() === '') !== $isPublicClient) {
+                throw new SaTokenException('客户端认证配置已变更，请重新发起授权');
+            }
+            $this->validateRedirectUriForClient($currentClient, $redirectUri);
+            $scope = $this->validateScopeForClient($currentClient, $codeData->getScope());
+
+            // 账号封禁和授权码消费串行化；并发兑换仍只有一个请求能发证。
+            $consumedCode = $this->consumeAuthorizationCode($code);
+            if ($consumedCode === null || $consumedCode->getCode() !== $code
+                || $consumedCode->getClientId() !== $clientId
+                || $consumedCode->getRedirectUri() !== $redirectUri) {
+                throw new SaTokenException('无效的授权码');
+            }
+
+            return $this->issueAccessToken(
+                $clientId,
+                $codeData->getLoginId(),
+                $scope,
+                '',
+                true,
+                $nonce,
+                false,
+                'authorization_code'
+            );
+        });
     }
 
     /**
@@ -988,41 +1011,10 @@ class SaOAuth2Handle
             $this->validateGrantTypeForClient($client, 'password');
             $scope = $this->validateScopeForClient($client, $scope);
 
-            // Password authorization is a login flow too: share the default
-            // login account lock with StpLogic::login()/disable() so a ban
-            // cannot race between the check and OAuth credential issuance.
-            $logic = StpUtil::getStpLogic();
-            $tokenManager = $logic->getTokenManager();
-            $loginIdString = (string) $loginId;
-            $accountLockKey = 'login:' . $logic->getLoginType() . ':' . hash('sha256', $loginIdString);
-            if (!$tokenManager->acquireLock($accountLockKey, 30)) {
-                throw new SaTokenException('同账号会话正在处理中，请稍后重试');
-            }
-
-            $accessToken = null;
-            try {
-                StpUtil::checkDisable($loginId, 'login');
-                $accessToken = $this->issueAccessToken($clientId, $loginId, $scope, '', true, '', false, 'password');
-
-                // The account lock is a lease. If token persistence stalls
-                // past it, a newer disable may complete; verify both the ban
-                // state and lock ownership before returning the bearer.
-                StpUtil::checkDisable($loginId, 'login');
-                if (!$tokenManager->renewLock($accountLockKey, 30)) {
-                    throw new SaTokenException('账号会话锁已失效，拒绝签发 OAuth 令牌');
-                }
-            } catch (\Throwable $exception) {
-                if ($accessToken !== null) {
-                    try {
-                        $this->revokeAccessToken($accessToken->getAccessToken());
-                    } catch (\Throwable $cleanupException) {
-                        throw new SaTokenException('OAuth 令牌签发后状态校验失败，且撤销清理失败', 0, $cleanupException);
-                    }
-                }
-                throw $exception;
-            } finally {
-                $tokenManager->releaseLock($accountLockKey);
-            }
+            $accessToken = $this->issueForLoginAccount(
+                $loginId,
+                fn (): SaOAuth2AccessToken => $this->issueAccessToken($clientId, $loginId, $scope, '', true, '', false, 'password')
+            );
 
             SaAntiBruteUtil::clearCurrentAccountFailures($username);
 
@@ -1302,7 +1294,55 @@ class SaOAuth2Handle
             throw new SaTokenException('OpenID Connect 隐式授权必须提供 nonce');
         }
 
-        return $this->issueAccessToken($clientId, $loginId, $scope, '', false, $nonce, $isOpenIdRequest, 'implicit');
+        return $this->issueForLoginAccount(
+            $loginId,
+            fn (): SaOAuth2AccessToken => $this->issueAccessToken($clientId, $loginId, $scope, '', false, $nonce, $isOpenIdRequest, 'implicit')
+        );
+    }
+
+    /**
+     * Issue a user OAuth credential while serialized with login and disable.
+     * @param callable(): SaOAuth2AccessToken $issue
+     */
+    protected function issueForLoginAccount(mixed $loginId, callable $issue): SaOAuth2AccessToken
+    {
+        if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
+            throw new SaTokenException('loginId 不能为空且必须是非布尔标量');
+        }
+
+        $logic = StpUtil::getStpLogic();
+        $tokenManager = $logic->getTokenManager();
+        $loginIdString = (string) $loginId;
+        $accountLockKey = 'login:' . $logic->getLoginType() . ':' . hash('sha256', $loginIdString);
+        if (!$tokenManager->acquireLock($accountLockKey, 30)) {
+            throw new SaTokenException('同账号会话正在处理中，请稍后重试');
+        }
+
+        $accessToken = null;
+        try {
+            StpUtil::checkDisable($loginId, 'login');
+            $accessToken = $issue();
+
+            // The lock is a lease. If token persistence stalls long enough for
+            // a disable to take over, revoke the new credential before return.
+            StpUtil::checkDisable($loginId, 'login');
+            if (!$tokenManager->renewLock($accountLockKey, 30)) {
+                throw new SaTokenException('账号会话锁已失效，拒绝签发 OAuth 令牌');
+            }
+
+            return $accessToken;
+        } catch (\Throwable $exception) {
+            if ($accessToken !== null) {
+                try {
+                    $this->revokeAccessToken($accessToken->getAccessToken());
+                } catch (\Throwable $cleanupException) {
+                    throw new SaTokenException('OAuth 令牌签发后状态校验失败，且撤销清理失败', 0, $cleanupException);
+                }
+            }
+            throw $exception;
+        } finally {
+            $tokenManager->releaseLock($accountLockKey);
+        }
     }
 
     /**

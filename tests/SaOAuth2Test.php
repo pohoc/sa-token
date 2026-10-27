@@ -162,8 +162,66 @@ class SaOAuth2Test extends TestCase
             self::fail('OAuth 密码授权未签发预期的 RefreshToken');
         }
 
+        try {
+            $this->handle->refreshToken($refreshToken, 'test-client', $this->clientSecret);
+            self::fail('封禁账号的 OAuth RefreshToken 必须被拒绝');
+        } catch (\SaToken\Exception\DisableServiceException) {
+            // A rejected refresh must leave the credential intact.
+        }
+        StpUtil::untieDisable($loginId, 'login');
+        self::assertNotEmpty($this->handle->refreshToken($refreshToken, 'test-client', $this->clientSecret)->getAccessToken());
+    }
+
+    public function testAuthorizationCodeExchangeRejectsDisabledLoginId(): void
+    {
+        $loginId = 'disabled-oauth-code-user';
+        $code = $this->handle->generateAuthorizationCode(
+            'test-client',
+            $loginId,
+            'https://example.com/callback'
+        );
+        StpUtil::disable($loginId, 'login', 1, 3600);
+
+        try {
+            $this->handle->exchangeTokenByCode(
+                $code->getCode(),
+                'test-client',
+                $this->clientSecret,
+                'https://example.com/callback'
+            );
+            self::fail('封禁账号的授权码必须被拒绝');
+        } catch (\SaToken\Exception\DisableServiceException) {
+            // The authorization code must remain usable after a rejected exchange.
+        }
+        StpUtil::untieDisable($loginId, 'login');
+        self::assertNotEmpty($this->handle->exchangeTokenByCode(
+            $code->getCode(),
+            'test-client',
+            $this->clientSecret,
+            'https://example.com/callback'
+        )->getAccessToken());
+    }
+
+    public function testImplicitGrantRejectsDisabledLoginId(): void
+    {
+        $config = new SaOAuth2Config(['grantTypes' => ['authorization_code', 'implicit']]);
+        $handle = new SaOAuth2Handle($config);
+        $handle->registerClient(new SaOAuth2Client([
+            'clientId' => 'implicit-disabled-user-client',
+            'clientSecret' => 'implicit-disabled-user-client-secret-with-at-least-32-bytes',
+            'redirectUris' => ['https://example.com/callback'],
+            'grantTypes' => ['implicit'],
+        ]));
+        $loginId = 'disabled-implicit-user';
+        StpUtil::disable($loginId, 'login', 1, 3600);
+
         $this->expectException(\SaToken\Exception\DisableServiceException::class);
-        $this->handle->refreshToken($refreshToken, 'test-client', $this->clientSecret);
+        (new ImplicitStrategy($handle))->authorize(
+            'implicit-disabled-user-client',
+            $loginId,
+            '',
+            'https://example.com/callback'
+        );
     }
 
     public function testAuthenticationRejectsLegacyShortSecret(): void
