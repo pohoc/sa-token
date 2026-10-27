@@ -148,6 +148,13 @@ class SaLoginDevice
 
     public function getDeviceId(): string
     {
-        return md5($this->deviceType . '-' . $this->deviceName . '-' . $this->ip);
+        // Encode each field with its byte length so delimiter-bearing values
+        // cannot make distinct device identities resolve to the same input.
+        $identity = '';
+        foreach ([$this->deviceType, $this->deviceName, $this->ip] as $component) {
+            $identity .= pack('N', strlen($component)) . $component;
+        }
+
+        return hash('sha256', $identity);
     }
 }

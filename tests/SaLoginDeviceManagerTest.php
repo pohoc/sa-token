@@ -199,6 +199,52 @@ class SaLoginDeviceManagerTest extends TestCase
         self::assertNotSame(SaLoginDeviceManager::getKey('test:user', 'admin:type'), SaLoginDeviceManager::getKey('test:user', 'admin'));
     }
 
+    public function testDeviceIdSeparatesDelimiterBearingIdentityComponents(): void
+    {
+        $loginId = 'shared-device-account';
+        $firstDevice = new SaLoginDevice(['deviceType' => 'a-b', 'deviceName' => 'c', 'ip' => 'd']);
+        $secondDevice = new SaLoginDevice(['deviceType' => 'a', 'deviceName' => 'b-c', 'ip' => 'd']);
+        $firstToken = $this->logic->login($loginId, (new SaLoginParameter())
+            ->setDeviceType('a-b')->setDevice($firstDevice)->setIsShare(false))->getAccessToken();
+        $secondToken = $this->logic->login($loginId, (new SaLoginParameter())
+            ->setDeviceType('a')->setDevice($secondDevice)->setIsShare(false))->getAccessToken();
+
+        self::assertNotSame($firstDevice->getDeviceId(), $secondDevice->getDeviceId());
+        self::assertSame(2, $this->logic->getDeviceCount($loginId));
+
+        $this->logic->kickoutDevice($loginId, $firstDevice->getDeviceId());
+
+        self::assertFalse($this->logic->getTokenManager()->isTokenValid($firstToken));
+        self::assertTrue($this->logic->getTokenManager()->isTokenValid($secondToken));
+        self::assertSame(1, $this->logic->getDeviceCount($loginId));
+    }
+
+    public function testLegacyDeviceRecordRemainsManageableAfterDeviceIdUpgrade(): void
+    {
+        $loginId = 'legacy-device-id';
+        $device = new SaLoginDevice(['deviceType' => 'desktop', 'deviceName' => 'legacy-browser', 'ip' => '192.0.2.55']);
+        $firstToken = $this->logic->login($loginId, (new SaLoginParameter())->setDevice($device))->getAccessToken();
+        $newKey = SaLoginDeviceManager::getKey($loginId, 'login') . ':' . $device->getDeviceId();
+        $legacyId = md5($device->getDeviceType() . '-' . $device->getDeviceName() . '-' . $device->getIp());
+        $legacyKey = SaLoginDeviceManager::getKey($loginId, 'login') . ':' . $legacyId;
+        $legacyRecord = $this->dao->get($newKey);
+        self::assertNotNull($legacyRecord);
+        $this->dao->delete($newKey);
+        $this->dao->set($legacyKey, $legacyRecord, 3600);
+
+        self::assertNotNull($this->logic->findDevice($loginId, $device->getDeviceId()));
+        $secondToken = $this->logic->login($loginId, (new SaLoginParameter())
+            ->setDevice($device)->setIsShare(false))->getAccessToken();
+        self::assertSame(1, $this->logic->getDeviceCount($loginId));
+        self::assertNotNull($this->dao->get($legacyKey));
+
+        $this->logic->kickoutDevice($loginId, $device->getDeviceId());
+
+        self::assertFalse($this->logic->getTokenManager()->isTokenValid($firstToken));
+        self::assertFalse($this->logic->getTokenManager()->isTokenValid($secondToken));
+        self::assertNull($this->dao->get($legacyKey));
+    }
+
     public function testDeviceRegistration(): void
     {
         $device = new SaLoginDevice([

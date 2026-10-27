@@ -79,6 +79,18 @@ class SaLoginDeviceManager
         try {
             $tokenValues = [];
             $expectedRecord = $dao->get($key);
+            if ($expectedRecord === null) {
+                // Keep device records written with the previous ID algorithm
+                // usable after upgrading. The record key remains stable until
+                // it is explicitly removed or replaced.
+                foreach (self::loadDeviceRecords($loginId, $loginType, false) as $record) {
+                    if ($record['device']->getDeviceId() === $device->getDeviceId()) {
+                        $key = $record['key'];
+                        $expectedRecord = $record['raw'];
+                        break;
+                    }
+                }
+            }
             foreach (self::loadDeviceTokenValues($key, $expectedRecord) as $existingToken) {
                 if ($logic->getLoginIdByToken($existingToken) === $loginIdStr) {
                     $tokenValues[] = $existingToken;
@@ -196,6 +208,13 @@ class SaLoginDeviceManager
             // nested login type's key. Verify the stored owner before revoking
             // any tokens or deleting the record.
             $expectedRecord = $dao->get($key);
+            if ($expectedRecord === null) {
+                $record = self::findDeviceRecordById($loginId, $deviceId, $loginType);
+                if ($record !== null) {
+                    $key = $record['key'];
+                    $expectedRecord = $record['raw'];
+                }
+            }
             if ($expectedRecord === null) {
                 return;
             }
@@ -400,7 +419,11 @@ class SaLoginDeviceManager
         $data = $dao->get($key);
 
         if ($data === null) {
-            return null;
+            $record = self::findDeviceRecordById($loginId, $deviceId, $loginType);
+            if ($record === null) {
+                return null;
+            }
+            $data = $record['raw'];
         }
 
         $decoded = @json_decode($data, true);
@@ -463,6 +486,13 @@ class SaLoginDeviceManager
             $key = self::getKey($loginId, $loginType) . ':' . $deviceId;
             $expectedRecord = $dao->get($key);
             if ($expectedRecord === null) {
+                $record = self::findDeviceRecordById($loginId, $deviceId, $loginType);
+                if ($record !== null) {
+                    $key = $record['key'];
+                    $expectedRecord = $record['raw'];
+                }
+            }
+            if ($expectedRecord === null) {
                 return;
             }
 
@@ -484,6 +514,18 @@ class SaLoginDeviceManager
         } finally {
             $tokenManager->releaseLock($lockKey);
         }
+    }
+
+    /** @return array{device: SaLoginDevice, key: string, raw: string}|null */
+    protected static function findDeviceRecordById(mixed $loginId, string $deviceId, string $loginType): ?array
+    {
+        foreach (self::loadDeviceRecords($loginId, $loginType, false) as $record) {
+            if ($record['device']->getDeviceId() === $deviceId) {
+                return $record;
+            }
+        }
+
+        return null;
     }
 
     /**
