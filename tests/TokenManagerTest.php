@@ -92,6 +92,23 @@ class SaTokenDaoPausingRefreshDelete extends SaTokenDaoMemory
     }
 }
 
+class SaTokenDaoReplacingRefreshBeforeBulkDelete extends SaTokenDaoMemory
+{
+    public ?\Closure $beforeBulkTokenDelete = null;
+
+    public function deleteMultiple(array $keys): void
+    {
+        if ($this->beforeBulkTokenDelete !== null
+            && array_filter($keys, static fn (string $key): bool => str_starts_with($key, TokenManager::TOKEN_PREFIX)) !== []) {
+            $callback = $this->beforeBulkTokenDelete;
+            $this->beforeBulkTokenDelete = null;
+            $callback();
+        }
+
+        parent::deleteMultiple($keys);
+    }
+}
+
 class TokenManagerTest extends TestCase
 {
     protected TokenManager $manager;
@@ -152,6 +169,38 @@ class TokenManagerTest extends TestCase
         };
 
         $this->manager->deleteRefreshToken($refresh);
+
+        self::assertSame($ownerB, $this->manager->getRefreshTokenData($refresh)['loginId'] ?? null);
+    }
+
+    public function testAccountLogoutCannotBulkDeleteReusedRefreshCredential(): void
+    {
+        $dao = new SaTokenDaoReplacingRefreshBeforeBulkDelete();
+        $this->dao = $dao;
+        SaToken::setDao($dao);
+        $ownerA = 'bulk-logout-refresh-owner-a';
+        $ownerB = 'bulk-logout-refresh-owner-b';
+        $accessA = 'bulk-logout-refresh-access-a';
+        $accessB = 'bulk-logout-refresh-access-b';
+        $refresh = 'bulk-logout-refresh-shared-value';
+        $this->manager->saveToken($accessA, $ownerA, 'login', 'PC', 3600);
+        $this->manager->saveToken($accessB, $ownerB, 'login', 'PC', 3600);
+        $this->manager->saveRefreshToken($refresh, $accessA, $ownerA, 'login', 3600);
+
+        $refreshKey = TokenManager::REFRESH_TOKEN_PREFIX . $refresh;
+        $dao->beforeBulkTokenDelete = function () use ($dao, $refreshKey, $refresh, $accessB, $ownerB): void {
+            // The logout already selected owner A's refresh key for deletion.
+            // Reuse the raw value for owner B just before the batch is applied.
+            $dao->delete($refreshKey);
+            SaTokenContext::setContextId('bulk-delete-reissue-worker');
+            try {
+                $this->manager->saveRefreshToken($refresh, $accessB, $ownerB, 'login', 3600);
+            } finally {
+                SaTokenContext::setContextId('default');
+            }
+        };
+
+        $this->manager->deleteAllTokenByLoginId($ownerA, 'login');
 
         self::assertSame($ownerB, $this->manager->getRefreshTokenData($refresh)['loginId'] ?? null);
     }

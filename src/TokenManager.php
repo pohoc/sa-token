@@ -958,6 +958,7 @@ class TokenManager
         }
 
         $keysToDelete = [];
+        $refreshTokensToDelete = [];
         try {
             // Account-wide logout/kickout also invalidates mixed JWTs already
             // missing from the session index before a future stateless-mode
@@ -990,8 +991,7 @@ class TokenManager
                 $keysToDelete[] = self::FINGERPRINT_PREFIX . $tokenValue;
                 $refreshToken = $this->getRefreshTokenByAccessToken($loginId, $loginType, $tokenValue);
                 if ($refreshToken !== null) {
-                    $keysToDelete[] = self::REFRESH_TOKEN_PREFIX . $refreshToken;
-                    $keysToDelete[] = self::buildRefreshTokenMapKey($loginId, $loginType, $tokenValue);
+                    $refreshTokensToDelete[] = $refreshToken;
                 }
 
                 $deletedTokens[] = $tokenValue;
@@ -1006,6 +1006,15 @@ class TokenManager
             if (count($keysToDelete) > 0) {
                 $renewLocks();
                 $dao->deleteMultiple($keysToDelete);
+            }
+
+            // Refresh credentials have their own value lock and may be reused
+            // independently of this access-token lock. Never include them in
+            // the bulk deletion snapshot; re-read and verify each owner under
+            // its credential lock instead.
+            foreach (array_unique($refreshTokensToDelete) as $refreshToken) {
+                $renewLocks();
+                $this->deleteRefreshTokenIfOwned($refreshToken, $loginIdStr, $loginType);
             }
 
             if ($expectedList !== null) {
