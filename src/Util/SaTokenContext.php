@@ -223,7 +223,13 @@ class SaTokenContext
     /** Prevent every login type in this request from falling back to native token sources. */
     public static function denyTokenFallback(): void
     {
-        self::$tokenFallbackDeniedMap[self::getContextId()] = true;
+        $id = self::getContextId();
+        // A failed authentication attempt invalidates the request's effective
+        // identity as well as native credential fallback. Otherwise an earlier
+        // auth middleware's override could survive a later failed RPC/API-key
+        // check when the application catches that exception and continues.
+        unset(self::$tokenOverridesMap[$id]);
+        self::$tokenFallbackDeniedMap[$id] = true;
     }
 
     /** @var array<string> */

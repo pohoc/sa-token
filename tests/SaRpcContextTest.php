@@ -381,6 +381,25 @@ class SaRpcContextTest extends TestCase
         }
     }
 
+    public function testInvalidRpcTokenClearsPreviouslyBoundRequestIdentities(): void
+    {
+        $loginToken = StpUtil::login('previous-login-identity')->getAccessToken();
+        $adminToken = SaToken::getStpLogic('admin')->login('previous-admin-identity')->getAccessToken();
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token' => 'invalid-rpc-token',
+        ]));
+        SaTokenContext::setTokenOverride('login', $loginToken);
+        SaTokenContext::setTokenOverride('admin', $adminToken);
+
+        try {
+            (new SaRpcInterceptor())->handleIncoming();
+            self::fail('无效 RPC Token 必须拒绝认证');
+        } catch (SaTokenException) {
+            self::assertNull(StpUtil::getStpLogic()->getLoginId());
+            self::assertNull(SaToken::getStpLogic('admin')->getLoginId());
+        }
+    }
+
     public function testRpcInterceptorEnforcesConfiguredLoginType(): void
     {
         $token = SaToken::getStpLogic('user')->login(10004)->getAccessToken();
