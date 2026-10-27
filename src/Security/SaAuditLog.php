@@ -73,7 +73,10 @@ class SaAuditLog
         ];
 
         $key = self::$keyPrefix . $loginType . ':' . $id;
-        $jsonStr = json_encode($entry);
+        // User-Agent, reasons, and extension data can contain byte sequences
+        // that are not valid UTF-8. Never replace the whole security event
+        // with `{}` because one such field failed JSON encoding.
+        $jsonStr = json_encode($entry, JSON_INVALID_UTF8_SUBSTITUTE | JSON_PARTIAL_OUTPUT_ON_ERROR);
         $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', self::$ttlDays * 86400);
 
         self::trimOldEntries($loginType);

@@ -274,6 +274,19 @@ class SaAuditLogTest extends TestCase
         $this->assertSame('[redacted]', $log['tokenValue'] ?? null);
     }
 
+    public function testInvalidUtf8UserAgentDoesNotEraseAuditEvent(): void
+    {
+        SaAuditLog::setEnabled(true);
+
+        $id = SaAuditLog::log('login', 'audit-user', 'login', '用户登录', null, null, "agent-\xFF");
+
+        self::assertNotNull($id);
+        $log = SaAuditLog::getLog($id, 'login');
+        self::assertNotNull($log);
+        self::assertSame('login', $log['event'] ?? null);
+        self::assertSame("agent-\u{FFFD}", $log['userAgent'] ?? null);
+    }
+
     public function testMaxEntriesLimit(): void
     {
         SaAuditLog::setEnabled(true);
