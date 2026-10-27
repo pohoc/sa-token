@@ -338,8 +338,32 @@ class SaTokenCryptoTest extends TestCase
     public function testHmacSignWithCustomKey(): void
     {
         $sign1 = $this->crypto->hmacSign('data');
-        $sign2 = $this->crypto->hmacSign('data', 'different-key');
+        $sign2 = $this->crypto->hmacSign('data', str_repeat('different-key', 3));
         $this->assertNotEquals($sign1, $sign2);
+    }
+
+    public function testHmacSignRejectsKeysShorterThan32Bytes(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('至少需要 32 字节');
+        $this->crypto->hmacSign('data', 'short-key');
+    }
+
+    public function testStaticHmacHelpersRejectKeysShorterThan32Bytes(): void
+    {
+        try {
+            SaTokenCrypto::hmacSha256('data', 'short-key');
+            self::fail('hmacSha256 must reject weak keys');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('至少需要 32 字节', $exception->getMessage());
+        }
+
+        try {
+            SaTokenCrypto::hmacSha1('data', 'short-key');
+            self::fail('hmacSha1 must reject weak keys');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('至少需要 32 字节', $exception->getMessage());
+        }
     }
 
     public function testHmacNoKeyConfigured(): void

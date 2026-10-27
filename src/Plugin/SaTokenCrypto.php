@@ -19,6 +19,8 @@ use SaToken\Exception\SaTokenException;
  */
 class SaTokenCrypto
 {
+    private const MIN_HMAC_KEY_BYTES = 32;
+
     /**
      * AES 密钥
      */
@@ -274,6 +276,7 @@ class SaTokenCrypto
         if ($key === '') {
             throw new SaTokenException('HMAC 密钥未配置');
         }
+        self::validateHmacKey($key);
 
         return hash_hmac('sha256', $data, $key);
     }
@@ -309,12 +312,21 @@ class SaTokenCrypto
 
     public static function hmacSha256(string $data, string $key): string
     {
+        self::validateHmacKey($key);
         return hash_hmac('sha256', $data, $key);
     }
 
     public static function hmacSha1(string $data, string $key): string
     {
+        self::validateHmacKey($key);
         return hash_hmac('sha1', $data, $key);
+    }
+
+    private static function validateHmacKey(string $key): void
+    {
+        if (strlen($key) < self::MIN_HMAC_KEY_BYTES) {
+            throw new SaTokenException('HMAC 密钥长度不足，至少需要 ' . self::MIN_HMAC_KEY_BYTES . ' 字节');
+        }
     }
 
     public static function bcryptVerify(string $data, string $hash): bool

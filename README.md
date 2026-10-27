@@ -1022,8 +1022,9 @@ $hash = SaTokenCrypto::md5('password');
 $hash = SaTokenCrypto::sha1('password');
 $hash = SaTokenCrypto::sha256('password');
 
-$hmac = SaTokenCrypto::hmacSha256('data', 'key');
-$hmac = SaTokenCrypto::hmacSha1('data', 'key');
+$hmacKey = bin2hex(random_bytes(32)); // 保存到安全配置中，后续签名与验签使用同一密钥
+$hmac = SaTokenCrypto::hmacSha256('data', $hmacKey);
+$hmac = SaTokenCrypto::hmacSha1('data', $hmacKey);
 
 $bcrypt = SaTokenCrypto::bcryptHash('password', 12);
 $valid = SaTokenCrypto::bcryptVerify('password', $bcrypt);
