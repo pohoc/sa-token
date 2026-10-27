@@ -67,6 +67,11 @@ class SaSsoManager
 
     public function doLoginCallback(string $ticket, ?string $redirect = null, ?string $state = null): mixed
     {
+        // The cross-Redis branch validates the ticket here instead of through
+        // SaSsoHandle::doLoginCallback(), so establish fail-closed request
+        // authentication semantics before either callback path runs.
+        SaTokenContext::denyTokenFallback();
+
         if (SaFoxUtil::isEmpty($ticket)) {
             throw new SaTokenException('SSO ticket 不能为空');
         }

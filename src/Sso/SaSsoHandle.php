@@ -209,6 +209,11 @@ class SaSsoHandle
      */
     public function doLoginCallback(string $ticket, ?string $redirect = null, ?string $state = null): mixed
     {
+        // A failed SSO callback must not leave a previously authenticated
+        // bearer or request-local identity usable if the application catches
+        // the callback exception and continues processing this request.
+        SaTokenContext::denyTokenFallback();
+
         if (SaFoxUtil::isEmpty($ticket)) {
             throw new SaTokenException('SSO ticket 不能为空');
         }

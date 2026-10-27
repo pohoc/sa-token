@@ -733,6 +733,45 @@ class SaSsoTest extends TestCase
         $this->assertNotSame($oldToken, StpUtil::getTokenValue());
     }
 
+    public function testFailedSsoCallbackClearsPreviouslyBoundRequestIdentity(): void
+    {
+        $oldToken = StpUtil::login('old-sso-callback-user')->getAccessToken();
+        SaTokenContext::setTokenOverride('login', $oldToken);
+        $handle = new class (new SaSsoConfig(['checkState' => false])) extends SaSsoHandle {
+            protected function checkTicket(string $ticket): ?string
+            {
+                return null;
+            }
+        };
+
+        try {
+            $handle->doLoginCallback('invalid-ticket');
+            self::fail('无效 SSO ticket 必须拒绝认证');
+        } catch (SaTokenException) {
+            self::assertNull(StpUtil::getLoginId(), '失败的 SSO 回调不得保留先前绑定的身份');
+        }
+    }
+
+    public function testFailedCrossRedisSsoCallbackClearsPreviouslyBoundRequestIdentity(): void
+    {
+        $oldToken = StpUtil::login('old-cross-redis-sso-user')->getAccessToken();
+        SaTokenContext::setTokenOverride('login', $oldToken);
+        $manager = new SaSsoManager(new SaSsoConfig([
+            'crossRedis' => true,
+            'checkState' => false,
+        ]));
+        $handle = new class ($manager->getConfig()) extends SaSsoHandle {
+            public function checkTicketCrossRedis(string $ticket): ?string
+            {
+                return null;
+            }
+        };
+        (new \ReflectionProperty(SaSsoManager::class, 'handle'))->setValue($manager, $handle);
+
+        self::assertNull($manager->doLoginCallback('invalid-ticket'));
+        self::assertNull(StpUtil::getLoginId(), '失败的跨 Redis SSO 回调不得保留先前绑定的身份');
+    }
+
     public function testCrossRedisManagerRejectsEmptyTicketBeforeRequest(): void
     {
         $manager = new SaSsoManager(new SaSsoConfig([
