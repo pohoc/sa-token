@@ -43,9 +43,9 @@
         "ext-redis": "可选：使用 Redis 存储适配器时所需"
     },
     "scripts": {
-        "test": "phpunit --configuration phpunit.xml",
+        "test": "php -d memory_limit=512M vendor/bin/phpunit --configuration phpunit.xml",
         "lint": "find src tests -type f -name '*.php' -print0 | xargs -0 -n1 php -l",
-        "coverage": "phpunit --coverage-html coverage --coverage-clover coverage.xml",
+        "coverage": "php -d memory_limit=512M vendor/bin/phpunit --coverage-html coverage --coverage-clover coverage.xml",
         "analyse": "phpstan analyse --memory-limit=512M",
         "cs-check": "php-cs-fixer fix --dry-run --diff",
         "cs-fix": "php-cs-fixer fix",
