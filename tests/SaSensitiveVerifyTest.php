@@ -173,6 +173,13 @@ class SaSensitiveVerifyTest extends TestCase
         }
     }
 
+    public function testSensitiveVerificationRejectsOversizedScenes(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('scene 长度不能超过');
+        SaSensitiveVerify::generateCode(str_repeat('s', 257), 'alice');
+    }
+
     public function testGeneratedCodeIsStoredAsOneWayHash(): void
     {
         $scene = 'hashed-code-scene';

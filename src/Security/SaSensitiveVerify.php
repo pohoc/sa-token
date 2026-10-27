@@ -11,6 +11,7 @@ use SaToken\SaToken;
 class SaSensitiveVerify
 {
     protected static string $keyPrefix = 'satoken:sensitive:';
+    private const MAX_SCENE_BYTES = 256;
     protected static int $codeLength = 6;
     protected static int $validSeconds = 300;
     protected static int $maxAttempts = 3;
@@ -57,6 +58,10 @@ class SaSensitiveVerify
 
     public static function getKey(string $scene, mixed $loginId, string $loginType = 'login'): string
     {
+        if (strlen($scene) > self::MAX_SCENE_BYTES) {
+            throw new SaTokenException('敏感验证 scene 长度不能超过 ' . self::MAX_SCENE_BYTES . ' 字节');
+        }
+
         $loginIdStr = self::normalizeLoginId($loginId);
         return self::$keyPrefix
             . \SaToken\TokenManager::encodeKeyComponent($loginType) . ':'
