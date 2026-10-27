@@ -487,6 +487,13 @@ class StpLogicFullTest extends TestCase
         $this->assertNull($session);
     }
 
+    public function testGetSessionByLoginIdRejectsOversizedIdentityBeforeStorageAccess(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('loginId 长度无效');
+        $this->logic->getSessionByLoginId(str_repeat('s', TokenManager::MAX_LOGIN_ID_BYTES + 1));
+    }
+
     // ======== getTokenInfo ========
 
     public function testGetTokenInfo(): void

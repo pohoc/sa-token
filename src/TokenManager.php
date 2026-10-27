@@ -94,6 +94,7 @@ class TokenManager
     /** Build a collision-free login session key while preserving legacy keys without colons. */
     public static function buildSessionId(string $loginType, string $loginId): string
     {
+        self::validateLoginIdLength($loginId);
         return self::SESSION_PREFIX . self::encodeKeyComponent($loginType) . ':' . self::encodeKeyComponent($loginId);
     }
 
