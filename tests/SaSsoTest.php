@@ -696,6 +696,28 @@ class SaSsoTest extends TestCase
         $handle->doLoginCallback('');
     }
 
+    public function testDoLoginCallbackRejectsOversizedTicketBeforeCallingValidator(): void
+    {
+        $handle = new class (new SaSsoConfig(['checkState' => false])) extends SaSsoHandle {
+            public bool $validatorCalled = false;
+
+            protected function checkTicket(string $ticket): string
+            {
+                $this->validatorCalled = true;
+                return 'unexpected-user';
+            }
+        };
+
+        try {
+            $handle->doLoginCallback(str_repeat('t', 4097));
+            self::fail('超大 SSO ticket 必须在进入 ticket 校验器前拒绝');
+        } catch (SaTokenException $exception) {
+            self::assertSame('SSO ticket 长度不能超过 4096 字节', $exception->getMessage());
+        }
+
+        self::assertFalse($handle->validatorCalled);
+    }
+
     public function testDoLoginCallbackBindsNewIdentityInsteadOfIncomingToken(): void
     {
         SaToken::setConfig(new SaTokenConfig([
@@ -782,6 +804,22 @@ class SaSsoTest extends TestCase
         $this->expectException(SaTokenException::class);
         $this->expectExceptionMessage('SSO ticket 不能为空');
         $manager->doLoginCallback('');
+    }
+
+    public function testCrossRedisManagerRejectsOversizedTicketBeforeOutboundRequest(): void
+    {
+        $manager = new SaSsoManager(new SaSsoConfig([
+            'crossRedis' => true,
+            'checkState' => false,
+            'clientSecret' => str_repeat('s', 32),
+        ]));
+
+        try {
+            $manager->doLoginCallback(str_repeat('t', 4097));
+            self::fail('超大跨 Redis SSO ticket 必须在发起出站请求前拒绝');
+        } catch (SaTokenException $exception) {
+            self::assertSame('SSO ticket 长度不能超过 4096 字节', $exception->getMessage());
+        }
     }
 
     public function testCrossRedisManagerBindsTicketIdentityInsteadOfIncomingToken(): void

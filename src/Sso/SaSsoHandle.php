@@ -26,6 +26,9 @@ class SaSsoHandle
 {
     protected const SLO_CALLBACK_MAX_AGE = 300;
 
+    /** Bound attacker-controlled SSO tickets before constructing outbound requests. */
+    protected const MAX_TICKET_BYTES = 4096;
+
     /**
      * SSO 配置
      */
@@ -217,6 +220,7 @@ class SaSsoHandle
         if (SaFoxUtil::isEmpty($ticket)) {
             throw new SaTokenException('SSO ticket 不能为空');
         }
+        $this->validateTicketLength($ticket);
 
         $this->validateCallbackRequest($redirect, $state);
 
@@ -340,6 +344,7 @@ class SaSsoHandle
      */
     public function buildCheckTicketResponse(string $ticket, mixed $loginId, string $requestNonce): array
     {
+        $this->validateTicketLength($ticket);
         if ($requestNonce === '') {
             throw new SaTokenException('构建 check-ticket 响应必须回显本次请求 nonce');
         }
@@ -388,8 +393,16 @@ class SaSsoHandle
         }
     }
 
+    protected function validateTicketLength(string $ticket): void
+    {
+        if (strlen($ticket) > self::MAX_TICKET_BYTES) {
+            throw new SaTokenException('SSO ticket 长度不能超过 ' . self::MAX_TICKET_BYTES . ' 字节');
+        }
+    }
+
     public function checkTicketCrossRedis(string $ticket): ?string
     {
+        $this->validateTicketLength($ticket);
         $clientSecret = $this->config->getClientSecret();
         if (strlen($clientSecret) < 32) {
             throw new SaTokenException('跨 Redis ticket 校验必须配置至少 32 字节的 clientSecret');
