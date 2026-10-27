@@ -59,6 +59,21 @@ class SaTokenDaoFailingTokenDelete extends SaTokenDaoMemory
     }
 }
 
+class SaTokenDaoFailingLastActiveWrite extends SaTokenDaoMemory
+{
+    public bool $failNextLastActiveWrite = false;
+
+    public function set(string $key, string $value, ?int $timeout = null): void
+    {
+        if ($this->failNextLastActiveWrite && str_starts_with($key, TokenManager::LAST_ACTIVE_PREFIX)) {
+            $this->failNextLastActiveWrite = false;
+            throw new SaTokenException('simulated last-active write failure');
+        }
+
+        parent::set($key, $value, $timeout);
+    }
+}
+
 class SaTokenDaoRecreatingRefreshDuringAccountCleanup extends SaTokenDaoMemory
 {
     public ?\Closure $duringRefreshAccountRead = null;
@@ -152,6 +167,31 @@ class TokenManagerTest extends TestCase
     {
         SaTokenContext::setContextId('default');
         SaToken::reset();
+    }
+
+    public function testFailedTokenCreationRollsBackItsAccountIndexEntry(): void
+    {
+        $dao = new SaTokenDaoFailingLastActiveWrite();
+        $this->dao = $dao;
+        SaToken::setDao($dao);
+        SaToken::setConfig(SaToken::getConfig()->setActivityTimeout(60));
+        $existingToken = 'existing-valid-token-for-account';
+        $failedToken = 'fault-injected-token-0123456789';
+        $this->manager->saveToken($existingToken, 'rollback-index-account', 'login', '', 3600);
+        $dao->failNextLastActiveWrite = true;
+
+        try {
+            $this->manager->saveToken($failedToken, 'rollback-index-account', 'login', '', 3600);
+            self::fail('Expected the simulated activity marker write failure');
+        } catch (SaTokenException $exception) {
+            self::assertSame('simulated last-active write failure', $exception->getMessage());
+        }
+
+        self::assertFalse($this->manager->isTokenValid($failedToken));
+        self::assertSame(
+            [$existingToken],
+            array_column($this->manager->getTokenListByLoginId('rollback-index-account', 'login'), 'tokenValue')
+        );
     }
 
     public function testStaleRefreshTokenCleanupCannotDeleteReusedCredential(): void

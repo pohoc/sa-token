@@ -499,6 +499,51 @@ class TokenManager
         }
 
         $this->deleteTokenBoundStateIfUnchanged($boundStateSnapshots);
+        $this->removeTokenFromLoginIdList($loginId, $loginType, $tokenValue);
+    }
+
+    /** Remove only this failed issuance from the account index without clobbering concurrent entries. */
+    protected function removeTokenFromLoginIdList(string $loginId, string $loginType, string $tokenValue): void
+    {
+        $dao = $this->getDao();
+        if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface) {
+            return;
+        }
+
+        $loginIdKey = self::buildLoginIdKey($loginType, $loginId);
+        for ($attempt = 0; $attempt < 5; $attempt++) {
+            $storedList = $dao->get($loginIdKey);
+            if ($storedList === null) {
+                return;
+            }
+
+            $decrypted = $this->getEncryptor()->decryptCheckedForContext($storedList, $loginIdKey)
+                ?? $this->decryptValue($storedList);
+            $tokens = SaFoxUtil::fromJson($decrypted);
+            if (!is_array($tokens)) {
+                return;
+            }
+
+            $filtered = array_values(array_filter(
+                $tokens,
+                static fn (mixed $item): bool => !is_array($item)
+                    || ($item['tokenValue'] ?? null) !== $tokenValue
+            ));
+            if (count($filtered) === count($tokens)) {
+                return;
+            }
+
+            $newValue = $filtered === []
+                ? null
+                : $this->encryptBoundValue($loginIdKey, SaFoxUtil::toJson($filtered));
+            $timeout = $dao->getTimeout($loginIdKey);
+            $writeTimeout = $timeout === -1 ? null : max(1, $timeout);
+            if ($dao->compareAndSet($loginIdKey, $storedList, $newValue, $writeTimeout)) {
+                return;
+            }
+        }
+
+        throw new SaTokenException('失败 Token 的账号会话索引回滚发生并发冲突，请重试');
     }
 
     protected function clearTokenBoundState(string $tokenValue, string $loginType): void
