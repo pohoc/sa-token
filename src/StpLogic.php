@@ -96,6 +96,7 @@ class StpLogic
         if (!is_scalar($loginId)) {
             throw new SaTokenException('loginId 必须是标量类型');
         }
+        TokenManager::validateLoginIdLength($loginId);
 
         $parameter = $parameter ?? new SaLoginParameter();
         $config = $this->getConfig();
@@ -280,6 +281,7 @@ class StpLogic
         if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
             throw new SaTokenException('loginId 不能为空且必须是非布尔标量');
         }
+        TokenManager::validateLoginIdLength($loginId);
 
         $parameter = $parameter ?? new SaLoginParameter();
         $config = $this->getConfig();

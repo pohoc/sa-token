@@ -17,6 +17,16 @@ class TokenManager
     /** Match the JWT parser ceiling while bounding attacker-controlled DAO keys. */
     public const MAX_TOKEN_VALUE_BYTES = 65536;
 
+    /** Bound login identifiers before they enter JWT claims, DAO keys, or sessions. */
+    public const MAX_LOGIN_ID_BYTES = 4096;
+
+    public static function validateLoginIdLength(mixed $loginId): void
+    {
+        if (is_scalar($loginId) && strlen((string) $loginId) > self::MAX_LOGIN_ID_BYTES) {
+            throw new SaTokenException('loginId 长度无效，最大为 ' . self::MAX_LOGIN_ID_BYTES . ' 字节');
+        }
+    }
+
     public const TOKEN_PREFIX = 'satoken:login:token:';
     public const LOGIN_ID_PREFIX = 'satoken:login:loginId:';
     public const LOGIN_ID_V2_PREFIX = 'satoken:login:v2:loginId:';
@@ -238,6 +248,7 @@ class TokenManager
         if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
             throw new SaTokenException('loginId 不能为空且必须是非布尔标量');
         }
+        self::validateLoginIdLength($loginId);
 
         $loginIdStr = (string) $loginId;
         $sessionId = $sessionId !== null && $sessionId !== '' ? $sessionId : SaFoxUtil::randomString(32);

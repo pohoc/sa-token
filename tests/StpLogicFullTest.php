@@ -570,6 +570,23 @@ class StpLogicFullTest extends TestCase
         }
     }
 
+    public function testLoginRejectsOversizedLoginIdsBeforePersistence(): void
+    {
+        $loginId = str_repeat('a', TokenManager::MAX_LOGIN_ID_BYTES + 1);
+
+        foreach ([
+            fn () => $this->logic->login($loginId),
+            fn () => $this->logic->loginStateless($loginId),
+        ] as $login) {
+            try {
+                $login();
+                $this->fail('登录入口必须拒绝超长 loginId');
+            } catch (SaTokenException $exception) {
+                $this->assertStringContainsString('loginId 长度无效', $exception->getMessage());
+            }
+        }
+    }
+
     // ======== kickoutByTokenValue ========
 
     public function testKickoutByTokenValue(): void

@@ -46,6 +46,7 @@ class SaTokenJwt
         if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
             throw new SaTokenException('loginId 不能为空且必须是非布尔标量');
         }
+        TokenManager::validateLoginIdLength($loginId);
 
         if ($timeout !== null) {
             SaTokenTimeout::validate($timeout, 'JWT');
