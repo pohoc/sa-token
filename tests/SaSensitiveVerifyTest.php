@@ -23,6 +23,9 @@ class SensitiveVerifyInterleavingDao extends SaTokenDaoMemory
 
     private ?string $interleaveNextOtpWrite = null;
 
+    /** @var callable(): void|null */
+    private $afterStateLockAcquire = null;
+
     public function afterNextGet(callable $callback): void
     {
         $this->afterNextGet = $callback;
@@ -47,6 +50,11 @@ class SensitiveVerifyInterleavingDao extends SaTokenDaoMemory
     public function replaceRateKeyOnNextStateLock(string $rateKey): void
     {
         $this->replaceRateKeyOnStateLock = $rateKey;
+    }
+
+    public function afterNextStateLockAcquire(callable $callback): void
+    {
+        $this->afterStateLockAcquire = $callback;
     }
 
     public function interleaveNextOtpWrite(string $key, callable $callback): void
@@ -79,7 +87,14 @@ class SensitiveVerifyInterleavingDao extends SaTokenDaoMemory
             $this->set($rateKey, 'another-request-owner', 60);
         }
 
-        return parent::setIfNotExists($key, $value, $timeout);
+        $acquired = parent::setIfNotExists($key, $value, $timeout);
+        if ($acquired && str_ends_with($key, ':state-lock') && $this->afterStateLockAcquire !== null) {
+            $callback = $this->afterStateLockAcquire;
+            $this->afterStateLockAcquire = null;
+            $callback();
+        }
+
+        return $acquired;
     }
 
     public function get(string $key): ?string
@@ -216,10 +231,7 @@ class SaSensitiveVerifyTest extends TestCase
         $regenerationWasBlocked = false;
         $key = SaSensitiveVerify::getKey($scene, $loginId);
 
-        $dao->afterNextGet(static function (string $readKey, ?string $ignoredValue) use ($key, $scene, $loginId, &$regenerationWasBlocked): void {
-            if ($readKey !== $key) {
-                return;
-            }
+        $dao->afterNextStateLockAcquire(static function () use ($scene, $loginId, &$regenerationWasBlocked): void {
             try {
                 SaSensitiveVerify::generateCode($scene, $loginId);
             } catch (SaTokenException $e) {
@@ -445,6 +457,86 @@ class SaSensitiveVerifyTest extends TestCase
             self::assertStringContainsString('状态已并发更新', $exception->getMessage());
         }
 
+        self::assertIsString($newCode);
+        self::assertTrue(SaSensitiveVerify::verifyCode($scene, $newCode, $loginId));
+    }
+
+    public function testClearResumingAfterLeaseExpiryCannotDeleteNewOtpReadAfterResume(): void
+    {
+        $dao = new SensitiveVerifyInterleavingDao();
+        SaToken::setDao($dao);
+        $scene = 'clear-resume-after-lease-expiry';
+        $loginId = 'alice';
+        SaSensitiveVerify::generateCode($scene, $loginId);
+        $stateKey = SaSensitiveVerify::getKey($scene, $loginId);
+        $newCode = null;
+
+        $dao->afterNextStateLockAcquire(function () use ($dao, $stateKey, $scene, $loginId, &$newCode): void {
+            // The clear worker acquired its lease but pauses before reading
+            // the record. A later request takes over and writes a new OTP;
+            // the stale worker then resumes and would read that new snapshot.
+            $dao->delete($stateKey . ':state-lock');
+            $newCode = SaSensitiveVerify::generateCode($scene, $loginId);
+        });
+
+        try {
+            SaSensitiveVerify::clearVerified($scene, $loginId);
+            self::fail('A stale clear worker must not delete a newer OTP generation');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('状态已并发更新', $exception->getMessage());
+        }
+
+        self::assertIsString($newCode);
+        self::assertTrue(SaSensitiveVerify::verifyCode($scene, $newCode, $loginId));
+    }
+
+    public function testStaleSafeTokenRequestCannotConsumeLaterOtpVerification(): void
+    {
+        $dao = new SensitiveVerifyInterleavingDao();
+        SaToken::setDao($dao);
+        $scene = 'stale-safe-token-request';
+        $loginId = 'alice';
+        SaSensitiveVerify::generateCode($scene, $loginId);
+        $stateKey = SaSensitiveVerify::getKey($scene, $loginId);
+        $newCode = null;
+
+        $dao->afterNextStateLockAcquire(function () use ($dao, $stateKey, $scene, $loginId, &$newCode): void {
+            // An old safe-token request acquired the state lease before the
+            // user completed a new OTP flow, then resumed after that flow.
+            $dao->delete($stateKey . ':state-lock');
+            $newCode = SaSensitiveVerify::generateCode($scene, $loginId);
+            self::assertTrue(SaSensitiveVerify::verifyCode($scene, $newCode, $loginId));
+        });
+
+        try {
+            SaSensitiveVerify::createSafeTokenAfterVerified($scene, $loginId);
+            self::fail('A stale safe-token request must not consume a later OTP verification');
+        } catch (NotSafeException) {
+            // The old request lost its state lease and must not consume the new proof.
+        }
+
+        self::assertTrue(SaSensitiveVerify::isVerified($scene, $loginId));
+        $safeToken = SaSensitiveVerify::createSafeTokenAfterVerified($scene, $loginId);
+        self::assertTrue(SaSensitiveVerify::verifySafeToken($scene, $safeToken, $loginId));
+    }
+
+    public function testStaleOtpAttemptCannotBurnAttemptsOnLaterGeneration(): void
+    {
+        $dao = new SensitiveVerifyInterleavingDao();
+        SaToken::setDao($dao);
+        $scene = 'stale-otp-attempt';
+        $loginId = 'alice';
+        $oldCode = SaSensitiveVerify::generateCode($scene, $loginId);
+        $stateKey = SaSensitiveVerify::getKey($scene, $loginId);
+        $newCode = null;
+
+        $dao->afterNextStateLockAcquire(function () use ($dao, $stateKey, $scene, $loginId, &$newCode): void {
+            $dao->delete($stateKey . ':state-lock');
+            $newCode = SaSensitiveVerify::generateCode($scene, $loginId);
+        });
+
+        self::assertFalse(SaSensitiveVerify::verifyCode($scene, $oldCode, $loginId));
+        self::assertSame(3, SaSensitiveVerify::getRemainingAttempts($scene, $loginId));
         self::assertIsString($newCode);
         self::assertTrue(SaSensitiveVerify::verifyCode($scene, $newCode, $loginId));
     }

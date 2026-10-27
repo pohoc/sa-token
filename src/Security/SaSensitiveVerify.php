@@ -196,6 +196,14 @@ class SaSensitiveVerify
             throw new SaTokenException('DAO 必须实现安全比较更新接口才能验证验证码');
         }
         $key = self::getKey($scene, $loginId, $loginType);
+        // Bind this attempt to the OTP generation visible when it starts. A
+        // stale request must not consume an attempt or proof from a resend.
+        $initialRecord = $dao->get($key);
+        $initialInfo = $initialRecord !== null ? self::decodeSensitiveState($initialRecord, $key) : null;
+        $initialCodeHash = is_array($initialInfo) ? ($initialInfo['codeHash'] ?? null) : null;
+        if (!is_string($initialCodeHash)) {
+            return false;
+        }
         $lockValue = self::acquireStateLock($key);
         try {
             // The lock is a lease and may expire while a DAO call is stalled.
@@ -212,6 +220,9 @@ class SaSensitiveVerify
 
                 $info = self::decodeSensitiveState($record, $key);
                 if (!is_array($info) || ($info['verified'] ?? false) === true) {
+                    return false;
+                }
+                if (($info['codeHash'] ?? null) !== $initialCodeHash) {
                     return false;
                 }
 
@@ -335,6 +346,10 @@ class SaSensitiveVerify
             throw new SaTokenException('DAO 必须实现原子比较删除接口才能消费验证码');
         }
         $key = self::getKey($scene, $loginId, $loginType);
+        $initialData = $dao->get($key);
+        if ($initialData === null) {
+            return false;
+        }
         $lockValue = self::acquireStateLock($key);
         try {
             // The distributed lock is a lease and can expire while storage is
@@ -342,7 +357,7 @@ class SaSensitiveVerify
             // lock owner cannot consume a newer OTP generation or issue a
             // second safe token after another worker consumes it.
             $data = $dao->get($key);
-            if ($data === null) {
+            if ($data === null || $data !== $initialData || $dao->get($key . ':state-lock') !== $lockValue) {
                 return false;
             }
 
@@ -377,12 +392,15 @@ class SaSensitiveVerify
             throw new SaTokenException('DAO 必须实现安全比较设置接口才能清除验证码');
         }
         $key = self::getKey($scene, $loginId, $loginType);
+        $initialRecord = $dao->get($key);
         $lockValue = self::acquireStateLock($key);
         try {
             // The state lock is a lease. A paused worker must not delete an
             // OTP generation written after that lease expired.
             $currentRecord = $dao->get($key);
-            if (!$dao->compareAndSet($key, $currentRecord, null)) {
+            if ($dao->get($key . ':state-lock') !== $lockValue
+                || $currentRecord !== $initialRecord
+                || !$dao->compareAndSet($key, $currentRecord, null)) {
                 throw new SaTokenException('验证码状态已并发更新，请重试');
             }
             $dao->delete($key . ':att');
