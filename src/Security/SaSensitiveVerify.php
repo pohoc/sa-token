@@ -69,6 +69,14 @@ class SaSensitiveVerify
             . hash('sha256', $loginIdStr);
     }
 
+    protected static function getAccountSendRateKey(mixed $loginId, string $loginType): string
+    {
+        $loginIdStr = self::normalizeLoginId($loginId);
+        return self::$keyPrefix . 'sent:'
+            . \SaToken\TokenManager::encodeKeyComponent($loginType) . ':'
+            . hash('sha256', $loginIdStr);
+    }
+
     protected static function normalizeLoginId(mixed $loginId): string
     {
         if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
@@ -148,28 +156,40 @@ class SaSensitiveVerify
             throw new SaTokenException('验证码发送回调未配置，拒绝生成未投递的验证码');
         }
 
-        // 发送频控：同一 scene+loginId 默认 60 秒内只允许发送一次。
-        // 没有频控的验证码下发等于向任意手机号/邮箱发起短信/邮件轰炸
+        // scene 级冷却方便不同验证流程独立重试；账号级冷却防止调用方
+        // 使用可控 scene 不断创建新桶，绕过短信/邮件发送限制。
         $dao = SaToken::getDao();
-        $rateKey = self::getKey($scene, $loginId, $loginType) . ':sent';
-        $rateOwner = null;
+        $key = self::getKey($scene, $loginId, $loginType);
+        $rateReservations = [];
         if (self::$sendInterval > 0) {
-            $rateOwner = bin2hex(random_bytes(16));
-            if (!$dao->setIfNotExists($rateKey, $rateOwner, self::$sendInterval)) {
+            $accountRateKey = self::getAccountSendRateKey($loginId, $loginType);
+            $accountRateOwner = bin2hex(random_bytes(16));
+            if (!$dao->setIfNotExists($accountRateKey, $accountRateOwner, self::$sendInterval)) {
                 throw new SaTokenException('验证码发送过于频繁，请 ' . self::$sendInterval . ' 秒后再试');
             }
+            $rateReservations[$accountRateKey] = $accountRateOwner;
+
+            $sceneRateKey = $key . ':sent';
+            $sceneRateOwner = bin2hex(random_bytes(16));
+            try {
+                $sceneRateAcquired = $dao->setIfNotExists($sceneRateKey, $sceneRateOwner, self::$sendInterval);
+            } catch (\Throwable $exception) {
+                self::releaseSendRateReservations($dao, $rateReservations);
+                throw $exception;
+            }
+            if (!$sceneRateAcquired) {
+                self::releaseSendRateReservations($dao, $rateReservations);
+                throw new SaTokenException('验证码发送过于频繁，请 ' . self::$sendInterval . ' 秒后再试');
+            }
+            $rateReservations[$sceneRateKey] = $sceneRateOwner;
         }
 
-        $key = self::getKey($scene, $loginId, $loginType);
         try {
             $generated = self::generateCodeWithGeneration($scene, $loginId, $loginType);
             $code = $generated['code'];
             $generationId = $generated['generationId'];
-        } catch (SaTokenException $e) {
-            $dao = SaToken::getDao();
-            if ($rateOwner !== null && $dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
-                $dao->compareAndDelete($rateKey, $rateOwner);
-            }
+        } catch (\Throwable $e) {
+            self::releaseSendRateReservations($dao, $rateReservations);
             throw $e;
         }
 
@@ -186,10 +206,21 @@ class SaSensitiveVerify
                     $dao->compareAndSet($key, $currentRecord, null);
                 }
             }
-            if ($rateOwner !== null && $dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
-                $dao->compareAndDelete($rateKey, $rateOwner);
-            }
+            self::releaseSendRateReservations($dao, $rateReservations);
             throw $e;
+        }
+    }
+
+    /** @param array<string, string> $reservations */
+    protected static function releaseSendRateReservations(
+        \SaToken\Dao\SaTokenDaoInterface $dao,
+        array $reservations
+    ): void {
+        if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
+            return;
+        }
+        foreach ($reservations as $key => $owner) {
+            $dao->compareAndDelete($key, $owner);
         }
     }
 

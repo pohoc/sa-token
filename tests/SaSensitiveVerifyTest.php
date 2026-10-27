@@ -302,6 +302,40 @@ class SaSensitiveVerifyTest extends TestCase
         $this->assertNull(SaToken::getDao()->get($rateKey));
     }
 
+    public function testSendIntervalCannotBeBypassedByChangingScene(): void
+    {
+        $sendCount = 0;
+        SaToken::getConfig()->setSensitiveVerifyCallback(static function () use (&$sendCount): void {
+            $sendCount++;
+        });
+
+        SaSensitiveVerify::sendCode('login', 10001);
+
+        try {
+            SaSensitiveVerify::sendCode('password-reset', 10001);
+            self::fail('同一账号不能通过更换 OTP scene 绕过发送冷却');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('发送过于频繁', $exception->getMessage());
+        }
+
+        self::assertSame(1, $sendCount);
+    }
+
+    public function testInvalidSceneDoesNotReserveAccountSendInterval(): void
+    {
+        SaToken::getConfig()->setSensitiveVerifyCallback(static fn () => null);
+        $accountRateKey = 'satoken:sensitive:sent:login:' . hash('sha256', 'alice');
+
+        try {
+            SaSensitiveVerify::sendCode(str_repeat('s', 257), 'alice');
+            self::fail('超长 scene 必须在预留发送冷却前拒绝');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('scene 长度不能超过', $exception->getMessage());
+        }
+
+        self::assertNull(SaToken::getDao()->get($accountRateKey));
+    }
+
     public function testFailedSendDoesNotDeleteAnotherRequestsRateLimitReservation(): void
     {
         SaToken::getConfig()->setSensitiveVerifyCallback(static fn () => null);
