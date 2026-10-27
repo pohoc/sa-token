@@ -182,9 +182,8 @@ class SaApiKey
     /** Detect any configured API Key credential header, including malformed attempts. */
     public function isApiKeyRequest(): bool
     {
-        // Detect an authentication attempt, not a complete valid header pair.
-        // Returning false for partial or duplicated headers lets callers that
-        // branch on this method fall through to native bearer authentication.
+        // Detect any authentication attempt, not only a complete valid pair.
+        // Partial or duplicated credentials must not fall through to bearer auth.
         return SaTokenContext::hasMultipleHeaderValues($this->keyHeaderName, true)
             || SaTokenContext::hasMultipleHeaderValues($this->secretHeaderName, true)
             || SaTokenContext::getHeader($this->keyHeaderName) !== null
