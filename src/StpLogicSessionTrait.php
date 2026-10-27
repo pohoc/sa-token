@@ -26,12 +26,12 @@ trait StpLogicSessionTrait
             throw new \SaToken\Exception\SaTokenException('loginId 不能为空且必须是非布尔标量');
         }
         $sessionId = TokenManager::buildSessionId($this->loginType, (string) $loginId);
-        $session = SaSession::getBySessionId($sessionId);
+        $session = SaSession::getLoginSessionById($sessionId);
 
         if ($session === null && $isCreate) {
             $timeout = $this->getConfig()->getTimeout();
             $sessionTimeout = ($timeout > 0) ? $timeout : null;
-            $session = new SaSession($sessionId, false, $sessionTimeout);
+            $session = SaSession::forLoginSession($sessionId, $sessionTimeout);
         }
 
         return $session;
@@ -62,7 +62,7 @@ trait StpLogicSessionTrait
         if ($session === null && $isCreate) {
             $timeout = $this->tokenManager->getTokenTimeout($tokenValue);
             $sessionTimeout = ($timeout > 0) ? $timeout : null;
-            $session = new SaSession($sessionId, false, $sessionTimeout);
+            $session = SaSession::forLoginSession($sessionId, $sessionTimeout);
         }
 
         return $session;

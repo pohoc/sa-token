@@ -27,7 +27,7 @@ class SaSessionEncryptTest extends TestCase
 
     public function testSessionWithTimeoutPersistsAfterReload(): void
     {
-        $session = new SaSession('encrypt-session-1', false, 3600);
+        $session = SaSession::create('encrypt-session-1', false, 3600);
         $session->set('user', 'alice');
         $session->set('role', 'admin');
 
@@ -49,7 +49,7 @@ class SaSessionEncryptTest extends TestCase
         $dao = new SaTokenDaoMemory();
         SaToken::setDao($dao);
 
-        $session = new SaSession('encrypt-session-2');
+        $session = SaSession::create('encrypt-session-2');
         $session->set('secret', 'hidden-value');
 
         $raw = $dao->get('encrypt-session-2');
@@ -70,7 +70,7 @@ class SaSessionEncryptTest extends TestCase
         $dao = new SaTokenDaoMemory();
         SaToken::setDao($dao);
 
-        $session = new SaSession('encrypt-session-3');
+        $session = SaSession::create('encrypt-session-3');
         $session->set('name', 'bob');
         $session->set('level', 42);
 
@@ -89,7 +89,7 @@ class SaSessionEncryptTest extends TestCase
 
         $dao = new SaTokenDaoMemory();
         SaToken::setDao($dao);
-        $session = new SaSession('tampered-session');
+        $session = SaSession::create('tampered-session');
         $session->set('role', 'admin');
 
         $encrypted = $dao->get('tampered-session');
@@ -111,7 +111,7 @@ class SaSessionEncryptTest extends TestCase
         ]));
         $dao = new SaTokenDaoMemory();
         SaToken::setDao($dao);
-        $owner = new SaSession('owner-session');
+        $owner = SaSession::create('owner-session');
         $owner->set('role', 'admin');
         $ownerRecord = $dao->get('owner-session');
         self::assertNotNull($ownerRecord);
@@ -138,7 +138,7 @@ class SaSessionEncryptTest extends TestCase
         $dao = new SaTokenDaoMemory();
         SaToken::setDao($dao);
 
-        $session = new SaSession('encrypt-session-sm-1');
+        $session = SaSession::create('encrypt-session-sm-1');
         $session->set('data', 'sm-encrypted-value');
 
         $raw = $dao->get('encrypt-session-sm-1');

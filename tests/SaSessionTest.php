@@ -55,7 +55,7 @@ class SaSessionTest extends TestCase
 
     public function testSetAndGet(): void
     {
-        $session = new SaSession('test-session-1');
+        $session = SaSession::create('test-session-1');
 
         $session->set('name', '张三');
         $this->assertEquals('张三', $session->get('name'));
@@ -66,14 +66,14 @@ class SaSessionTest extends TestCase
 
     public function testGetWithDefault(): void
     {
-        $session = new SaSession('test-session-2');
+        $session = SaSession::create('test-session-2');
         $this->assertNull($session->get('nonexistent'));
         $this->assertEquals('default', $session->get('nonexistent', 'default'));
     }
 
     public function testDelete(): void
     {
-        $session = new SaSession('test-session-3');
+        $session = SaSession::create('test-session-3');
         $session->set('key', 'value');
         $this->assertTrue($session->has('key'));
 
@@ -83,7 +83,7 @@ class SaSessionTest extends TestCase
 
     public function testClear(): void
     {
-        $session = new SaSession('test-session-4');
+        $session = SaSession::create('test-session-4');
         $session->set('key1', 'value1');
         $session->set('key2', 'value2');
 
@@ -94,7 +94,7 @@ class SaSessionTest extends TestCase
 
     public function testUpdate(): void
     {
-        $session = new SaSession('test-session-5');
+        $session = SaSession::create('test-session-5');
         $session->set('key1', 'value1');
 
         $session->update(['key2' => 'value2', 'key3' => 'value3']);
@@ -106,7 +106,7 @@ class SaSessionTest extends TestCase
 
     public function testDestroy(): void
     {
-        $session = new SaSession('test-session-6');
+        $session = SaSession::create('test-session-6');
         $session->set('key', 'value');
 
         $session->destroy();
@@ -122,7 +122,7 @@ class SaSessionTest extends TestCase
         SaToken::getDao()->set($tokenKey, 'protected-login-id', 3600);
 
         try {
-            (new SaSession($tokenKey))->destroy();
+            SaSession::create($tokenKey)->destroy();
             $this->fail('SaSession 不应允许删除 Sa-Token 的认证存储键');
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('保留存储命名空间', $e->getMessage());
@@ -140,6 +140,29 @@ class SaSessionTest extends TestCase
         SaSession::getBySessionId($tokenKey);
     }
 
+    public function testPublicSessionApisCannotAccessAnotherLoginSession(): void
+    {
+        $logic = new StpLogic('login');
+        $victim = $logic->getSessionByLoginId('victim');
+        self::assertNotNull($victim);
+        $victim->set('role', 'admin');
+
+        $sessionId = TokenManager::buildSessionId('login', 'victim');
+        foreach ([
+            static fn () => SaSession::create($sessionId),
+            static fn () => SaSession::getBySessionId($sessionId),
+        ] as $access) {
+            try {
+                $access();
+                self::fail('Public SaSession APIs must reject login session IDs');
+            } catch (SaTokenException $e) {
+                self::assertStringContainsString('保留存储命名空间', $e->getMessage());
+            }
+        }
+
+        self::assertSame('admin', $logic->getSessionByLoginId('victim')?->get('role'));
+    }
+
     public function testSessionCannotDeleteInternalSessionLockKey(): void
     {
         $sessionId = TokenManager::buildSessionId('login', 'victim');
@@ -147,7 +170,7 @@ class SaSessionTest extends TestCase
         SaToken::getDao()->set($lockKey, 'active-lock-owner', 5);
 
         try {
-            (new SaSession($lockKey))->destroy();
+            SaSession::create($lockKey)->destroy();
             $this->fail('SaSession 不应允许删除内部会话锁键');
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('保留存储命名空间', $e->getMessage());
@@ -159,7 +182,7 @@ class SaSessionTest extends TestCase
     public function testDestroyWaitsForConcurrentSessionMutationLock(): void
     {
         $sessionId = 'test-session-destroy-lock';
-        $session = new SaSession($sessionId);
+        $session = SaSession::create($sessionId);
         $session->set('key', 'value');
         $lockKey = 'satoken:session:lock:' . $sessionId;
         $this->assertTrue(SaToken::getDao()->setIfNotExists($lockKey, 'other-writer', 5));
@@ -176,7 +199,7 @@ class SaSessionTest extends TestCase
 
     public function testPersistence(): void
     {
-        $session = new SaSession('test-session-7');
+        $session = SaSession::create('test-session-7');
         $session->set('persistent', 'data');
 
         // 从存储层重新加载
@@ -187,7 +210,7 @@ class SaSessionTest extends TestCase
 
     public function testExpiredLoadedSessionCannotBeRecreatedByStaleObject(): void
     {
-        $session = new SaSession('expiring-session', false, 1);
+        $session = SaSession::create('expiring-session', false, 1);
         $session->set('state', 'original');
         $loaded = SaSession::getBySessionId('expiring-session');
         $this->assertNotNull($loaded);
@@ -207,12 +230,12 @@ class SaSessionTest extends TestCase
 
     public function testStaleObjectCannotMutateSessionRecreatedWithSameId(): void
     {
-        $sessionId = TokenManager::buildSessionId('login', 'reused-account');
-        $stale = new SaSession($sessionId);
+        $sessionId = 'reused-account-session';
+        $stale = SaSession::create($sessionId);
         $stale->set('generation', 'old');
         $stale->destroy();
 
-        $current = new SaSession($sessionId);
+        $current = SaSession::create($sessionId);
         $current->set('generation', 'new');
 
         try {
@@ -241,12 +264,12 @@ class SaSessionTest extends TestCase
 
     public function testStaleObjectCannotDestroySessionRecreatedWithSameId(): void
     {
-        $sessionId = TokenManager::buildSessionId('login', 'reused-account-destroy');
-        $stale = new SaSession($sessionId);
+        $sessionId = 'reused-account-destroy-session';
+        $stale = SaSession::create($sessionId);
         $stale->set('generation', 'old');
         $stale->destroy();
 
-        $current = new SaSession($sessionId);
+        $current = SaSession::create($sessionId);
         $current->set('generation', 'new');
 
         try {
@@ -263,8 +286,8 @@ class SaSessionTest extends TestCase
     {
         $dao = new SaSessionPausingDao();
         SaToken::setDao($dao);
-        $sessionId = TokenManager::buildSessionId('login', 'lease-expiry');
-        $stale = new SaSession($sessionId);
+        $sessionId = 'lease-expiry-session';
+        $stale = SaSession::create($sessionId);
         $stale->set('generation', 'old');
         $dao->pauseUpdateKey = $sessionId;
 
@@ -274,9 +297,9 @@ class SaSessionTest extends TestCase
 
         // Model the lock lease expiring while the old writer is blocked in storage.
         $dao->delete('satoken:session:lock:' . $sessionId);
-        $current = new SaSession($sessionId);
+        $current = SaSession::create($sessionId);
         $current->destroy();
-        $replacement = new SaSession($sessionId);
+        $replacement = SaSession::create($sessionId);
         $replacement->set('generation', 'new');
 
         try {
@@ -293,8 +316,8 @@ class SaSessionTest extends TestCase
     {
         $dao = new SaSessionPausingDao();
         SaToken::setDao($dao);
-        $sessionId = TokenManager::buildSessionId('login', 'lease-expiry-destroy');
-        $stale = new SaSession($sessionId);
+        $sessionId = 'lease-expiry-destroy-session';
+        $stale = SaSession::create($sessionId);
         $stale->set('generation', 'old');
         $dao->pauseDeleteKey = $sessionId;
 
@@ -303,9 +326,9 @@ class SaSessionTest extends TestCase
         self::assertTrue($destroy->isSuspended());
 
         $dao->delete('satoken:session:lock:' . $sessionId);
-        $current = new SaSession($sessionId);
+        $current = SaSession::create($sessionId);
         $current->destroy();
-        $replacement = new SaSession($sessionId);
+        $replacement = SaSession::create($sessionId);
         $replacement->set('generation', 'new');
 
         try {
@@ -320,10 +343,10 @@ class SaSessionTest extends TestCase
 
     public function testUnloadedSessionObjectCannotDestroyExistingRecord(): void
     {
-        $sessionId = TokenManager::buildSessionId('login', 'unloaded-destroy');
-        $current = new SaSession($sessionId);
+        $sessionId = 'unloaded-destroy-session';
+        $current = SaSession::create($sessionId);
         $current->set('owned', 'current');
-        $unloaded = new SaSession($sessionId, true);
+        $unloaded = SaSession::create($sessionId, true);
 
         try {
             $unloaded->destroy();
@@ -337,7 +360,7 @@ class SaSessionTest extends TestCase
 
     public function testTokenSession(): void
     {
-        $tokenSession = new SaSession('satoken:tokenSession:test-token-123');
+        $tokenSession = SaSession::create('satoken:tokenSession:test-token-123');
         $tokenSession->set('request_count', 5);
 
         $loaded = SaSession::getBySessionId('satoken:tokenSession:test-token-123');

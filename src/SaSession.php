@@ -56,6 +56,23 @@ class SaSession
         }
     }
 
+    public static function create(string $id, bool $skipLoad = false, ?int $timeout = null): static
+    {
+        return new static($id, $skipLoad, $timeout);
+    }
+
+    /** @internal Create a session after its owner has validated the login ID. */
+    public static function forLoginSession(string $id, ?int $timeout = null): static
+    {
+        self::assertSafeSessionId($id, true);
+        $session = (new \ReflectionClass(static::class))->newInstanceWithoutConstructor();
+        $session->id = $id;
+        $session->timeout = $timeout;
+        $session->generation = bin2hex(random_bytes(16));
+        $session->loadData();
+        return $session;
+    }
+
     /**
      * 根据 Session ID 获取已有会话
      *
@@ -69,14 +86,23 @@ class SaSession
         return $session->persisted ? $session : null;
     }
 
+    /** @internal Resolve a login session after its owner has validated the login ID. */
+    public static function getLoginSessionById(string $sessionId): ?static
+    {
+        self::assertSafeSessionId($sessionId, true);
+        $session = self::forLoginSession($sessionId);
+        return $session->persisted ? $session : null;
+    }
+
     /**
      * Session helpers can delete and overwrite their backing DAO key. Keep
      * caller-supplied IDs out of Sa-Token's authentication and security state
      * namespaces; only the two session namespaces are valid under satoken:.
      */
-    protected static function assertSafeSessionId(string $sessionId): void
+    protected static function assertSafeSessionId(string $sessionId, bool $allowLoginSession = false): void
     {
-        if (str_starts_with($sessionId, 'satoken:session:lock:')) {
+        if (str_starts_with($sessionId, 'satoken:session:lock:')
+            || (!$allowLoginSession && str_starts_with($sessionId, TokenManager::SESSION_PREFIX))) {
             throw new \SaToken\Exception\SaTokenException('Session ID 不能使用 Sa-Token 保留存储命名空间');
         }
 
@@ -84,8 +110,11 @@ class SaSession
             return;
         }
 
-        if (str_starts_with($sessionId, TokenManager::SESSION_PREFIX)
-            || str_starts_with($sessionId, TokenManager::TOKEN_SESSION_PREFIX)) {
+        if ($allowLoginSession && str_starts_with($sessionId, TokenManager::SESSION_PREFIX)) {
+            return;
+        }
+
+        if (str_starts_with($sessionId, TokenManager::TOKEN_SESSION_PREFIX)) {
             return;
         }
 
