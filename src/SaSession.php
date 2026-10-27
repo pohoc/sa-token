@@ -68,13 +68,6 @@ class SaSession
         return self::createReservedSession($id, $timeout);
     }
 
-    /** @internal Create a token session after its owner has validated the bearer token. */
-    public static function forTokenSession(string $id, ?int $timeout = null): static
-    {
-        self::assertSafeSessionId($id, false, true);
-        return self::createReservedSession($id, $timeout);
-    }
-
     protected static function createReservedSession(string $id, ?int $timeout): static
     {
         $session = (new \ReflectionClass(static::class))->newInstanceWithoutConstructor();
@@ -106,12 +99,27 @@ class SaSession
         return $session->persisted ? $session : null;
     }
 
-    /** @internal Resolve a token session after its owner has validated the bearer token. */
-    public static function getTokenSessionById(string $sessionId): ?static
+    /** Resolve a token session only after validating the current request token and login type. */
+    public static function getTokenSessionForLogic(StpLogic $logic, bool $isCreate = true): ?static
     {
-        self::assertSafeSessionId($sessionId, false, true);
-        $session = self::forTokenSession($sessionId);
-        return $session->persisted ? $session : null;
+        $tokenValue = $logic->getTokenValue();
+        if ($tokenValue === null || $logic->getLoginIdByToken($tokenValue) === null) {
+            return null;
+        }
+
+        $tokenManager = $logic->getTokenManager();
+        $sessionId = TokenManager::TOKEN_SESSION_PREFIX . $tokenValue;
+        if ($tokenManager->getTokenSessionId($tokenValue, $logic->getLoginType()) === null) {
+            return null;
+        }
+
+        $session = self::createReservedSession($sessionId, null);
+        if (!$session->persisted && $isCreate) {
+            $timeout = $tokenManager->getTokenTimeout($tokenValue);
+            $session = self::createReservedSession($sessionId, $timeout > 0 ? $timeout : null);
+        }
+
+        return $session->persisted || $isCreate ? $session : null;
     }
 
     /**
@@ -119,14 +127,11 @@ class SaSession
      * caller-supplied IDs out of Sa-Token's authentication and security state
      * namespaces; only the two session namespaces are valid under satoken:.
      */
-    protected static function assertSafeSessionId(
-        string $sessionId,
-        bool $allowLoginSession = false,
-        bool $allowTokenSession = false,
-    ): void {
+    protected static function assertSafeSessionId(string $sessionId, bool $allowLoginSession = false): void
+    {
         if (str_starts_with($sessionId, 'satoken:session:lock:')
             || (!$allowLoginSession && str_starts_with($sessionId, TokenManager::SESSION_PREFIX))
-            || (!$allowTokenSession && str_starts_with($sessionId, TokenManager::TOKEN_SESSION_PREFIX))) {
+            || str_starts_with($sessionId, TokenManager::TOKEN_SESSION_PREFIX)) {
             throw new \SaToken\Exception\SaTokenException('Session ID 不能使用 Sa-Token 保留存储命名空间');
         }
 
@@ -135,10 +140,6 @@ class SaSession
         }
 
         if ($allowLoginSession && str_starts_with($sessionId, TokenManager::SESSION_PREFIX)) {
-            return;
-        }
-
-        if ($allowTokenSession && str_starts_with($sessionId, TokenManager::TOKEN_SESSION_PREFIX)) {
             return;
         }
 

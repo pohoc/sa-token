@@ -39,32 +39,6 @@ trait StpLogicSessionTrait
 
     public function getTokenSession(bool $isCreate = true): ?SaSession
     {
-        $tokenValue = $this->getTokenValue();
-        if ($tokenValue === null) {
-            return null;
-        }
-
-        // Token sessions are keyed only by bearer value, so validate the current
-        // loginType and all session constraints before reading or creating one.
-        if ($this->getLoginIdByToken($tokenValue) === null) {
-            return null;
-        }
-
-        // Migrate any legacy refresh lineage metadata before touching the
-        // TokenSession storage key; both used to share the same DAO namespace.
-        if ($this->tokenManager->getTokenSessionId($tokenValue, $this->loginType) === null) {
-            return null;
-        }
-
-        $sessionId = TokenManager::TOKEN_SESSION_PREFIX . $tokenValue;
-        $session = SaSession::getTokenSessionById($sessionId);
-
-        if ($session === null && $isCreate) {
-            $timeout = $this->tokenManager->getTokenTimeout($tokenValue);
-            $sessionTimeout = ($timeout > 0) ? $timeout : null;
-            $session = SaSession::forTokenSession($sessionId, $sessionTimeout);
-        }
-
-        return $session;
+        return SaSession::getTokenSessionForLogic($this, $isCreate);
     }
 }

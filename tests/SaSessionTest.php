@@ -12,6 +12,7 @@ use SaToken\SaSession;
 use SaToken\SaToken;
 use SaToken\StpLogic;
 use SaToken\TokenManager;
+use SaToken\Util\SaTokenContext;
 
 class SaSessionPausingDao extends SaTokenDaoMemory
 {
@@ -372,6 +373,21 @@ class SaSessionTest extends TestCase
                 self::assertStringContainsString('保留存储命名空间', $e->getMessage());
             }
         }
+    }
+
+    public function testRevokedTokenCannotReadItsTokenSession(): void
+    {
+        $logic = new StpLogic('login');
+        $login = $logic->login('token-session-revoked');
+        SaTokenContext::setTokenOverride('login', $login->getAccessToken());
+        $session = $logic->getTokenSession();
+        self::assertNotNull($session);
+        $session->set('private', 'value');
+
+        $logic->logout();
+        SaTokenContext::setTokenOverride('login', $login->getAccessToken());
+
+        self::assertNull($logic->getTokenSession(false));
     }
 
     public function testLoginSessionsCannotCollideAcrossLoginTypes(): void
