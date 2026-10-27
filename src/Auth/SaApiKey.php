@@ -61,6 +61,16 @@ class SaApiKey
 
         SaAntiBruteUtil::checkAndThrow($apiKey, 'api-key');
 
+        try {
+            $this->authenticateReservedApiKey($apiKey, $apiSecret);
+        } finally {
+            SaAntiBruteUtil::releaseCurrentSourceAttempt($apiKey, 'api-key');
+        }
+    }
+
+    /** Complete all work after reserving a source concurrency slot. */
+    protected function authenticateReservedApiKey(string $apiKey, string $apiSecret): void
+    {
         if (strlen($apiSecret) < self::MIN_SECRET_BYTES) {
             SaAntiBruteUtil::recordFailure($apiKey, 'api-key');
             throw new SaTokenException('API Secret 至少需要 32 字节');

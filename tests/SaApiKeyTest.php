@@ -265,6 +265,37 @@ class SaApiKeyTest extends TestCase
         }
     }
 
+    public function testDisabledAccountFailureReleasesSourceConcurrencyReservation(): void
+    {
+        SaToken::setConfig(SaToken::getConfig()
+            ->setAntiBruteMaxFailures(0)
+            ->setAntiBruteIpMaxFailures(1)
+            ->setAntiBruteLockDuration(60));
+        $logic = SaToken::getStpLogic();
+        $logic->disable('disabled-api-reservation-user', 'login', 1, 3600);
+        $api = new SaApiKey();
+        $api->registerKey(
+            'disabled-api-reservation-key',
+            'disabled-api-reservation-secret-value-at-least-32-bytes',
+            'disabled-api-reservation-user'
+        );
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'api-key' => 'disabled-api-reservation-key',
+            'api-secret' => 'disabled-api-reservation-secret-value-at-least-32-bytes',
+        ]));
+
+        try {
+            $api->checkApiKey();
+            self::fail('封禁账号的 API Key 请求必须被拒绝');
+        } catch (DisableServiceException) {
+            self::assertTrue($logic->isDisable('disabled-api-reservation-user', 'login'));
+        }
+
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([]));
+        SaAntiBruteUtil::checkAndThrow('another-api-key', 'api-key');
+        SaAntiBruteUtil::clearCurrentSourceFailures('another-api-key', 'api-key');
+    }
+
     public function testApiKeyReuseCannotWinAfterDisableTakesOverTheAccountLock(): void
     {
         $loginId = 'api-key-disable-lock-race';
