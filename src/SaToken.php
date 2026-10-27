@@ -396,15 +396,23 @@ class SaToken
      */
     public static function getStpLogic(string $type = 'login'): StpLogic
     {
-        // loginType 会成为注册表键与存储键的一部分：RPC 透传通道中该值
-        // 来自请求头（攻击者可控），不加约束会让长驻进程的注册表无界增长
-        if (!preg_match('/^[A-Za-z0-9_-]{1,32}$/', $type)) {
-            throw new \SaToken\Exception\SaTokenException('非法的 loginType（仅允许字母/数字/下划线/中划线，最长 32 字符）');
-        }
+        self::validateLoginType($type);
         if (!isset(self::$stpLogicMap[$type])) {
             self::$stpLogicMap[$type] = new StpLogic($type);
         }
         return self::$stpLogicMap[$type];
+    }
+
+    /**
+     * Validate login types used as registry and storage namespace components.
+     */
+    protected static function validateLoginType(string $type): void
+    {
+        // loginType 会成为注册表键与存储键的一部分：RPC 透传通道中该值
+        // 来自请求头（攻击者可控），不加约束会让长驻进程的注册表无界增长。
+        if (!preg_match('/\A[A-Za-z0-9_-]{1,32}\z/', $type)) {
+            throw new \SaToken\Exception\SaTokenException('非法的 loginType（仅允许字母/数字/下划线/中划线，最长 32 字符）');
+        }
     }
 
     /** Check whether a login type has already been registered in this process. */
@@ -421,7 +429,9 @@ class SaToken
      */
     public static function registerStpLogic(StpLogic $stpLogic): void
     {
-        self::$stpLogicMap[$stpLogic->getLoginType()] = $stpLogic;
+        $type = $stpLogic->getLoginType();
+        self::validateLoginType($type);
+        self::$stpLogicMap[$type] = $stpLogic;
     }
 
     /**

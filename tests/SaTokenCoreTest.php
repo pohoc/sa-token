@@ -183,6 +183,29 @@ class SaTokenCoreTest extends TestCase
         $this->assertSame($customLogic, $retrieved);
     }
 
+    public function testRegisterStpLogicRejectsInvalidLoginTypes(): void
+    {
+        foreach ([str_repeat('a', 33), 'admin:read', 'admin%read', "admin\n"] as $loginType) {
+            try {
+                SaToken::getStpLogic($loginType);
+                self::fail('getStpLogic 必须拒绝非法 loginType');
+            } catch (\SaToken\Exception\SaTokenException $exception) {
+                self::assertStringContainsString('非法的 loginType', $exception->getMessage());
+            }
+
+            try {
+                SaToken::registerStpLogic(new \SaToken\StpLogic($loginType));
+                self::fail('注册入口必须与 getStpLogic 使用相同的 loginType 校验');
+            } catch (\SaToken\Exception\SaTokenException $exception) {
+                self::assertStringContainsString('非法的 loginType', $exception->getMessage());
+            }
+        }
+
+        $validLogic = new \SaToken\StpLogic(str_repeat('a', 32));
+        SaToken::registerStpLogic($validLogic);
+        self::assertSame($validLogic, SaToken::getStpLogic(str_repeat('a', 32)));
+    }
+
     // ---- setAction / getAction ----
 
     public function testSetAndGetAction(): void
