@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SaToken;
 
+use SaToken\Exception\SaTokenException;
 use SaToken\Util\SaTokenContext;
 
 class SaRouter
@@ -210,7 +211,15 @@ class SaRouter
         }
 
         $regex = self::patternToRegex($pattern);
-        return (bool) preg_match($regex, $path);
+        $result = preg_match($regex, $path);
+        if ($result === false) {
+            // A PCRE backtracking/recursion error is not an ordinary miss. In
+            // authorization rules, treating it as false would skip the check
+            // callback for a protected route and fail open.
+            throw new SaTokenException('路由规则匹配失败：' . preg_last_error_msg());
+        }
+
+        return $result === 1;
     }
 
     protected static function patternToRegex(string $pattern): string

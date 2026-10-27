@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SaToken\Tests;
 
 use PHPUnit\Framework\TestCase;
+use SaToken\Exception\SaTokenException;
 use SaToken\SaRouter;
 use SaToken\Util\SaTokenContext;
 
@@ -313,6 +314,30 @@ class SaRouterFullTest extends TestCase
                 $matched = true;
             });
             self::assertTrue($matched, "Backslash path {$path} must match the canonical protected route");
+        }
+    }
+
+    public function testBacktrackingLimitCannotSilentlySkipProtectedRouteRule(): void
+    {
+        $originalBacktrackLimit = ini_get('pcre.backtrack_limit');
+        $originalJit = ini_get('pcre.jit');
+        ini_set('pcre.backtrack_limit', '1000');
+        ini_set('pcre.jit', '0');
+
+        try {
+            SaRouter::setCurrentPath('/a' . str_repeat('/x', 3000) . '/end');
+
+            $this->expectException(SaTokenException::class);
+            SaRouter::match('/a/**/**/z')->check(static function (): void {
+                self::fail('A protected route rule must not silently miss after a regex engine error');
+            });
+        } finally {
+            if (is_string($originalBacktrackLimit)) {
+                ini_set('pcre.backtrack_limit', $originalBacktrackLimit);
+            }
+            if (is_string($originalJit)) {
+                ini_set('pcre.jit', $originalJit);
+            }
         }
     }
 
