@@ -93,9 +93,13 @@ class SaHttpAuth
             throw new SaTokenException('Basic 认证失败');
         }
 
-        $result = StpUtil::login($loginId);
-        SaAntiBruteUtil::clearCurrentSourceFailures($username);
-        SaTokenContext::setTokenOverride(StpUtil::getStpLogic()->getLoginType(), $result->getAccessToken());
+        try {
+            $result = StpUtil::login($loginId);
+            SaAntiBruteUtil::clearCurrentSourceFailures($username);
+            SaTokenContext::setTokenOverride(StpUtil::getStpLogic()->getLoginType(), $result->getAccessToken());
+        } finally {
+            SaAntiBruteUtil::releaseCurrentSourceAttempt($username);
+        }
     }
 
     public function checkDigest(string $realm = 'Sa-Token'): void
@@ -204,9 +208,13 @@ class SaHttpAuth
             throw new SaTokenException('Digest nonce 已使用，可能遭受重放攻击');
         }
 
-        $result = StpUtil::login($username);
-        SaAntiBruteUtil::clearCurrentSourceFailures($username);
-        SaTokenContext::setTokenOverride(StpUtil::getStpLogic()->getLoginType(), $result->getAccessToken());
+        try {
+            $result = StpUtil::login($username);
+            SaAntiBruteUtil::clearCurrentSourceFailures($username);
+            SaTokenContext::setTokenOverride(StpUtil::getStpLogic()->getLoginType(), $result->getAccessToken());
+        } finally {
+            SaAntiBruteUtil::releaseCurrentSourceAttempt($username);
+        }
     }
 
     /** 获取实际请求目标，避免把为其他资源签发的 Digest 响应移用到当前路径。 */

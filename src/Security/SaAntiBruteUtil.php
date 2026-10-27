@@ -309,6 +309,22 @@ class SaAntiBruteUtil
         }
     }
 
+    /** Release this request's reserved source slot without changing failure counters. */
+    public static function releaseCurrentSourceAttempt(string $account, string $loginType = 'login'): void
+    {
+        $sourceIdentity = self::getSourceIdentity($loginType);
+        if ($sourceIdentity === null) {
+            return;
+        }
+
+        self::releaseSourceAttemptReservation(
+            $account,
+            $loginType,
+            $sourceIdentity,
+            SaToken::getConfig()->getAntiBruteLockDuration()
+        );
+    }
+
     public static function checkAndThrow(string $account, string $loginType = 'login'): void
     {
         $config = SaToken::getConfig();

@@ -10,6 +10,7 @@ use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoMemory;
 use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
+use SaToken\Security\SaAntiBruteUtil;
 use SaToken\Util\SaTokenContext;
 
 class SaHttpAuthTest extends TestCase
@@ -477,6 +478,85 @@ class SaHttpAuthTest extends TestCase
         }
 
         $this->assertSame(2, $validatorCalls);
+    }
+
+    public function testBasicLoginFailureReleasesSourceConcurrencyReservation(): void
+    {
+        SaToken::setConfig(SaToken::getConfig()
+            ->setAntiBruteMaxFailures(0)
+            ->setAntiBruteIpMaxFailures(1)
+            ->setAntiBruteLockDuration(60));
+        SaToken::getStpLogic()->disable('blocked-account', 'login');
+
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->willReturnCallback(static fn (string $name): array => $name === 'Authorization'
+            ? ['Basic ' . base64_encode('valid-user:valid-password')]
+            : []);
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '192.0.2.100']);
+        SaTokenContext::setRequest($request);
+
+        $auth = (new SaHttpAuth())->setBasicValidator(static fn (): string => 'blocked-account');
+        try {
+            $auth->checkBasic();
+            self::fail('被禁用账号不得建立 Basic 登录会话');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('封禁', $exception->getMessage());
+        }
+
+        $nextRequest = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $nextRequest->method('getHeader')->willReturnCallback(static fn (string $name): array => $name === 'Authorization'
+            ? ['Basic ' . base64_encode('other-user:password')]
+            : []);
+        $nextRequest->method('getServerParams')->willReturn(['REMOTE_ADDR' => '192.0.2.100']);
+        SaTokenContext::setRequest($nextRequest);
+        SaAntiBruteUtil::checkAndThrow('other-user');
+        SaAntiBruteUtil::clearCurrentSourceFailures('other-user');
+    }
+
+    public function testDigestLoginFailureReleasesSourceConcurrencyReservation(): void
+    {
+        SaToken::setConfig(SaToken::getConfig()
+            ->setAntiBruteMaxFailures(0)
+            ->setAntiBruteIpMaxFailures(1)
+            ->setAntiBruteLockDuration(60));
+        SaToken::getStpLogic()->disable('blocked-account', 'login');
+
+        $realm = 'Test';
+        $username = 'blocked-account';
+        $uri = '/resource';
+        $nonce = (new SaHttpAuth())->generateNonce();
+        $ha1 = md5($username . ':' . $realm . ':valid-password');
+        $ha2 = md5('GET:' . $uri);
+        $response = md5($ha1 . ':' . $nonce . ':00000001:client:auth:' . $ha2);
+        $header = sprintf(
+            'Digest username="%s", realm="%s", nonce="%s", uri="%s", qop=auth, nc=00000001, cnonce="client", response="%s"',
+            $username,
+            $realm,
+            $nonce,
+            $uri,
+            $response
+        );
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->willReturnCallback(static fn (string $name): array => $name === 'Authorization' ? [$header] : []);
+        $request->method('getMethod')->willReturn('GET');
+        $request->method('getRequestTarget')->willReturn($uri);
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '192.0.2.100']);
+        SaTokenContext::setRequest($request);
+
+        $auth = (new SaHttpAuth())->setDigestValidator(static fn (): string => $ha1);
+        try {
+            $auth->checkDigest($realm);
+            self::fail('被禁用账号不得建立 Digest 登录会话');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('封禁', $exception->getMessage());
+        }
+
+        $nextRequest = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $nextRequest->method('getHeader')->willReturn([]);
+        $nextRequest->method('getServerParams')->willReturn(['REMOTE_ADDR' => '192.0.2.100']);
+        SaTokenContext::setRequest($nextRequest);
+        SaAntiBruteUtil::checkAndThrow('other-user');
+        SaAntiBruteUtil::clearCurrentSourceFailures('other-user');
     }
 
     public function testDigestAuthenticationLocksAfterConfiguredFailures(): void
