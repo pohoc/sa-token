@@ -10,6 +10,7 @@ use SaToken\Dao\SaTokenDaoMemory;
 use SaToken\SaToken;
 use SaToken\Security\SaAuditLog;
 use SaToken\StpLogic;
+use SaToken\Util\SaTokenContext;
 
 class SaAuditLogTest extends TestCase
 {
@@ -139,6 +140,24 @@ class SaAuditLogTest extends TestCase
         $this->assertCount(3, $logs);
     }
 
+    public function testAuditLogQueriesDoNotCrossLoginTypeBoundaries(): void
+    {
+        SaAuditLog::setEnabled(true);
+        $childId = SaAuditLog::log('login', 'private-user', 'admin:internal', '', null, '203.0.113.9');
+        $adminId = SaAuditLog::log('login', 'admin-user', 'admin', '', null, '203.0.113.9');
+        self::assertNotNull($childId);
+        self::assertNotNull($adminId);
+
+        // The legacy concatenated key for this crafted pair equals the child log key.
+        self::assertNull(SaAuditLog::getLog('internal:' . $childId, 'admin'));
+        self::assertSame('admin:internal', SaAuditLog::getLog($childId, 'admin:internal')['loginType'] ?? null);
+
+        $adminLogs = SaAuditLog::getRecentLogs('admin', 10);
+        self::assertCount(1, $adminLogs);
+        self::assertSame('admin', $adminLogs[0]['loginType'] ?? null);
+        self::assertCount(1, SaAuditLog::getLogsByIp('203.0.113.9', 'admin', 10));
+    }
+
     public function testGetLogsByLoginId(): void
     {
         SaAuditLog::setEnabled(true);
@@ -195,17 +214,77 @@ class SaAuditLogTest extends TestCase
         $this->assertCount(0, $logs);
     }
 
-    public function testTokenValueTruncated(): void
+    public function testClearLogsWithoutLoginTypeClearsEveryType(): void
     {
         SaAuditLog::setEnabled(true);
 
-        $longToken = str_repeat('a', 100);
-        $id = SaAuditLog::logLogin(10001, 'login', $longToken);
+        SaAuditLog::logLogin(10001, 'login');
+        SaAuditLog::logLogin(20002, 'admin');
+        SaAuditLog::logLogin(30003, 'tenant:custom');
+
+        SaAuditLog::clearLogs();
+
+        $this->assertSame([], SaAuditLog::getRecentLogs('login'));
+        $this->assertSame([], SaAuditLog::getRecentLogs('admin'));
+        $this->assertSame([], SaAuditLog::getRecentLogs('tenant:custom'));
+    }
+
+    public function testClearLogsRemovesMoreThanConfiguredRetentionLimit(): void
+    {
+        SaAuditLog::setEnabled(true);
+        SaAuditLog::setMaxEntries(1);
+
+        $dao = SaToken::getDao();
+        foreach (range(1, 25) as $index) {
+            $id = str_pad((string) $index, 32, '0', STR_PAD_LEFT);
+            $dao->set('satoken:audit:custom:' . $id, json_encode([
+                'id' => $id,
+                'loginType' => 'custom',
+                'time' => time(),
+            ], JSON_THROW_ON_ERROR));
+        }
+
+        SaAuditLog::clearLogs('custom');
+
+        $this->assertSame([], SaAuditLog::getRecentLogs('custom', 100));
+    }
+
+    public function testTokenValueIsRedactedFromAuditLog(): void
+    {
+        SaAuditLog::setEnabled(true);
+
+        $token = 'custom-token-123';
+        $id = SaAuditLog::logLogin(10001, 'login', $token);
 
         $log = SaAuditLog::getLog($id ?? '', 'login');
         $this->assertNotNull($log);
-        $this->assertStringEndsWith('...', is_string($log['tokenValue'] ?? null) ? $log['tokenValue'] : '');
-        $this->assertEquals(35, strlen(is_string($log['tokenValue'] ?? null) ? $log['tokenValue'] : ''));
+        $this->assertSame('[redacted]', $log['tokenValue'] ?? null);
+        $this->assertStringNotContainsString($token, json_encode($log) ?: '');
+    }
+
+    public function testTokenValueIsRedactedForTokensLongerThanOldTruncation(): void
+    {
+        SaAuditLog::setEnabled(true);
+
+        $token = str_repeat('a', 100);
+        $id = SaAuditLog::logLogin(10001, 'login', $token);
+
+        $log = SaAuditLog::getLog($id ?? '', 'login');
+        $this->assertNotNull($log);
+        $this->assertSame('[redacted]', $log['tokenValue'] ?? null);
+    }
+
+    public function testInvalidUtf8UserAgentDoesNotEraseAuditEvent(): void
+    {
+        SaAuditLog::setEnabled(true);
+
+        $id = SaAuditLog::log('login', 'audit-user', 'login', '用户登录', null, null, "agent-\xFF");
+
+        self::assertNotNull($id);
+        $log = SaAuditLog::getLog($id, 'login');
+        self::assertNotNull($log);
+        self::assertSame('login', $log['event'] ?? null);
+        self::assertSame("agent-\u{FFFD}", $log['userAgent'] ?? null);
     }
 
     public function testMaxEntriesLimit(): void
@@ -219,6 +298,28 @@ class SaAuditLogTest extends TestCase
 
         $logs = SaAuditLog::getRecentLogs('login', 100);
         $this->assertCount(5, $logs);
+    }
+
+    public function testAuditLogQueryLimitsAreClamped(): void
+    {
+        SaAuditLog::setEnabled(true);
+        SaAuditLog::logLogin('audit-user');
+
+        self::assertSame([], SaAuditLog::getRecentLogs('login', -1));
+        self::assertSame([], SaAuditLog::getLogsByLoginId('audit-user', 'login', 0));
+        self::assertSame([], SaAuditLog::getLogsByEvent('login', 'login', -5));
+        self::assertSame([], SaAuditLog::getLogsByIp('127.0.0.1', 'login', 0));
+        self::assertCount(1, SaAuditLog::getRecentLogs('login', PHP_INT_MAX));
+    }
+
+    public function testNonPositiveAuditLogTtlCannotDisableExpiration(): void
+    {
+        SaAuditLog::setTtlDays(0);
+        SaAuditLog::setEnabled(true);
+        $id = SaAuditLog::logLogin('audit-user');
+
+        self::assertNotNull($id);
+        self::assertGreaterThan(0, SaToken::getDao()->getTimeout('satoken:audit:login:' . $id));
     }
 
     public function testIntegrationWithStpLogic(): void
@@ -257,5 +358,34 @@ class SaAuditLogTest extends TestCase
 
         $this->assertNotNull($log);
         $this->assertEquals($logId, $log['id']);
+    }
+
+    public function testStpLogicAuditLogLookupRequiresCurrentAccountOwnership(): void
+    {
+        SaAuditLog::setEnabled(true);
+        SaToken::getConfig()->setIsReadHeader(true);
+        $logic = new StpLogic('login');
+        $token = $logic->login('audit-owner')->getAccessToken();
+        $ownLogId = SaAuditLog::logLogin('audit-owner');
+        $otherLogId = SaAuditLog::logLogin('other-account');
+
+        SaTokenContext::setRequest(new class ($token) {
+            public function __construct(private string $token)
+            {
+            }
+
+            public function getHeaderLine(string $name): string
+            {
+                return strtolower($name) === 'satoken' ? $this->token : '';
+            }
+        });
+
+        self::assertNotNull($ownLogId);
+        self::assertNotNull($otherLogId);
+        self::assertSame($ownLogId, $logic->getAuditLog($ownLogId)['id'] ?? null);
+        self::assertNull($logic->getAuditLog($otherLogId));
+
+        SaTokenContext::setRequest(null);
+        self::assertNull($logic->getAuditLog($ownLogId));
     }
 }

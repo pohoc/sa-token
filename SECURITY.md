@@ -25,8 +25,8 @@ Instead, please report them via email to: **po.hoc4@gmail.com**
 
 | Version | Supported          |
 |---------|--------------------|
-| 0.1.x (latest) | :white_check_mark: |
-| < 0.1.0 | :x: |
+| 0.2.x (latest stable) | :white_check_mark: |
+| < 0.2.0 | :x: |
 
 > 项目当前处于 0.x 阶段，仅最新 minor 版本接收安全修复。
 

@@ -114,6 +114,18 @@ class SaRouterTest extends TestCase
         $this->assertFalse($matched);
     }
 
+    public function testEncodedTrailingNewlineDoesNotMatchExactProtectedPath(): void
+    {
+        SaRouter::setCurrentPath('/admin%0A');
+
+        $matched = false;
+        SaRouter::match('/admin')->check(function () use (&$matched) {
+            $matched = true;
+        });
+
+        $this->assertFalse($matched);
+    }
+
     public function testStop(): void
     {
         SaRouter::setCurrentPath('/user/info');

@@ -44,9 +44,9 @@ class SsoModeNoSdk
     /**
      * @return array{loginId: mixed, redirect: ?string}
      */
-    public function doLoginByTicket(string $ticket): array
+    public function doLoginByTicket(string $ticket, ?string $state = null): array
     {
-        $loginId = $this->validateTicket($ticket);
+        $loginId = $this->validateTicket($ticket, $state);
         $redirect = $this->handle->restorePreLoginUrl();
 
         return [

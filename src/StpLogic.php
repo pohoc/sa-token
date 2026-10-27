@@ -10,9 +10,11 @@ use SaToken\Exception\NotLoginException;
 use SaToken\Exception\SaTokenException;
 use SaToken\Listener\SaTokenEvent;
 use SaToken\Plugin\SaTokenJwt;
+use SaToken\Security\SaIpAnomalyDetector;
 use SaToken\Security\SaLoginDeviceManager;
 use SaToken\Util\SaFoxUtil;
 use SaToken\Util\SaTokenContext;
+use SaToken\Util\SaTokenTimeout;
 
 class StpLogic
 {
@@ -88,34 +90,47 @@ class StpLogic
     {
         // loginId 必须是非空标量：null/数组等会被静默归一为空串，
         // 使所有此类"用户"共享同一会话与 loginId 映射键
-        if ($loginId === null || $loginId === '' || $loginId === []) {
-            throw new SaTokenException('loginId 不能为空');
+        if ($loginId === null || $loginId === '' || $loginId === [] || is_bool($loginId)) {
+            throw new SaTokenException('loginId 不能为空且不能是布尔值');
         }
-        if (is_array($loginId) || (is_object($loginId) && !method_exists($loginId, '__toString'))) {
+        if (!is_scalar($loginId)) {
             throw new SaTokenException('loginId 必须是标量类型');
         }
+        TokenManager::validateLoginIdLength($loginId);
 
         $parameter = $parameter ?? new SaLoginParameter();
         $config = $this->getConfig();
 
+        $timeout = $parameter->getTimeout() ?? $config->getTimeout();
+        SaTokenTimeout::validate($timeout);
+
         $this->checkDisableForLogin($loginId);
 
         $deviceType = $parameter->getDeviceType();
-        $timeout = $parameter->getTimeout() ?? $config->getTimeout();
         $isShare = $parameter->getIsShare() ?? $config->isShare();
         $maxLoginCount = $parameter->getMaxLoginCount() ?? $config->getMaxLoginCount();
 
+        if ($maxLoginCount === 0) {
+            throw new SaTokenException('最大登录数必须大于 0，或设为 -1 表示不限制');
+        }
+
         // 并发登录互斥锁：获取失败说明同账号正在处理登录，直接拒绝以保证 maxLoginCount 等控制的一致性
-        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $loginIdStr = (string) $loginId;
         $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', $loginIdStr);
-        if (!$this->tokenManager->acquireLock($lockKey, 5)) {
+        if (!$this->tokenManager->acquireLock($lockKey, 30)) {
             throw new SaTokenException('同账号登录正在处理中，请勿重复提交');
         }
 
+        /** @var array<string> $replacedTokens */
+        $replacedTokens = [];
+        $tokenValue = null;
         try {
-            $tokenValue = $this->resolveTokenValue($loginId, $deviceType, $isShare, $config);
+            // 封禁状态与发证必须在同一账号锁内复查，避免预检查后管理员封禁、
+            // 但本次登录仍继续签发 Token。
+            $this->checkDisableForLogin($loginId);
+            $tokenValue = $this->resolveTokenValue($loginId, $deviceType, $isShare, $config, $replacedTokens);
 
-            $this->controlMaxLoginCount($loginId, $deviceType, $maxLoginCount, $tokenValue);
+            $this->controlMaxLoginCount($loginId, $deviceType, $maxLoginCount, $tokenValue, $replacedTokens);
 
             // mixed 模式下实际存储的是 JWT，后续指纹/响应/结果必须使用返回的真实值
             $tokenValue = $this->tokenManager->saveToken($tokenValue, $loginId, $this->loginType, $deviceType, $timeout);
@@ -125,36 +140,104 @@ class StpLogic
                 $this->tokenManager->saveFingerprint($tokenValue, $fingerprint, $timeout);
             }
 
-            $this->writeTokenToResponse($tokenValue, $parameter);
-
-            $this->getEvent()->onLogin($this->loginType, $loginId, $tokenValue, $parameter);
-
-            $this->clearAntiBruteFailures($loginId);
-
             if ($config->isDeviceManagement()) {
                 $this->registerLoginDevice($loginId, $deviceType, $parameter, $tokenValue);
             }
 
-            $result = $this->buildLoginResult($tokenValue, $timeout, $loginId, $config);
+            $this->recordLoginIpIfEnabled($loginId, $config);
+
+            // The account lock is a lease. Storage/device adapters can stall
+            // long enough for disable() to take over and finish; verify that
+            // this request still owns the lease before publishing credentials.
+            $this->checkDisableForLogin($loginId);
+            if (!$this->tokenManager->renewLock($lockKey, 30)) {
+                throw new SaTokenException('账号会话锁已失效，拒绝签发登录凭证');
+            }
+
+            $result = $this->buildLoginResult(
+                $tokenValue,
+                $timeout,
+                $loginId,
+                $config,
+                $parameter->shouldWriteResponseCredentials()
+            );
+
+            // Publish the access credential only after every persistence step
+            // has succeeded; otherwise a failed login may still send a usable
+            // token in a partially built response.
+            if ($parameter->shouldWriteResponseCredentials()) {
+                $this->writeTokenToResponse($tokenValue, $parameter);
+                $refreshToken = $result->getRefreshToken();
+                if ($refreshToken !== '') {
+                    SaTokenContext::setHeader('satoken-refresh', $refreshToken);
+                }
+            }
+
+            // Clear failed-login state only after all session persistence and
+            // response credential writes have succeeded. Otherwise a valid
+            // password followed by a storage/response failure can erase prior
+            // lockout state even though login() reports failure.
+            $this->clearAntiBruteFailures($loginId);
+        } catch (\Throwable $exception) {
+            // Login setup spans token persistence, device metadata, response
+            // credentials and optional refresh-token creation. If any later
+            // step fails, do not leave a usable session behind for a login
+            // request that reported failure.
+            if ($tokenValue !== null && $this->tokenManager->isTokenValid($tokenValue)) {
+                try {
+                    $this->removeTokenAndRefreshToken($tokenValue, $loginId);
+                } catch (\Throwable $cleanupException) {
+                    // A stale account-lock owner cannot safely edit the session
+                    // index while another request owns it. Revoke the exact
+                    // bearer under its token lock so a failed login cannot
+                    // leave either it or its RefreshToken usable.
+                    $invalidated = $this->tokenManager->invalidateTokenIfOwnedByLoginType(
+                        $tokenValue,
+                        $loginId,
+                        $this->loginType
+                    );
+                    if (!$invalidated) {
+                        throw $cleanupException;
+                    }
+
+                    // The first failure may have been only stale local lock
+                    // ownership. Retry physical cleanup after dropping it;
+                    // if another request still holds the account lock, the
+                    // blacklist above remains the fail-closed safeguard.
+                    try {
+                        $this->removeTokenAndRefreshToken($tokenValue, $loginId);
+                    } catch (\Throwable) {
+                        // The token has already been made unusable.
+                    }
+                }
+            }
+            throw $exception;
         } finally {
             $this->tokenManager->releaseLock($lockKey);
         }
 
+        // 监听器由调用方实现且可能执行网络 I/O；不要让不受控回调占用 5 秒租约锁。
+        foreach ($replacedTokens as $replacedToken) {
+            $this->getEvent()->onReplaced($this->loginType, $loginId, $replacedToken);
+        }
+        $this->getEvent()->onLogin($this->loginType, $loginId, $tokenValue, $parameter);
+
         return $result;
     }
 
-    protected function resolveTokenValue(mixed $loginId, string $deviceType, bool $isShare, SaTokenConfig $config): string
+    /** @param array<string> $replacedTokens */
+    protected function resolveTokenValue(mixed $loginId, string $deviceType, bool $isShare, SaTokenConfig $config, array &$replacedTokens): string
     {
         $tokenValue = null;
         if ($isShare && $config->isConcurrent()) {
             $existingToken = $this->getTokenValueByDeviceType($loginId, $deviceType);
             if ($existingToken !== null) {
-                $this->tokenManager->deleteToken($existingToken, $loginId, $this->loginType);
+                $this->removeTokenAndRefreshToken($existingToken, $loginId);
             }
         }
 
         if (!$config->isConcurrent() && $isShare) {
-            $this->logoutAllExceptCurrent($loginId, $deviceType);
+            array_push($replacedTokens, ...$this->logoutAllExceptCurrent($loginId, $deviceType));
         }
 
         $tokenValue = $this->tokenManager->createTokenValue($loginId, $this->loginType);
@@ -168,20 +251,24 @@ class StpLogic
         if ($device !== null) {
             $device->setDeviceType($deviceType !== '' ? $deviceType : $device->getDeviceType());
         }
-        SaLoginDeviceManager::registerDevice($loginId, $this->loginType, $device, $tokenValue);
+        SaLoginDeviceManager::registerDevice($loginId, $this->loginType, $device, $tokenValue, $this);
     }
 
-    protected function buildLoginResult(string $tokenValue, int $timeout, mixed $loginId, SaTokenConfig $config): SaLoginResult
-    {
+    protected function buildLoginResult(
+        string $tokenValue,
+        int $timeout,
+        mixed $loginId,
+        SaTokenConfig $config,
+        bool $writeResponseCredentials = true
+    ): SaLoginResult {
         $result = (new SaLoginResult())
             ->setAccessToken($tokenValue)
             ->setAccessExpire($timeout > 0 ? $timeout : 0);
 
-        if ($config->isRefreshToken()) {
+        if ($config->isRefreshToken() && $writeResponseCredentials) {
             $refreshTokenValue = $this->tokenManager->createTokenValue($loginId, $this->loginType, 'srt_');
             $refreshTimeout = $config->getRefreshTokenTimeout();
             $this->tokenManager->saveRefreshToken($refreshTokenValue, $tokenValue, $loginId, $this->loginType, $refreshTimeout);
-            SaTokenContext::setHeader('satoken-refresh', $refreshTokenValue);
             $result->setRefreshToken($refreshTokenValue)
                 ->setRefreshExpire($refreshTimeout > 0 ? $refreshTimeout : 0);
         }
@@ -191,21 +278,91 @@ class StpLogic
 
     public function loginStateless(mixed $loginId, ?SaLoginParameter $parameter = null): string
     {
+        if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
+            throw new SaTokenException('loginId 不能为空且必须是非布尔标量');
+        }
+        TokenManager::validateLoginIdLength($loginId);
+
         $parameter = $parameter ?? new SaLoginParameter();
         $config = $this->getConfig();
 
-        $this->checkDisableForLogin($loginId);
-
         $timeout = $parameter->getTimeout() ?? $config->getTimeout();
+        SaTokenTimeout::validate($timeout);
 
+        $loginIdStr = (string) $loginId;
+        // Create the JWT before entering the account critical section. Its iat
+        // then predates any account-wide logout that wins while this request is
+        // paused, even if the distributed lock lease expires.
         $jwt = $this->getJwt();
         $tokenValue = $jwt->createStatelessToken($loginId, $this->loginType, $timeout);
+        $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', $loginIdStr);
+        if (!$this->tokenManager->acquireLock($lockKey, 30)) {
+            throw new SaTokenException('同账号登录正在处理中，请稍后重试');
+        }
+        try {
+            $this->checkDisableForLogin($loginId);
+            // A lock is only a lease. If disable() takes over after this
+            // request pauses, the stale login must not continue as though its
+            // earlier check still authorized credential issuance.
+            if (!$this->tokenManager->renewLock($lockKey, 30)) {
+                throw new SaTokenException('账号会话锁已失效，拒绝签发无状态登录凭证');
+            }
+            $this->checkDisableForLogin($loginId);
 
-        $this->writeTokenToResponse($tokenValue, $parameter);
+            $claims = $jwt->parseToken($tokenValue);
+            if (($claims['sub'] ?? null) !== $loginIdStr
+                || ($claims['type'] ?? null) !== $this->loginType
+                || $this->tokenManager->isStatelessTokenRevokedByLoginId(
+                    $loginIdStr,
+                    $this->loginType,
+                    $claims['iat'] ?? null,
+                    $claims['satoken_gen'] ?? null
+                )) {
+                throw new SaTokenException('账号会话已撤销，拒绝签发无效登录凭证');
+            }
+
+            if ($config->isTokenFingerprint()) {
+                $fingerprint = $this->tokenManager->computeFingerprint();
+                $this->tokenManager->saveFingerprint($tokenValue, $fingerprint, $timeout);
+            }
+            $this->tokenManager->updateLastActiveToNow($tokenValue);
+            if ($config->isDeviceManagement()) {
+                $this->registerLoginDevice($loginId, $parameter->getDeviceType(), $parameter, $tokenValue);
+            }
+            $this->recordLoginIpIfEnabled($loginId, $config);
+
+            // Storage or event adapters may stall beyond the lease. Renew and
+            // recheck immediately before exposing the stateless bearer so a
+            // completed disable cannot be followed by a stale login response.
+            if (!$this->tokenManager->renewLock($lockKey, 30)) {
+                throw new SaTokenException('账号会话锁已失效，拒绝签发无状态登录凭证');
+            }
+            $this->checkDisableForLogin($loginId);
+
+            if ($parameter->shouldWriteResponseCredentials()) {
+                $this->writeTokenToResponse($tokenValue, $parameter);
+            }
+        } finally {
+            $this->tokenManager->releaseLock($lockKey);
+        }
 
         $this->getEvent()->onLogin($this->loginType, $loginId, $tokenValue, $parameter);
 
         return $tokenValue;
+    }
+
+    protected function recordLoginIpIfEnabled(mixed $loginId, SaTokenConfig $config): void
+    {
+        if (!$config->getIpAnomalyDetection()) {
+            return;
+        }
+
+        $ip = SaTokenContext::getClientIp();
+        if ($ip === null || filter_var($ip, FILTER_VALIDATE_IP) === false) {
+            return;
+        }
+
+        SaIpAnomalyDetector::recordLoginIp($loginId, $ip, $this->loginType);
     }
 
     /**
@@ -220,14 +377,25 @@ class StpLogic
             return;
         }
 
-        $loginId = $this->tokenManager->getLoginIdByToken($tokenValue);
-        if ($loginId === null) {
+        if ($this->getConfig()->isJwtStateless()) {
+            $loginId = $this->getStatelessLoginIdByToken($tokenValue);
+            if ($loginId === null || !$this->revokeToken($tokenValue)) {
+                return;
+            }
+            $this->clearTokenFromResponse();
+            $this->getEvent()->onLogout($this->loginType, $loginId, $tokenValue);
             return;
         }
 
-        $this->tokenManager->deleteRefreshTokenByAccessToken($loginId, $this->loginType, $tokenValue);
-        $this->tokenManager->deleteFingerprint($tokenValue);
-        $this->tokenManager->deleteToken($tokenValue, $loginId, $this->loginType);
+        $sessionBinding = $this->tokenManager->getTokenSessionBinding($tokenValue, $this->loginType);
+        $sessionId = $sessionBinding['sessionId'] ?? null;
+        $loginId = $this->tokenManager->getLoginIdByToken($tokenValue) ?? ($sessionBinding['loginId'] ?? null);
+        if ($loginId === null
+            || (!$this->isTokenOwnedByLoginType($tokenValue, $loginId) && $sessionBinding === null)) {
+            return;
+        }
+
+        $this->removeTokenAndRefreshToken($tokenValue, $loginId, $sessionId);
         $this->clearTokenFromResponse();
 
         $this->getEvent()->onLogout($this->loginType, $loginId, $tokenValue);
@@ -241,6 +409,11 @@ class StpLogic
      */
     public function logoutByLoginId(mixed $loginId): void
     {
+        if ($this->getConfig()->isJwtStateless()) {
+            $this->revokeStatelessTokensByLoginId($loginId);
+            return;
+        }
+
         $tokens = $this->tokenManager->deleteAllTokenByLoginId($loginId, $this->loginType);
         foreach ($tokens as $tokenValue) {
             $this->tokenManager->deleteRefreshTokenByAccessToken($loginId, $this->loginType, $tokenValue);
@@ -251,18 +424,39 @@ class StpLogic
     /**
      * 踢人下线（指定 Token）
      *
-     * @param  string $tokenValue Token 值
-     * @return void
+     * @param  string      $tokenValue    Token 值
+     * @param  bool        $dispatchEvent 是否立即派发事件；批量锁内操作应延后派发
+     * @return string|null 被踢出的 loginId，Token 无效时为 null
      */
-    public function kickoutByTokenValue(string $tokenValue): void
+    public function kickoutByTokenValue(string $tokenValue, bool $dispatchEvent = true): ?string
     {
-        $loginId = $this->tokenManager->getLoginIdByToken($tokenValue);
-        if ($loginId === null) {
-            return;
+        if ($tokenValue === '' || strlen($tokenValue) > TokenManager::MAX_TOKEN_VALUE_BYTES) {
+            return null;
+        }
+        if ($this->getConfig()->isJwtStateless()) {
+            $loginId = $this->getStatelessLoginIdByToken($tokenValue);
+            if ($loginId === null || !$this->revokeToken($tokenValue)) {
+                return null;
+            }
+            if ($dispatchEvent) {
+                $this->getEvent()->onKickout($this->loginType, $loginId, $tokenValue);
+            }
+            return $loginId;
         }
 
-        $this->tokenManager->kickout($tokenValue, $loginId, $this->loginType);
-        $this->getEvent()->onKickout($this->loginType, $loginId, $tokenValue);
+        $sessionBinding = $this->tokenManager->getTokenSessionBinding($tokenValue, $this->loginType);
+        $sessionId = $sessionBinding['sessionId'] ?? null;
+        $loginId = $this->tokenManager->getLoginIdByToken($tokenValue) ?? ($sessionBinding['loginId'] ?? null);
+        if ($loginId === null
+            || (!$this->isTokenOwnedByLoginType($tokenValue, $loginId) && $sessionBinding === null)) {
+            return null;
+        }
+
+        $this->removeTokenAndRefreshToken($tokenValue, $loginId, $sessionId);
+        if ($dispatchEvent) {
+            $this->getEvent()->onKickout($this->loginType, $loginId, $tokenValue);
+        }
+        return $loginId;
     }
 
     /**
@@ -273,14 +467,37 @@ class StpLogic
      */
     public function kickout(mixed $loginId): void
     {
-        $tokens = $this->tokenManager->getTokenListByLoginId($loginId, $this->loginType);
-        foreach ($tokens as $item) {
-            $tokenValue = is_string($item['tokenValue'] ?? null) ? $item['tokenValue'] : '';
-            if ($tokenValue === '') {
-                continue;
-            }
-            $this->tokenManager->kickout($tokenValue, $loginId, $this->loginType);
+        if ($this->getConfig()->isJwtStateless()) {
+            $this->revokeStatelessTokensByLoginId($loginId);
+            return;
+        }
+
+        // 账号级原子批量删除同时清理关联 RefreshToken，并与并发登录互斥。
+        $tokens = $this->tokenManager->deleteAllTokenByLoginId($loginId, $this->loginType);
+        foreach ($tokens as $tokenValue) {
             $this->getEvent()->onKickout($this->loginType, $loginId, $tokenValue);
+        }
+    }
+
+    /** 删除会话时一并撤销其 RefreshToken，避免旧凭据重新建立会话。 */
+    protected function removeTokenAndRefreshToken(string $tokenValue, mixed $loginId, ?string $sessionId = null): void
+    {
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', $loginIdStr);
+        if (!$this->tokenManager->acquireLock($lockKey, 30)) {
+            throw new SaTokenException('同账号会话正在处理中，请稍后重试');
+        }
+        try {
+            if ($sessionId !== null && $sessionId !== '') {
+                $this->tokenManager->deleteTokenSessionById($sessionId, $loginId, $this->loginType);
+                return;
+            }
+
+            $this->tokenManager->deleteRefreshTokenByAccessToken($loginId, $this->loginType, $tokenValue);
+            // kickout 内部重复获取账号锁是安全的（TokenManager 锁支持可重入）。
+            $this->tokenManager->kickout($tokenValue, $loginId, $this->loginType);
+        } finally {
+            $this->tokenManager->releaseLock($lockKey);
         }
     }
 
@@ -305,9 +522,7 @@ class StpLogic
         }
 
         if ($config->isJwtStateless()) {
-            $jwt = $this->getJwt();
-            $payload = $jwt->validateStatelessToken($tokenValue);
-            if ($payload !== null) {
+            if ($this->getStatelessLoginIdByToken($tokenValue) !== null) {
                 return;
             }
             throw new NotLoginException('Token 已失效，请重新登录', NotLoginException::TOKEN_TIMEOUT);
@@ -367,8 +582,22 @@ class StpLogic
             return null;
         }
 
+        if ($this->getConfig()->isJwtStateless()) {
+            return $this->getStatelessLoginIdByToken($tokenValue);
+        }
+
         $loginId = $this->tokenManager->getLoginIdByToken($tokenValue);
         if ($loginId === null || !$this->isTokenOwnedByLoginType($tokenValue, $loginId)) {
+            return null;
+        }
+
+        // 所有以登录 ID 为入口的授权检查都必须执行完整的会话约束。
+        // 先验证指纹与活动超时，再读取身份切换值，避免切换分支绕过约束。
+        try {
+            $this->checkFingerprint($tokenValue);
+            $this->checkActivityTimeout($tokenValue);
+            $this->tokenManager->updateLastActiveToNow($tokenValue);
+        } catch (NotLoginException) {
             return null;
         }
 
@@ -376,14 +605,6 @@ class StpLogic
         $switchTo = $this->tokenManager->getSwitchTo($tokenValue, $this->loginType);
         if ($switchTo !== null) {
             return $switchTo;
-        }
-
-        // 更新活跃时间
-        try {
-            $this->checkActivityTimeout($tokenValue);
-            $this->tokenManager->updateLastActiveToNow($tokenValue);
-        } catch (NotLoginException) {
-            return null;
         }
 
         return $loginId;
@@ -411,27 +632,45 @@ class StpLogic
      */
     public function getTokenValue(): ?string
     {
+        $tokenOverride = SaTokenContext::getTokenOverride($this->loginType);
+        if ($tokenOverride !== null) {
+            return $this->formatAndValidateTokenValue($tokenOverride);
+        }
+
         $config = $this->getConfig();
         $tokenName = $config->getTokenName();
 
         // 1. 从 Header 读取
         if ($config->isReadHeader()) {
+            if (SaTokenContext::hasMultipleHeaderValues($tokenName, true)) {
+                // 重复凭据 Header 的解释在代理与应用之间可能不一致；拒绝整次认证，
+                // 也不继续尝试 Cookie/参数，避免歧义请求意外降级到另一凭据。
+                return null;
+            }
             $tokenValue = SaTokenContext::getHeader($tokenName);
             if ($tokenValue !== null && SaFoxUtil::isNotEmpty($tokenValue)) {
-                return $this->formatTokenValue($tokenValue);
+                return $this->formatAndValidateTokenValue($tokenValue);
             }
         }
 
         // 2. 从 Cookie 读取
         if ($config->isReadCookie()) {
+            if (SaTokenContext::hasMultipleCookieValues($tokenName)) {
+                // 同名 Cookie 可能由 host-only 与父域 Cookie 同时携带；不同
+                // 框架对重复项的选择顺序不同，拒绝歧义请求并避免降级到参数凭据。
+                return null;
+            }
             $tokenValue = SaTokenContext::getCookie($tokenName);
             if ($tokenValue !== null && SaFoxUtil::isNotEmpty($tokenValue)) {
-                return $this->formatTokenValue($tokenValue);
+                return $this->formatAndValidateTokenValue($tokenValue);
             }
         }
 
         // 3. 从请求参数读取
         if ($config->isReadBody()) {
+            if (SaTokenContext::hasConflictingParamValues($tokenName)) {
+                return null;
+            }
             $tokenValue = SaTokenContext::getParam($tokenName);
             if ($tokenValue !== null && SaFoxUtil::isNotEmpty($tokenValue)) {
                 $contentType = SaTokenContext::getHeader('Content-Type');
@@ -439,7 +678,7 @@ class StpLogic
                     && !str_contains($contentType, 'application/json')) {
                     trigger_error('Sa-Token: 从 URL 参数读取 Token 存在安全风险，建议使用 Header 或 Cookie 传递', E_USER_NOTICE);
                 }
-                return $this->formatTokenValue($tokenValue);
+                return $this->formatAndValidateTokenValue($tokenValue);
             }
         }
 
@@ -461,13 +700,103 @@ class StpLogic
         return $tokenValue;
     }
 
+    protected function formatAndValidateTokenValue(string $tokenValue): ?string
+    {
+        $formatted = $this->formatTokenValue($tokenValue);
+        if ($formatted === '' || strlen($formatted) > TokenManager::MAX_TOKEN_VALUE_BYTES) {
+            return null;
+        }
+        return $formatted;
+    }
+
     public function getLoginIdByToken(string $tokenValue): ?string
     {
+        if ($tokenValue === '' || strlen($tokenValue) > TokenManager::MAX_TOKEN_VALUE_BYTES) {
+            return null;
+        }
+
+        if ($this->tokenManager->isBlacklisted($tokenValue)) {
+            return null;
+        }
+
+        if ($this->getConfig()->isJwtStateless()) {
+            return $this->getStatelessLoginIdByToken($tokenValue);
+        }
+
+        if ($this->getConfig()->getJwtMode() === 'mixed'
+            && $this->getJwt()->validateStatelessToken($tokenValue) === null) {
+            return null;
+        }
+
         $loginId = $this->tokenManager->getLoginIdByToken($tokenValue);
         if ($loginId === null || !$this->isTokenOwnedByLoginType($tokenValue, $loginId)) {
             return null;
         }
+
+        try {
+            $this->checkFingerprint($tokenValue);
+            $this->checkActivityTimeout($tokenValue);
+            $this->tokenManager->updateLastActiveToNow($tokenValue);
+        } catch (NotLoginException) {
+            return null;
+        }
+
         return $loginId;
+    }
+
+    /**
+     * 无状态 JWT 的身份来源是已验签的 sub，且必须属于当前 loginType。
+     */
+    protected function getStatelessLoginIdByToken(string $tokenValue): ?string
+    {
+        $payload = $this->getJwt()->validateStatelessToken($tokenValue);
+        if ($payload === null) {
+            return null;
+        }
+
+        $subject = $payload['sub'] ?? null;
+        $type = $payload['type'] ?? null;
+        if (!is_string($subject) || $subject === '' || !is_string($type) || $type !== $this->loginType) {
+            return null;
+        }
+
+        if ($this->tokenManager->isStatelessTokenRevokedByLoginId(
+            $subject,
+            $this->loginType,
+            $payload['iat'] ?? null,
+            $payload['satoken_gen'] ?? null
+        )) {
+            return null;
+        }
+
+        try {
+            $this->checkFingerprint($tokenValue);
+        } catch (NotLoginException) {
+            return null;
+        }
+
+        if ($this->getConfig()->getActivityTimeout() > 0) {
+            $lastActive = $this->tokenManager->getLastActiveTime($tokenValue);
+            if ($lastActive === null
+                || SaFoxUtil::getTime() - $lastActive > $this->getConfig()->getActivityTimeout()) {
+                return null;
+            }
+            $this->tokenManager->updateLastActiveToNow($tokenValue);
+        }
+
+        return $subject;
+    }
+
+    /**
+     * 无状态 JWT 无法通过会话列表枚举，因此用账号级 iat 水位一次性吊销该账号的旧令牌。
+     */
+    protected function revokeStatelessTokensByLoginId(mixed $loginId): void
+    {
+        if ($loginId === null || is_bool($loginId) || !is_scalar($loginId) || $loginId === '') {
+            return;
+        }
+
+        $this->tokenManager->revokeStatelessTokensByLoginId((string) $loginId, $this->loginType);
     }
 
     /**
@@ -479,6 +808,11 @@ class StpLogic
      */
     protected function isTokenOwnedByLoginType(string $tokenValue, string $loginId): bool
     {
+        $recordedLoginType = $this->tokenManager->getTokenSessionLoginType($tokenValue);
+        if ($recordedLoginType !== null) {
+            return $recordedLoginType === $this->loginType;
+        }
+
         $tokens = $this->tokenManager->getTokenListByLoginId($loginId, $this->loginType);
         foreach ($tokens as $item) {
             if (is_string($item['tokenValue'] ?? null) && $item['tokenValue'] === $tokenValue) {
@@ -501,7 +835,10 @@ class StpLogic
             ->setActivityTimeout($config->getActivityTimeout());
 
         if ($tokenValue !== null) {
-            $loginId = $this->tokenManager->getLoginIdByToken($tokenValue);
+            // TokenInfo is also an authentication-facing API: resolve identity through
+            // the same blacklist, JWT, loginType, fingerprint, and activity checks as
+            // getLoginIdByToken instead of trusting the shared DAO token key directly.
+            $loginId = $this->getLoginIdByToken($tokenValue);
             $info->setLoginId($loginId);
         }
 
@@ -534,7 +871,18 @@ class StpLogic
         if ($tokenValue === null) {
             return;
         }
-        $this->tokenManager->renewTimeout($tokenValue, $timeout);
+
+        $loginId = $this->getLoginIdByToken($tokenValue);
+        if ($loginId === null) {
+            return;
+        }
+
+        $this->tokenManager->renewTimeoutIfOwnedByLoginType(
+            $tokenValue,
+            $timeout,
+            $this->loginType,
+            $loginId
+        );
     }
 
     /**
@@ -546,9 +894,73 @@ class StpLogic
      */
     public function createTempToken(mixed $loginId, int $timeout): string
     {
-        $tokenValue = $this->tokenManager->createTokenValue($loginId, $this->loginType);
-        // mixed 模式下实际存储的是 JWT，必须返回真实值
-        return $this->tokenManager->saveToken($tokenValue, $loginId, $this->loginType, 'temp', $timeout);
+        if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
+            throw new SaTokenException('loginId 不能为空且必须是非布尔标量');
+        }
+        TokenManager::validateLoginIdLength($loginId);
+        SaTokenTimeout::validate($timeout, '临时 Token');
+
+        $loginIdStr = (string) $loginId;
+        $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', $loginIdStr);
+        if (!$this->tokenManager->acquireLock($lockKey, 30)) {
+            throw new SaTokenException('同账号会话正在处理中，请稍后重试');
+        }
+
+        $tokenValue = null;
+        $replacedTokens = [];
+        try {
+            $this->checkDisableForLogin($loginId);
+            $tokenValue = $this->tokenManager->createTokenValue($loginId, $this->loginType);
+            // Apply the account limit before indexing the new token. This is
+            // the same ordering used by login(), so existing sessions are
+            // evicted before the temporary credential is added.
+            $this->controlMaxLoginCount(
+                $loginId,
+                'temp',
+                $this->getConfig()->getMaxLoginCount(),
+                $tokenValue,
+                $replacedTokens
+            );
+            // mixed 模式下实际存储的是 JWT，必须返回真实值
+            $tokenValue = $this->tokenManager->saveToken($tokenValue, $loginId, $this->loginType, 'temp', $timeout);
+            $this->checkDisableForLogin($loginId);
+            if (!$this->tokenManager->renewLock($lockKey, 30)) {
+                throw new SaTokenException('账号会话锁已失效，拒绝签发临时登录凭证');
+            }
+
+        } catch (\Throwable $exception) {
+            if ($tokenValue !== null && $this->tokenManager->isTokenValid($tokenValue)) {
+                try {
+                    $this->removeTokenAndRefreshToken($tokenValue, $loginId);
+                } catch (\Throwable $cleanupException) {
+                    $invalidated = $this->tokenManager->invalidateTokenIfOwnedByLoginType(
+                        $tokenValue,
+                        $loginId,
+                        $this->loginType
+                    );
+                    if (!$invalidated) {
+                        throw $cleanupException;
+                    }
+
+                    try {
+                        $this->removeTokenAndRefreshToken($tokenValue, $loginId);
+                    } catch (\Throwable) {
+                        // The exact bearer is blacklisted if physical cleanup
+                        // cannot safely run after another lock owner took over.
+                    }
+                }
+            }
+
+            throw $exception;
+        } finally {
+            $this->tokenManager->releaseLock($lockKey);
+        }
+
+        foreach ($replacedTokens as $replacedToken) {
+            $this->getEvent()->onReplaced($this->loginType, $loginId, $replacedToken);
+        }
+
+        return $tokenValue;
     }
 
     // ---- 内部辅助方法 ----
@@ -594,7 +1006,10 @@ class StpLogic
 
         $lastActive = $this->tokenManager->getLastActiveTime($tokenValue);
         if ($lastActive === null) {
-            return;
+            // Tokens issued while activity tracking is enabled always get an
+            // initial marker. Missing state (including expired marker TTL) must
+            // fail closed instead of restoring an idle session.
+            throw new NotLoginException('Token 活动状态不存在，请重新登录', NotLoginException::TOKEN_TIMEOUT);
         }
 
         if (SaFoxUtil::getTime() - $lastActive > $config->getActivityTimeout()) {
@@ -611,7 +1026,7 @@ class StpLogic
 
         $savedFingerprint = $this->tokenManager->getFingerprint($tokenValue);
         if ($savedFingerprint === null) {
-            return;
+            throw new NotLoginException('Token 指纹状态不存在，请重新登录', NotLoginException::TOKEN_TIMEOUT);
         }
 
         $currentFingerprint = $this->tokenManager->computeFingerprint();
@@ -640,29 +1055,34 @@ class StpLogic
         return null;
     }
 
-    protected function logoutAllExceptCurrent(mixed $loginId, string $deviceType): void
+    /** @return array<string> */
+    protected function logoutAllExceptCurrent(mixed $loginId, string $deviceType): array
     {
+        $replacedTokens = [];
         $tokens = $this->tokenManager->getTokenListByLoginId($loginId, $this->loginType);
         foreach ($tokens as $item) {
             $itemDeviceType = is_string($item['deviceType'] ?? null) ? $item['deviceType'] : '';
             $itemTokenValue = is_string($item['tokenValue'] ?? null) ? $item['tokenValue'] : '';
             if ($itemDeviceType === $deviceType && $this->tokenManager->isTokenValid($itemTokenValue)) {
-                $this->tokenManager->kickout($itemTokenValue, $loginId, $this->loginType);
-                $this->getEvent()->onReplaced($this->loginType, $loginId, $itemTokenValue);
+                $this->removeTokenAndRefreshToken($itemTokenValue, $loginId);
+                $replacedTokens[] = $itemTokenValue;
             }
         }
+
+        return $replacedTokens;
     }
 
     /**
      * 并发登录控制
      *
-     * @param  mixed  $loginId           登录 ID
-     * @param  string $deviceType        设备类型
-     * @param  int    $maxLoginCount     最大登录数
-     * @param  string $currentTokenValue 当前 Token 值
+     * @param  mixed         $loginId           登录 ID
+     * @param  string        $deviceType        设备类型
+     * @param  int           $maxLoginCount     最大登录数
+     * @param  string        $currentTokenValue 当前 Token 值
+     * @param  array<string> $replacedTokens    被替换的 Token 值
      * @return void
      */
-    protected function controlMaxLoginCount(mixed $loginId, string $deviceType, int $maxLoginCount, string $currentTokenValue): void
+    protected function controlMaxLoginCount(mixed $loginId, string $deviceType, int $maxLoginCount, string $currentTokenValue, array &$replacedTokens): void
     {
         if ($maxLoginCount < 0) {
             return;
@@ -687,8 +1107,8 @@ class StpLogic
                 if ($toKick !== null) {
                     $kickTokenValue = is_string($toKick['tokenValue'] ?? null) ? $toKick['tokenValue'] : '';
                     if ($kickTokenValue !== '') {
-                        $this->tokenManager->kickout($kickTokenValue, $loginId, $this->loginType);
-                        $this->getEvent()->onReplaced($this->loginType, $loginId, $kickTokenValue);
+                        $this->removeTokenAndRefreshToken($kickTokenValue, $loginId);
+                        $replacedTokens[] = $kickTokenValue;
                     }
                 }
             }
@@ -702,8 +1122,11 @@ class StpLogic
      * @param  SaLoginParameter $parameter  登录参数
      * @return void
      */
-    protected function writeTokenToResponse(string $tokenValue, SaLoginParameter $parameter): void
+    public function writeTokenToResponse(string $tokenValue, SaLoginParameter $parameter): void
     {
+        if ($tokenValue === '' || strlen($tokenValue) > TokenManager::MAX_TOKEN_VALUE_BYTES) {
+            throw new SaTokenException('Token 长度无效，无法写入响应');
+        }
         $config = $this->getConfig();
         $tokenName = $config->getTokenName();
         $tokenPrefix = $config->getTokenPrefix();
@@ -758,43 +1181,68 @@ class StpLogic
 
     public function revokeToken(string $tokenValue): bool
     {
+        if ($tokenValue === '' || strlen($tokenValue) > TokenManager::MAX_TOKEN_VALUE_BYTES) {
+            return false;
+        }
+        $alreadyBlacklisted = $this->tokenManager->isBlacklisted($tokenValue);
+        if ($alreadyBlacklisted && $this->getConfig()->isJwtStateless()) {
+            return true;
+        }
+
+        $sessionBinding = $this->getConfig()->isJwtStateless()
+            ? null
+            : $this->tokenManager->getTokenSessionBinding($tokenValue, $this->loginType);
+        $sessionId = $sessionBinding['sessionId'] ?? null;
+        // Stateless JWTs have no DAO token record, so derive their owner from
+        // the verified subject. This ensures revocation shares the account
+        // lock with refresh and cannot race a replacement credential.
+        $loginId = $this->getConfig()->isJwtStateless()
+            ? $this->getStatelessLoginIdByToken($tokenValue)
+            : ($this->tokenManager->getLoginIdByToken($tokenValue) ?? ($sessionBinding['loginId'] ?? null));
+        if (!$this->getConfig()->isJwtStateless()
+            && ($loginId === null
+                || (!$this->isTokenOwnedByLoginType($tokenValue, $loginId) && $sessionBinding === null))) {
+            return $alreadyBlacklisted;
+        }
+
         $daoTimeout = $this->tokenManager->getTokenTimeout($tokenValue);
-        $configTimeout = $this->getConfig()->getTimeout();
-
-        // 永不过期的 Token（timeout=-1）对应的黑名单条目同样永不过期，防止 Token "复活"。
-        // 但 Token 不存在（-2，可能是任意外部输入）时不得写永久键（存储耗尽向量），
-        // 退化为 max(配置, 86400) 的有限期封禁
         $blacklistTimeout = null;
-        if ($daoTimeout === -1) {
-            $blacklistTimeout = null;
-        } elseif ($daoTimeout > 0) {
-            $blacklistTimeout = $daoTimeout;
-        } else {
-            $blacklistTimeout = $configTimeout > 0 ? $configTimeout : 86400;
-        }
 
-        // stateless JWT 无 Dao 记录，黑名单 TTL 必须覆盖 JWT 自身剩余寿命，
-        // 否则黑名单先过期、JWT 在其 exp 内"复活"
+        // Stateless JWT 的签名与 loginType 是撤销资格的依据。未知或伪造值不能写入
+        // 黑名单，否则攻击者可用任意输入持续占用存储。无 exp 的有效 JWT 永不过期。
         if ($this->getConfig()->isJwtStateless()) {
-            try {
-                $payload = $this->getJwt()->validateStatelessToken($tokenValue);
-                if ($payload !== null && isset($payload['exp']) && is_int($payload['exp'])) {
-                    $remaining = $payload['exp'] - time();
-                    if ($remaining > 0 && ($blacklistTimeout === null || $remaining > $blacklistTimeout)) {
-                        $blacklistTimeout = $remaining;
-                    }
-                }
-            } catch (SaTokenException) {
-                // 无法解析的 Token 无需延长
+            if ($this->getStatelessLoginIdByToken($tokenValue) === null) {
+                return false;
             }
+            $payload = $this->getJwt()->validateStatelessToken($tokenValue);
+            if ($payload !== null && isset($payload['exp']) && is_int($payload['exp'])) {
+                $blacklistTimeout = max(1, $payload['exp'] - time());
+            }
+        } elseif ($daoTimeout === -1 || $daoTimeout > 0) {
+            $blacklistTimeout = $daoTimeout === -1 ? null : $daoTimeout;
+        } else {
+            return false;
         }
 
-        $this->tokenManager->addToBlacklist($tokenValue, $blacklistTimeout);
-
-        // 同步删除会话记录，保证 logoutByLoginId/getTokenListByLoginId 等视图立即一致
-        $loginId = $this->tokenManager->getLoginIdByToken($tokenValue);
         if ($loginId !== null) {
-            $this->tokenManager->deleteToken($tokenValue, $loginId, $this->loginType);
+            $loginIdStr = $loginId;
+            $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', $loginIdStr);
+            if (!$this->tokenManager->acquireLock($lockKey, 30)) {
+                throw new SaTokenException('同账号会话正在处理中，请稍后重试');
+            }
+            try {
+                if ($this->getConfig()->isJwtStateless()
+                    && $this->getStatelessLoginIdByToken($tokenValue) !== $loginIdStr) {
+                    return $this->tokenManager->isBlacklisted($tokenValue);
+                }
+                $this->tokenManager->addToBlacklist($tokenValue, $blacklistTimeout);
+                // 锁内清理 RefreshToken 与会话记录，和并发刷新形成线性顺序。
+                $this->removeTokenAndRefreshToken($tokenValue, $loginId, $sessionId);
+            } finally {
+                $this->tokenManager->releaseLock($lockKey);
+            }
+        } else {
+            $this->tokenManager->addToBlacklist($tokenValue, $blacklistTimeout);
         }
         return true;
     }

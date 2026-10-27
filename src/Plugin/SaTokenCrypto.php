@@ -19,6 +19,8 @@ use SaToken\Exception\SaTokenException;
  */
 class SaTokenCrypto
 {
+    private const MIN_HMAC_KEY_BYTES = 32;
+
     /**
      * AES 密钥
      */
@@ -78,6 +80,9 @@ class SaTokenCrypto
         if ($key === '') {
             throw new SaTokenException('AES 密钥未配置');
         }
+        if (strlen($key) < 32) {
+            throw new SaTokenException('AES 密钥长度不足，至少需要 32 字节');
+        }
 
         $ivLength = openssl_cipher_iv_length('AES-256-CBC') ?: 16;
         if ($ivLength <= 0) {
@@ -100,7 +105,8 @@ class SaTokenCrypto
      * AES 解密
      *
      * 新格式先验证 MAC（失败直接抛异常，不尝试解密）；
-     * 旧格式（无 MAGIC 前缀的历史密文）按原逻辑解密以保持兼容
+     * 仅接受带 MAGIC 和 HMAC 的认证密文；旧版无认证 CBC 密文必须使用
+     * aesDecryptLegacy() 显式迁移，避免静默回退接受可被 IV 比特翻转的密文。
      *
      * @param  string           $data Base64 编码的密文
      * @param  string|null      $key  密钥，null 使用配置密钥
@@ -113,6 +119,9 @@ class SaTokenCrypto
         if ($key === '') {
             throw new SaTokenException('AES 密钥未配置');
         }
+        if (strlen($key) < 32) {
+            throw new SaTokenException('AES 密钥长度不足，至少需要 32 字节');
+        }
 
         $decoded = base64_decode($data, true);
         if ($decoded === false) {
@@ -123,29 +132,58 @@ class SaTokenCrypto
         $paddedKey = $this->padAesKey($key);
 
         $macLength = strlen(self::AEAD_MAGIC) + 32;
-        if (str_starts_with($decoded, self::AEAD_MAGIC) && strlen($decoded) >= $macLength + $ivLength) {
+        if (str_starts_with($decoded, self::AEAD_MAGIC)) {
+            if (strlen($decoded) < $macLength + $ivLength + 16) {
+                throw new SaTokenException('AES 解密失败：密文完整性校验未通过（可能被篡改）');
+            }
+
             $mac = substr($decoded, 4, 32);
             $iv = substr($decoded, $macLength, $ivLength);
             $encrypted = substr($decoded, $macLength + $ivLength);
 
             $expectedMac = hash_hmac('sha256', $iv . $encrypted, $this->deriveAesMacKey($paddedKey), true);
             if (!hash_equals($expectedMac, $mac)) {
-                // 旧格式随机 IV 的前 4 字节恰好是 'SAT1' 的概率约 2^-32，
-                // 命中后 MAC 必然不符——回退旧格式分支尝试解密而非直接判损
-                $legacyIv = substr($decoded, 0, $ivLength);
-                $legacyEncrypted = substr($decoded, $ivLength);
-                $legacyPlaintext = openssl_decrypt($legacyEncrypted, 'AES-256-CBC', $paddedKey, OPENSSL_RAW_DATA, $legacyIv);
-                if ($legacyPlaintext !== false) {
-                    return $legacyPlaintext;
-                }
                 throw new SaTokenException('AES 解密失败：密文完整性校验未通过（可能被篡改）');
             }
         } else {
-            $iv = substr($decoded, 0, $ivLength);
-            $encrypted = substr($decoded, $ivLength);
+            throw new SaTokenException('AES 解密失败：拒绝未认证的旧版 AES-CBC 密文');
         }
 
         $decrypted = openssl_decrypt($encrypted, 'AES-256-CBC', $paddedKey, OPENSSL_RAW_DATA, $iv);
+        if ($decrypted === false) {
+            throw new SaTokenException('AES 解密失败');
+        }
+
+        return $decrypted;
+    }
+
+    /**
+     * 解密未认证的历史 AES-CBC 密文，仅用于受控的数据迁移。
+     *
+     * 历史格式不含 MAC，无法检测密文篡改；不要在请求处理或任何不可信输入路径中调用。
+     * 迁移后应立即用 aesEncrypt() 重新加密，并删除旧密文。
+     *
+     * @throws SaTokenException
+     */
+    public function aesDecryptLegacy(string $data, ?string $key = null): string
+    {
+        $key = $key ?? $this->aesKey;
+        if ($key === '') {
+            throw new SaTokenException('AES 密钥未配置');
+        }
+
+        $decoded = base64_decode($data, true);
+        if ($decoded === false) {
+            throw new SaTokenException('AES 解密失败：无效的 Base64 数据');
+        }
+        if (str_starts_with($decoded, self::AEAD_MAGIC)) {
+            throw new SaTokenException('AES 解密失败：认证格式不得使用旧版解密器');
+        }
+
+        $ivLength = openssl_cipher_iv_length('AES-256-CBC') ?: 16;
+        $iv = substr($decoded, 0, $ivLength);
+        $encrypted = substr($decoded, $ivLength);
+        $decrypted = openssl_decrypt($encrypted, 'AES-256-CBC', $this->padAesKey($key), OPENSSL_RAW_DATA, $iv);
         if ($decrypted === false) {
             throw new SaTokenException('AES 解密失败');
         }
@@ -180,6 +218,9 @@ class SaTokenCrypto
         if ($key === false) {
             throw new SaTokenException('RSA 私钥加载失败');
         }
+        if (!$this->isSecureRsaKey($key)) {
+            throw new SaTokenException('RSA 私钥类型无效或密钥长度不足 2048 位');
+        }
 
         $result = openssl_sign($data, $signature, $key, OPENSSL_ALGO_SHA256);
         if (!$result) {
@@ -208,9 +249,12 @@ class SaTokenCrypto
         if ($key === false) {
             return false;
         }
+        if (!$this->isSecureRsaKey($key)) {
+            return false;
+        }
 
         $signature = base64_decode($sign, true);
-        if ($signature === false) {
+        if ($signature === false || base64_encode($signature) !== $sign) {
             return false;
         }
 
@@ -232,6 +276,7 @@ class SaTokenCrypto
         if ($key === '') {
             throw new SaTokenException('HMAC 密钥未配置');
         }
+        self::validateHmacKey($key);
 
         return hash_hmac('sha256', $data, $key);
     }
@@ -267,21 +312,43 @@ class SaTokenCrypto
 
     public static function hmacSha256(string $data, string $key): string
     {
+        self::validateHmacKey($key);
         return hash_hmac('sha256', $data, $key);
     }
 
     public static function hmacSha1(string $data, string $key): string
     {
+        self::validateHmacKey($key);
         return hash_hmac('sha1', $data, $key);
+    }
+
+    private static function validateHmacKey(string $key): void
+    {
+        if (strlen($key) < self::MIN_HMAC_KEY_BYTES) {
+            throw new SaTokenException('HMAC 密钥长度不足，至少需要 ' . self::MIN_HMAC_KEY_BYTES . ' 字节');
+        }
     }
 
     public static function bcryptVerify(string $data, string $hash): bool
     {
+        // bcrypt only incorporates the first 72 bytes. Accepting longer input
+        // would make distinct passwords verify as the same credential.
+        if (strlen($data) > 72) {
+            return false;
+        }
+
         return password_verify($data, $hash);
     }
 
     public static function bcryptHash(string $data, int $cost = 10): string
     {
+        if (strlen($data) > 72) {
+            throw new SaTokenException('bcrypt 密码不能超过 72 字节');
+        }
+        if ($cost < 10 || $cost > 31) {
+            throw new SaTokenException('bcrypt cost 必须在 10 到 31 之间');
+        }
+
         return password_hash($data, PASSWORD_BCRYPT, ['cost' => $cost]);
     }
 
@@ -340,5 +407,14 @@ class SaTokenCrypto
             $publicKey = $content;
         }
         return openssl_pkey_get_public($publicKey);
+    }
+
+    protected function isSecureRsaKey(\OpenSSLAsymmetricKey $key): bool
+    {
+        $details = openssl_pkey_get_details($key);
+        return is_array($details)
+            && ($details['type'] ?? null) === OPENSSL_KEYTYPE_RSA
+            && is_int($details['bits'] ?? null)
+            && $details['bits'] >= 2048;
     }
 }

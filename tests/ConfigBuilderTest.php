@@ -51,14 +51,14 @@ class ConfigBuilderTest extends TestCase
     {
         $config = SaTokenConfigBuilder::create()
             ->aesKey('test-aes-key-32-bytes-long!')
-            ->signKey('test-sign-key')
+            ->signKey('test-sign-key-with-at-least-32-bytes-long')
             ->signAlg('sha256')
             ->tokenEncrypt(true)
             ->tokenFingerprint(true)
             ->build();
 
         $this->assertSame('test-aes-key-32-bytes-long!', $config->getAesKey());
-        $this->assertSame('test-sign-key', $config->getSignKey());
+        $this->assertSame('test-sign-key-with-at-least-32-bytes-long', $config->getSignKey());
         $this->assertSame('sha256', $config->getSignAlg());
         $this->assertTrue($config->isTokenEncrypt());
         $this->assertTrue($config->isTokenFingerprint());

@@ -8,6 +8,7 @@ use SaToken\Data\SaLoginDevice;
 use SaToken\Exception\DisableServiceException;
 use SaToken\Exception\NotLoginException;
 use SaToken\Exception\NotSafeException;
+use SaToken\Exception\SaTokenException;
 use SaToken\Security\SaAntiBruteUtil;
 use SaToken\Security\SaAuditLog;
 use SaToken\Security\SaIpAnomalyDetector;
@@ -52,6 +53,7 @@ trait StpLogicSecurityTrait
 
     public function openSafe(int $safeTime, string $service = 'default'): void
     {
+        $this->checkLogin();
         $tokenValue = $this->getTokenValue();
         if ($tokenValue === null) {
             throw new NotLoginException('未登录，请先登录', NotLoginException::NOT_LOGIN);
@@ -68,6 +70,12 @@ trait StpLogicSecurityTrait
 
     public function isSafe(string $service = 'default'): bool
     {
+        try {
+            $this->checkLogin();
+        } catch (NotLoginException) {
+            return false;
+        }
+
         $tokenValue = $this->getTokenValue();
         if ($tokenValue === null) {
             return false;
@@ -86,6 +94,11 @@ trait StpLogicSecurityTrait
 
     public function switchTo(mixed $loginId): void
     {
+        if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
+            throw new SaTokenException('切换身份必须是非空、非布尔标量');
+        }
+
+        $this->checkLogin();
         $tokenValue = $this->getTokenValue();
         if ($tokenValue === null) {
             throw new NotLoginException('未登录，请先登录', NotLoginException::NOT_LOGIN);
@@ -107,6 +120,12 @@ trait StpLogicSecurityTrait
         if ($tokenValue === null) {
             return;
         }
+
+        // Do not emit a switch-back event with another loginType's identity.
+        if ($this->getLoginIdByToken($tokenValue) === null) {
+            return;
+        }
+
         $this->tokenManager->clearSwitch($tokenValue, $this->loginType);
         $loginId = $this->tokenManager->getLoginIdByToken($tokenValue);
         if ($loginId !== null) {
@@ -127,8 +146,9 @@ trait StpLogicSecurityTrait
     {
         $config = $this->getConfig();
         $maxFailures = $config->getAntiBruteMaxFailures();
+        $ipMaxFailures = $config->getAntiBruteIpMaxFailures();
 
-        if ($maxFailures <= 0) {
+        if ($maxFailures <= 0 && $ipMaxFailures <= 0) {
             return;
         }
 
@@ -139,27 +159,27 @@ trait StpLogicSecurityTrait
     {
         $config = $this->getConfig();
         $maxFailures = $config->getAntiBruteMaxFailures();
+        $ipMaxFailures = $config->getAntiBruteIpMaxFailures();
 
-        if ($maxFailures <= 0) {
+        if ($maxFailures <= 0 && $ipMaxFailures <= 0) {
             return;
         }
 
         SaAntiBruteUtil::recordFailure($account, $this->loginType);
-
-        if (SaAntiBruteUtil::getFailCount($account, $this->loginType) >= $maxFailures) {
-            $lockDuration = $config->getAntiBruteLockDuration();
-            SaAntiBruteUtil::lock($account, $this->loginType, $lockDuration);
-        }
     }
 
-    protected function clearAntiBruteFailures(mixed $loginId): void
+    /** Release the reserved source slot and clear this account's failures after credentials are accepted. */
+    public function clearAntiBruteFailures(mixed $loginId): void
     {
         $config = $this->getConfig();
-        if ($config->getAntiBruteMaxFailures() <= 0) {
+        if ($config->getAntiBruteMaxFailures() <= 0 && $config->getAntiBruteIpMaxFailures() <= 0) {
             return;
         }
 
-        SaAntiBruteUtil::clearFailures(is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : ''), $this->loginType);
+        SaAntiBruteUtil::clearCurrentAccountFailures(
+            is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : ''),
+            $this->loginType
+        );
     }
 
     public function isAccountLocked(string $account): bool
@@ -214,13 +234,21 @@ trait StpLogicSecurityTrait
     public function openSensitiveVerify(string $scene, int $validSeconds = 600): string
     {
         $loginId = $this->getLoginIdAsNotNull();
-        return SaSensitiveVerify::createSafeToken($scene, $loginId, $this->loginType, $validSeconds);
+        $tokenValue = $this->getTokenValue();
+        if ($tokenValue === null) {
+            throw new NotLoginException('未登录，请先登录', NotLoginException::NOT_LOGIN);
+        }
+        return SaSensitiveVerify::createSafeTokenAfterVerified($scene, $loginId, $this->loginType, $validSeconds, $tokenValue);
     }
 
     public function checkSensitiveVerify(string $scene, string $token): void
     {
         $loginId = $this->getLoginIdAsNotNull();
-        SaSensitiveVerify::verifySafeTokenAndThrow($scene, $token, $loginId, $this->loginType);
+        $tokenValue = $this->getTokenValue();
+        if ($tokenValue === null) {
+            throw new NotLoginException('未登录，请先登录', NotLoginException::NOT_LOGIN);
+        }
+        SaSensitiveVerify::verifySafeTokenAndThrow($scene, $token, $loginId, $this->loginType, $tokenValue);
     }
 
     public function generateOtpCode(string $scene): string
@@ -229,16 +257,20 @@ trait StpLogicSecurityTrait
         return SaSensitiveVerify::generateCode($scene, $loginId, $this->loginType);
     }
 
-    public function sendOtpCode(string $scene): string
+    public function sendOtpCode(string $scene): void
     {
         $loginId = $this->getLoginIdAsNotNull();
-        return SaSensitiveVerify::sendCode($scene, $loginId, $this->loginType);
+        SaSensitiveVerify::sendCode($scene, $loginId, $this->loginType);
     }
 
     public function verifyOtpCode(string $scene, string $code): void
     {
         $loginId = $this->getLoginIdAsNotNull();
-        SaSensitiveVerify::verifyCodeAndThrow($scene, $code, $loginId, $this->loginType);
+        $tokenValue = $this->getTokenValue();
+        if ($tokenValue === null) {
+            throw new NotLoginException('未登录，请先登录', NotLoginException::NOT_LOGIN);
+        }
+        SaSensitiveVerify::verifyCodeAndThrow($scene, $code, $loginId, $this->loginType, $tokenValue);
 
         // 验证成功后同步打开 token 级二级认证窗口（默认 60 秒）：
         // 否则 #[SaCheckSafe('otp')] 永远失败（checkSafe 只认 openSafe 状态），
@@ -249,10 +281,11 @@ trait StpLogicSecurityTrait
     public function isSensitiveVerified(string $scene): bool
     {
         $loginId = $this->getLoginId();
-        if ($loginId === null) {
+        $tokenValue = $this->getTokenValue();
+        if ($loginId === null || $tokenValue === null) {
             return false;
         }
-        return SaSensitiveVerify::isVerified($scene, $loginId, $this->loginType);
+        return SaSensitiveVerify::isVerified($scene, $loginId, $this->loginType, $tokenValue);
     }
 
     public function clearSensitiveVerify(string $scene): void
@@ -289,7 +322,18 @@ trait StpLogicSecurityTrait
      */
     public function getAuditLog(string $id): ?array
     {
-        return SaAuditLog::getLog($id, $this->loginType);
+        $loginId = $this->getLoginId();
+        if ($loginId === null) {
+            return null;
+        }
+
+        $log = SaAuditLog::getLog($id, $this->loginType);
+        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
+        if ($log === null || ($log['loginId'] ?? null) !== $loginIdStr) {
+            return null;
+        }
+
+        return $log;
     }
 
     /**
@@ -307,7 +351,7 @@ trait StpLogicSecurityTrait
 
     public function kickoutDevice(mixed $loginId, string $deviceId): void
     {
-        SaLoginDeviceManager::kickoutDevice($loginId, $deviceId, $this->loginType);
+        SaLoginDeviceManager::kickoutDevice($loginId, $deviceId, $this->loginType, $this);
     }
 
     public function kickoutAllDevices(mixed $loginId, ?string $exceptToken = null): int
@@ -353,11 +397,12 @@ trait StpLogicSecurityTrait
         $result = [];
         foreach ($tokens as $item) {
             $deviceType = $item['deviceType'] ?? '';
-            $itemTokenValue = $item['tokenValue'] ?? '';
             $createTime = $item['createTime'] ?? 0;
             $result[] = new SaTerminalInfo([
                 'deviceType' => is_string($deviceType) ? $deviceType : '',
-                'tokenValue' => is_string($itemTokenValue) ? $itemTokenValue : '',
+                // A loginId may be supplied by an untrusted caller. Never turn
+                // this metadata query into a bearer-token disclosure endpoint.
+                'tokenValue' => '',
                 'createTime' => is_int($createTime) ? $createTime : 0,
             ]);
         }

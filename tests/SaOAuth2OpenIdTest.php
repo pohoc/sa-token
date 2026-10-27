@@ -13,6 +13,7 @@ use SaToken\OAuth2\Data\SaOAuth2Client;
 use SaToken\OAuth2\Data\SaOAuth2IdToken;
 use SaToken\OAuth2\SaOAuth2Config;
 use SaToken\OAuth2\SaOAuth2Handle;
+use SaToken\OAuth2\Strategy\ImplicitStrategy;
 use SaToken\SaToken;
 
 class SaOAuth2OpenIdTest extends TestCase
@@ -21,10 +22,24 @@ class SaOAuth2OpenIdTest extends TestCase
     protected SaOAuth2Config $config;
     protected SaOAuth2Client $testClient;
     protected string $clientSecret;
+    protected string $rsaPrivateKey;
+    protected string $rsaPublicKey;
 
     protected function setUp(): void
     {
         SaToken::reset();
+        $rsaKey = openssl_pkey_new(['private_key_type' => OPENSSL_KEYTYPE_RSA, 'private_key_bits' => 2048]);
+        self::assertInstanceOf(\OpenSSLAsymmetricKey::class, $rsaKey);
+        $rsaPrivateKey = '';
+        self::assertTrue(openssl_pkey_export($rsaKey, $rsaPrivateKey));
+        if (!is_string($rsaPrivateKey)) {
+            self::fail('RSA private key export did not return a string.');
+        }
+        $this->rsaPrivateKey = $rsaPrivateKey;
+        $rsaDetails = openssl_pkey_get_details($rsaKey);
+        self::assertIsArray($rsaDetails);
+        self::assertIsString($rsaDetails['key'] ?? null);
+        $this->rsaPublicKey = $rsaDetails['key'];
         SaToken::setConfig(new SaTokenConfig([
             'tokenName'       => 'satoken',
             'timeout'         => 86400,
@@ -35,11 +50,12 @@ class SaOAuth2OpenIdTest extends TestCase
             'isWriteCookie'   => false,
             'isWriteHeader'   => false,
             'jwtSecretKey'    => 'test-jwt-secret-key-for-oauth2-id-token-32b',
+            'rsaPrivateKey'   => $this->rsaPrivateKey,
         ]));
         SaToken::setDao(new SaTokenDaoMemory());
 
         $this->config = new SaOAuth2Config([
-            'grantTypes'          => ['authorization_code', 'password', 'client_credentials'],
+            'grantTypes'          => ['authorization_code', 'password', 'client_credentials', 'implicit'],
             'codeTimeout'         => 300,
             'accessTokenTimeout'  => 7200,
             'refreshTokenTimeout' => 86400,
@@ -68,9 +84,24 @@ class SaOAuth2OpenIdTest extends TestCase
         SaToken::reset();
     }
 
+    private function issueIdToken(SaOAuth2Handle $handle, string $clientId, mixed $loginId, string $scope, string $nonce = '', string $accessToken = ''): SaOAuth2IdToken
+    {
+        $method = new \ReflectionMethod(SaOAuth2Handle::class, 'issueIdToken');
+        /** @var SaOAuth2IdToken $idToken */
+        $idToken = $method->invoke($handle, $clientId, $loginId, $scope, $nonce, $accessToken);
+        return $idToken;
+    }
+
+    public function testPublicIdTokenSignerRejectsCallerChosenSubject(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('ID Token 必须通过已验证的 OAuth 授权流程签发');
+        $this->handle->generateIdToken('test-client', 'attacker-chosen-subject', 'openid');
+    }
+
     public function testGenerateIdToken(): void
     {
-        $idToken = $this->handle->generateIdToken('test-client', 10001, 'openid profile');
+        $idToken = $this->issueIdToken($this->handle, 'test-client', 10001, 'openid profile');
 
         $this->assertInstanceOf(SaOAuth2IdToken::class, $idToken);
         $this->assertEquals('10001', $idToken->getSubject());
@@ -81,9 +112,133 @@ class SaOAuth2OpenIdTest extends TestCase
         $this->assertGreaterThan($idToken->getIssuedAt(), $idToken->getExpiresAt());
     }
 
+    public function testGenerateIdTokenRejectsUnregisteredAudience(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('未注册的客户端');
+
+        $this->issueIdToken($this->handle, 'unregistered-client', 10001, 'openid');
+    }
+
+    public function testGenerateIdTokenRejectsScopeOutsideClientGrant(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('请求了未授予的 scope');
+
+        $this->issueIdToken($this->handle, 'test-client', 10001, 'openid admin');
+    }
+
+    public function testGenerateIdTokenRejectsInvalidSubject(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('loginId 不能为空且必须是非布尔标量');
+
+        $this->issueIdToken($this->handle, 'test-client', false, 'openid');
+    }
+
+    public function testGenerateIdTokenRequiresOpenIdModeAndOpenidScope(): void
+    {
+        $nonOpenIdHandle = new SaOAuth2Handle(new SaOAuth2Config([
+            'issuer' => 'https://my-app.example.com',
+        ]));
+        $nonOpenIdHandle->registerClient($this->testClient);
+
+        try {
+            $this->issueIdToken($nonOpenIdHandle, 'test-client', 10001, 'openid');
+            self::fail('ID Token issuance must require OpenID mode');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('启用 OpenID Connect', $exception->getMessage());
+        }
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('请求 openid scope');
+        $this->issueIdToken($this->handle, 'test-client', 10001, 'profile');
+    }
+
+    public function testGenerateIdTokenRejectsPayloadThatCannotBeEncoded(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('OAuth2 ID Token Payload 无法编码为 JSON');
+
+        $this->issueIdToken($this->handle, 'test-client', "invalid-\xB1-subject", 'openid');
+    }
+
+    public function testGenerateIdTokenRejectsMissingAsymmetricSigningKey(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(['jwtSecretKey' => 'short-secret']));
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('RSA 私钥未配置');
+        $this->issueIdToken($this->handle, 'test-client', 10001, 'openid');
+    }
+
+    public function testGenerateIdTokenRejectsInvalidIssuer(): void
+    {
+        $config = new SaOAuth2Config([
+            'openIdMode' => true,
+            'issuer' => 'http://my-app.example.com',
+        ]);
+        $handle = new SaOAuth2Handle($config);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('HTTPS issuer URL');
+        $this->issueIdToken($handle, 'test-client', 10001, 'openid');
+    }
+
+    public function testOpenIdTokenIssuanceFailsBeforePersistingAccessTokenWithoutIssuer(): void
+    {
+        $handle = new SaOAuth2Handle(new SaOAuth2Config([
+            'openIdMode' => true,
+        ]));
+        $handle->registerClient($this->testClient);
+        $code = $handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback', 'openid');
+        $before = SaToken::getDao()->size();
+
+        try {
+            $handle->exchangeTokenByCode($code->getCode(), 'test-client', $this->clientSecret, 'https://example.com/callback');
+            self::fail('OIDC access token issuance must reject a missing issuer');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('HTTPS issuer URL', $exception->getMessage());
+        }
+
+        self::assertSame($before, SaToken::getDao()->size());
+    }
+
+    public function testInvalidIssuerDoesNotConsumeAuthorizationCode(): void
+    {
+        $this->config->setIssuer('');
+        $code = $this->handle->generateAuthorizationCode(
+            'test-client',
+            10001,
+            'https://example.com/callback',
+            'openid profile'
+        );
+
+        try {
+            $this->handle->exchangeTokenByCode(
+                $code->getCode(),
+                'test-client',
+                $this->clientSecret,
+                'https://example.com/callback'
+            );
+            self::fail('OIDC code exchange must reject a missing issuer');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('HTTPS issuer URL', $exception->getMessage());
+        }
+
+        $this->config->setIssuer('https://my-app.example.com');
+        $token = $this->handle->exchangeTokenByCode(
+            $code->getCode(),
+            'test-client',
+            $this->clientSecret,
+            'https://example.com/callback'
+        );
+        self::assertNotEmpty($token->getIdToken());
+    }
+
     public function testIdTokenContainsJwtString(): void
     {
-        $idToken = $this->handle->generateIdToken('test-client', 10001, 'openid');
+        $idToken = $this->issueIdToken($this->handle, 'test-client', 10001, 'openid');
         $jwtStr = $idToken->getIdToken();
 
         $this->assertNotEmpty($jwtStr);
@@ -101,7 +256,7 @@ class SaOAuth2OpenIdTest extends TestCase
         $header = json_decode($headerDecoded, true);
         $this->assertIsArray($header);
         $this->assertEquals('JWT', $header['typ']);
-        $this->assertEquals('HS256', $header['alg']);
+        $this->assertEquals('RS256', $header['alg']);
 
         $payloadDecoded = base64_decode(strtr($parts[1], '-_', '+/'), true);
         $this->assertNotFalse($payloadDecoded);
@@ -110,6 +265,9 @@ class SaOAuth2OpenIdTest extends TestCase
         $this->assertEquals('10001', $payload['sub']);
         $this->assertEquals('test-client', $payload['aud']);
         $this->assertEquals('https://my-app.example.com', $payload['iss']);
+        $signature = base64_decode(strtr($parts[2], '-_', '+/'), true);
+        $this->assertIsString($signature);
+        $this->assertSame(1, openssl_verify($parts[0] . '.' . $parts[1], $signature, $this->rsaPublicKey, OPENSSL_ALGO_SHA256));
     }
 
     public function testAccessTokenIncludesIdTokenWhenOpenIdMode(): void
@@ -133,6 +291,136 @@ class SaOAuth2OpenIdTest extends TestCase
 
         $parts = explode('.', $accessToken->getIdToken());
         $this->assertCount(3, $parts, 'id_token should be a valid JWT');
+    }
+
+    public function testAuthorizationNonceIsPresentInReturnedAndStoredIdToken(): void
+    {
+        $nonce = 'client-generated-oidc-nonce';
+        $code = $this->handle->generateAuthorizationCode(
+            'test-client',
+            10001,
+            'https://example.com/callback',
+            'openid profile',
+            nonce: $nonce
+        );
+
+        $issued = $this->handle->exchangeTokenByCode(
+            $code->getCode(),
+            'test-client',
+            $this->clientSecret,
+            'https://example.com/callback'
+        );
+        $stored = $this->handle->validateAccessToken($issued->getAccessToken());
+
+        self::assertNotNull($stored);
+        self::assertSame($issued->getIdToken(), $stored->getIdToken());
+        $idTokenParts = explode('.', $stored->getIdToken());
+        self::assertCount(3, $idTokenParts);
+        $payloadJson = base64_decode(strtr($idTokenParts[1], '-_', '+/') . str_repeat('=', (4 - strlen($idTokenParts[1]) % 4) % 4), true);
+        self::assertIsString($payloadJson);
+        $payload = json_decode($payloadJson, true);
+        self::assertIsArray($payload);
+        self::assertSame($nonce, $payload['nonce'] ?? null);
+    }
+
+    public function testClientCredentialsCannotMintOpenIdOrRefreshTokens(): void
+    {
+        $clientId = 'machine-client';
+        $secret = 'machine-client-secret-with-at-least-32-bytes';
+        $client = new SaOAuth2Client([
+            'clientId' => $clientId,
+            'clientSecret' => $secret,
+            'grantTypes' => ['client_credentials'],
+            'scopes' => ['read', 'openid'],
+        ]);
+        $this->handle->registerClient($client);
+
+        $accessToken = $this->handle->tokenByClientCredentials($clientId, $secret, 'read');
+        self::assertSame('', $accessToken->getIdToken());
+        self::assertNull($accessToken->getRefreshToken());
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('client_credentials 不允许请求 openid scope');
+        $this->handle->tokenByClientCredentials($clientId, $secret, 'openid');
+    }
+
+    public function testPasswordGrantCannotMintOpenIdToken(): void
+    {
+        $this->handle->setUserCredentialsValidator(static fn (): int => 10001);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('OpenID Connect 不支持密码授权请求 openid scope');
+        $this->handle->tokenByPassword(
+            'test-client',
+            $this->clientSecret,
+            'user',
+            'password',
+            'openid profile'
+        );
+    }
+
+    public function testPasswordGrantRejectsOversizedScopeBeforeCredentialValidation(): void
+    {
+        $credentialValidatorCalled = false;
+        $this->handle->setUserCredentialsValidator(static function () use (&$credentialValidatorCalled): int {
+            $credentialValidatorCalled = true;
+            return 10001;
+        });
+
+        try {
+            $this->handle->tokenByPassword(
+                'test-client',
+                $this->clientSecret,
+                'user',
+                'password',
+                str_repeat('read ', 820)
+            );
+            self::fail('Expected oversized scope to be rejected');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('scope 长度不能超过', $exception->getMessage());
+        }
+
+        self::assertFalse($credentialValidatorCalled);
+    }
+
+    public function testImplicitOpenIdFlowRequiresNonceAndIncludesAccessTokenHash(): void
+    {
+        $implicitClient = new SaOAuth2Client([
+            'clientId' => 'implicit-client',
+            'clientSecret' => 'implicit-client-secret-at-least-32-bytes',
+            'redirectUris' => ['https://example.com/callback'],
+            'grantTypes' => ['implicit'],
+            'scopes' => ['openid', 'profile'],
+        ]);
+        $this->handle->registerClient($implicitClient);
+        $strategy = new ImplicitStrategy($this->handle);
+
+        try {
+            $strategy->authorize('implicit-client', 10001, 'openid profile', 'https://example.com/callback');
+            self::fail('OIDC implicit flow must reject a missing nonce');
+        } catch (SaTokenException $exception) {
+            self::assertSame('OpenID Connect 隐式授权必须提供 nonce', $exception->getMessage());
+        }
+
+        $nonce = 'implicit-client-nonce';
+        $accessToken = $strategy->authorize(
+            'implicit-client',
+            10001,
+            'openid profile',
+            'https://example.com/callback',
+            $nonce
+        );
+        $parts = explode('.', $accessToken->getIdToken());
+        self::assertCount(3, $parts);
+        $payloadJson = base64_decode(strtr($parts[1], '-_', '+/') . str_repeat('=', (4 - strlen($parts[1]) % 4) % 4), true);
+        self::assertIsString($payloadJson);
+        $payload = json_decode($payloadJson, true);
+        self::assertIsArray($payload);
+        self::assertSame($nonce, $payload['nonce'] ?? null);
+        self::assertSame(
+            rtrim(strtr(base64_encode(substr(hash('sha256', $accessToken->getAccessToken(), true), 0, 16)), '+/', '-_'), '='),
+            $payload['at_hash'] ?? null
+        );
     }
 
     public function testScopeContainsOpenid(): void
@@ -169,6 +457,20 @@ class SaOAuth2OpenIdTest extends TestCase
         $this->assertTrue($this->handle->checkScope($accessToken->getAccessToken(), 'read'));
         $this->assertTrue($this->handle->checkScope($accessToken->getAccessToken(), 'write'));
         $this->assertFalse($this->handle->checkScope($accessToken->getAccessToken(), 'admin'));
+        $this->assertFalse($this->handle->checkScope($accessToken->getAccessToken(), ''));
+        $this->assertFalse($this->handle->checkScope($accessToken->getAccessToken(), ' '));
+    }
+
+    public function testWhitespaceOnlyScopeIsRejected(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('scope 不能只包含空白字符');
+        $this->handle->generateAuthorizationCode(
+            'test-client',
+            10001,
+            'https://example.com/callback',
+            '   '
+        );
     }
 
     public function testCheckScopeAndThrowThrowsOnMissingScope(): void

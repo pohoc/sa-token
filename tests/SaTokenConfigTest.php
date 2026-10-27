@@ -6,6 +6,7 @@ namespace SaToken\Tests;
 
 use PHPUnit\Framework\TestCase;
 use SaToken\Config\SaTokenConfig;
+use SaToken\Exception\SaTokenException;
 
 class SaTokenConfigTest extends TestCase
 {
@@ -42,6 +43,14 @@ class SaTokenConfigTest extends TestCase
         $this->assertEquals('sm', $config->getCryptoType());
     }
 
+    public function testUnknownCryptoTypeIsRejected(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('不支持的加密类型');
+
+        new SaTokenConfig(['cryptoType' => 'smm']);
+    }
+
     public function testChainSetting(): void
     {
         $config = new SaTokenConfig();
@@ -52,6 +61,93 @@ class SaTokenConfigTest extends TestCase
         $this->assertEquals('chain-token', $config->getTokenName());
         $this->assertEquals(3600, $config->getTimeout());
         $this->assertFalse($config->isReadHeader());
+    }
+
+    public function testTokenTimeoutMustBePositiveOrExplicitlyPermanent(): void
+    {
+        foreach ([0, -2] as $timeout) {
+            try {
+                (new SaTokenConfig())->setTimeout($timeout);
+                $this->fail('仅 -1 可表示永不过期');
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('有效期', $e->getMessage());
+            }
+        }
+    }
+
+    public function testActivityTimeoutMustBePositiveOrExplicitlyUnlimited(): void
+    {
+        foreach ([0, -2] as $timeout) {
+            try {
+                (new SaTokenConfig())->setActivityTimeout($timeout);
+                $this->fail('仅 -1 可表示不限制活动超时');
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('活动超时', $e->getMessage());
+            }
+        }
+    }
+
+    public function testMaxLoginCountMustBePositiveOrExplicitlyUnlimited(): void
+    {
+        foreach ([0, -2] as $count) {
+            try {
+                (new SaTokenConfig())->setMaxLoginCount($count);
+                $this->fail('仅 -1 可表示不限制登录数');
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('最大登录数', $e->getMessage());
+            }
+        }
+    }
+
+    public function testRefreshTokenTimeoutMustBePositiveOrExplicitlyPermanent(): void
+    {
+        foreach ([0, -2, PHP_INT_MAX] as $timeout) {
+            try {
+                (new SaTokenConfig())->setRefreshTokenTimeout($timeout);
+                $this->fail('Refresh Token 有效期必须为正数或 -1');
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('有效期', $e->getMessage());
+            }
+        }
+
+        $config = new SaTokenConfig(['refreshTokenTimeout' => -1]);
+        $this->assertSame(-1, $config->getRefreshTokenTimeout());
+    }
+
+    public function testAntiBruteFailureThresholdUsesOnlyZeroAsDisabledSentinel(): void
+    {
+        try {
+            (new SaTokenConfig())->setAntiBruteMaxFailures(-1);
+            $this->fail('负数阈值不能关闭防暴力破解');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('非负整数', $e->getMessage());
+        }
+
+        $config = new SaTokenConfig(['antiBruteMaxFailures' => 0]);
+        $this->assertSame(0, $config->getAntiBruteMaxFailures());
+    }
+
+    public function testAntiBruteLockDurationMustBePositive(): void
+    {
+        foreach ([0, -1, -2, PHP_INT_MAX] as $duration) {
+            try {
+                (new SaTokenConfig())->setAntiBruteLockDuration($duration);
+                $this->fail("无效防暴力破解锁定时长 {$duration} 应被拒绝");
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('锁定时长', $e->getMessage());
+            }
+        }
+
+        $config = new SaTokenConfig(['antiBruteLockDuration' => 1]);
+        $this->assertSame(1, $config->getAntiBruteLockDuration());
+    }
+
+    public function testShortSigningKeyIsRejected(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('签名密钥长度不足');
+
+        new SaTokenConfig(['signKey' => 'weak-key']);
     }
 
     public function testToArray(): void

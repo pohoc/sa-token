@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace SaToken\Util;
 
+use SaToken\Exception\SaTokenException;
+
 /**
  * 请求上下文抽象
  *
@@ -41,6 +43,15 @@ class SaTokenContext
      */
     protected static array $pendingCookiesMap = [];
 
+    /** @var array<string, array<string, string>> Request-scoped authentication token overrides by login type. */
+    protected static array $tokenOverridesMap = [];
+
+    /** @var array<string, true> Requests that must not fall back to native bearer credentials after auth failure. */
+    protected static array $tokenFallbackDeniedMap = [];
+
+    /** @var array<string, array<string, mixed>> Request-local extension state. */
+    protected static array $requestScopedValuesMap = [];
+
     /**
      * Cookie 存储键前缀
      * @var string
@@ -68,9 +79,22 @@ class SaTokenContext
         if (class_exists(\Hyperf\Coroutine\Coroutine::class)) {
             $coroutineId = \Hyperf\Coroutine\Coroutine::id();
             if (is_int($coroutineId) && $coroutineId > 0) {
-                return (string) $coroutineId;
+                return 'hyperf:' . $coroutineId;
             }
         }
+
+        if (class_exists(\Swoole\Coroutine::class)) {
+            $coroutineId = \Swoole\Coroutine::getCid();
+            if (is_int($coroutineId) && $coroutineId >= 0) {
+                return 'swoole:' . $coroutineId;
+            }
+        }
+
+        $fiber = \Fiber::getCurrent();
+        if ($fiber !== null) {
+            return 'fiber:' . spl_object_id($fiber);
+        }
+
         return self::$contextId;
     }
 
@@ -82,7 +106,23 @@ class SaTokenContext
      */
     public static function setRequest(mixed $request): void
     {
-        self::$requestMap[self::getContextId()] = $request;
+        $contextId = self::getContextId();
+        self::$requestMap[$contextId] = $request;
+        // A reused context ID must not retain the previous request's response
+        // or deferred headers/cookies, which could otherwise receive or expose
+        // another user's authentication credentials.
+        unset(
+            self::$responseMap[$contextId],
+            self::$pendingHeadersMap[$contextId],
+            self::$pendingCookiesMap[$contextId],
+            self::$tokenOverridesMap[$contextId],
+            self::$tokenFallbackDeniedMap[$contextId],
+            self::$requestScopedValuesMap[$contextId]
+        );
+        // SaRouter caches the normalized request path by context ID. A long-
+        // running worker may reuse that ID even if cleanup was skipped after
+        // an exception, so every new request starts with fresh route state.
+        \SaToken\SaRouter::clearContext();
     }
 
     /**
@@ -130,8 +170,66 @@ class SaTokenContext
             self::$requestMap[$id],
             self::$responseMap[$id],
             self::$pendingHeadersMap[$id],
-            self::$pendingCookiesMap[$id]
+            self::$pendingCookiesMap[$id],
+            self::$tokenOverridesMap[$id],
+            self::$tokenFallbackDeniedMap[$id],
+            self::$requestScopedValuesMap[$id]
         );
+    }
+
+    public static function setRequestScopedValue(string $key, mixed $value): void
+    {
+        self::$requestScopedValuesMap[self::getContextId()][$key] = $value;
+    }
+
+    public static function getRequestScopedValue(string $key, mixed $default = null): mixed
+    {
+        return self::$requestScopedValuesMap[self::getContextId()][$key] ?? $default;
+    }
+
+    public static function removeRequestScopedValue(string $key): void
+    {
+        $id = self::getContextId();
+        unset(self::$requestScopedValuesMap[$id][$key]);
+        if ((self::$requestScopedValuesMap[$id] ?? []) === []) {
+            unset(self::$requestScopedValuesMap[$id]);
+        }
+    }
+
+    public static function setTokenOverride(string $loginType, ?string $tokenValue): void
+    {
+        $id = self::getContextId();
+        if ($tokenValue === null) {
+            unset(self::$tokenOverridesMap[$id][$loginType]);
+            if ((self::$tokenOverridesMap[$id] ?? []) === []) {
+                unset(self::$tokenOverridesMap[$id]);
+            }
+            return;
+        }
+
+        self::$tokenOverridesMap[$id][$loginType] = $tokenValue;
+    }
+
+    public static function getTokenOverride(string $loginType): ?string
+    {
+        $id = self::getContextId();
+        if (array_key_exists($loginType, self::$tokenOverridesMap[$id] ?? [])) {
+            return self::$tokenOverridesMap[$id][$loginType];
+        }
+
+        return isset(self::$tokenFallbackDeniedMap[$id]) ? '' : null;
+    }
+
+    /** Prevent every login type in this request from falling back to native token sources. */
+    public static function denyTokenFallback(): void
+    {
+        $id = self::getContextId();
+        // A failed authentication attempt invalidates the request's effective
+        // identity as well as native credential fallback. Otherwise an earlier
+        // auth middleware's override could survive a later failed RPC/API-key
+        // check when the application catches that exception and continues.
+        unset(self::$tokenOverridesMap[$id]);
+        self::$tokenFallbackDeniedMap[$id] = true;
     }
 
     /** @var array<string> */
@@ -161,36 +259,145 @@ class SaTokenContext
             $serverParams = $request->getServerParams();
             $addr = $serverParams['REMOTE_ADDR'] ?? null;
             $remoteAddr = is_string($addr) ? $addr : null;
+        } elseif (is_object($request)) {
+            // When the library has an explicit proxy allowlist, resolve the
+            // forwarding chain from the raw peer address below. A framework's
+            // getClientIp()/ip() may trust a different proxy configuration and
+            // would otherwise bypass this allowlist entirely.
+            if (method_exists($request, 'getServerParams')) {
+                $serverParams = $request->getServerParams();
+                $addr = is_array($serverParams) ? ($serverParams['REMOTE_ADDR'] ?? null) : null;
+                $remoteAddr = is_string($addr) ? $addr : null;
+            } else {
+                // Symfony/Laravel request objects expose the raw peer address
+                // through their server ParameterBag instead of getServerParams().
+                $properties = get_object_vars($request);
+                $server = $properties['server'] ?? null;
+                if (is_array($server)) {
+                    $addr = $server['REMOTE_ADDR'] ?? null;
+                    $remoteAddr = is_string($addr) ? $addr : null;
+                } elseif (is_object($server)) {
+                    try {
+                        if (method_exists($server, 'get')) {
+                            $addr = $server->get('REMOTE_ADDR');
+                            $remoteAddr = is_string($addr) ? $addr : null;
+                        } elseif (method_exists($server, 'all')) {
+                            $serverParams = $server->all();
+                            $addr = is_array($serverParams) ? ($serverParams['REMOTE_ADDR'] ?? null) : null;
+                            $remoteAddr = is_string($addr) ? $addr : null;
+                        }
+                    } catch (\Throwable) {
+                        $remoteAddr = null;
+                    }
+                }
+            }
+
+            // Framework request wrappers commonly expose the resolved address
+            // directly (Laravel/Symfony: getClientIp; ThinkPHP: ip). Prefer
+            // that over forwarded headers, whose trust is adapter-specific.
+            if (empty(self::$trustedProxies)) {
+                foreach (['getClientIp', 'ip'] as $method) {
+                    if (method_exists($request, $method)) {
+                        $addr = $request->$method();
+                        if (is_string($addr) && $addr !== '') {
+                            $remoteAddr = $addr;
+                            break;
+                        }
+                    }
+                }
+            }
         }
 
         if (empty(self::$trustedProxies)) {
             return $remoteAddr;
         }
 
-        if ($remoteAddr === null || !in_array($remoteAddr, self::$trustedProxies, true)) {
-            return $remoteAddr;
+        if ($remoteAddr === null || !self::isTrustedProxyIp($remoteAddr)) {
+            return self::normalizeIpAddress($remoteAddr);
         }
 
-        $forwarded = self::getHeader('X-Forwarded-For');
+        $forwarded = self::getForwardedHeader('X-Forwarded-For');
         if ($forwarded !== null && $forwarded !== '') {
             $ips = array_map('trim', explode(',', $forwarded));
             for ($i = count($ips) - 1; $i >= 0; $i--) {
                 $ip = $ips[$i];
-                if (!in_array($ip, self::$trustedProxies, true)) {
-                    return $ip;
+                if (filter_var($ip, FILTER_VALIDATE_IP) === false) {
+                    // Never collapse malformed forwarded chains into the
+                    // trusted proxy's shared address: that would let one
+                    // client exhaust the brute-force bucket for every user
+                    // behind the proxy.
+                    return null;
+                }
+                if (!self::isTrustedProxyIp($ip)) {
+                    return self::normalizeIpAddress($ip);
                 }
             }
-            // 链上全部为可信代理时，XFF 最左值是最初代理写入的、可能被
-            // 伪造的字段；此时唯一可信的是直连地址 REMOTE_ADDR
-            return $remoteAddr;
+            // No client address can be established when every hop is itself
+            // trusted. Returning the proxy address would share lockout state
+            // across all clients behind that proxy.
+            return null;
         }
 
-        $realIp = self::getHeader('X-Real-IP');
-        if ($realIp !== null && $realIp !== '') {
-            return $realIp;
+        $realIp = self::getForwardedHeader('X-Real-IP');
+        if ($realIp !== null) {
+            return self::normalizeIpAddress($realIp);
         }
 
-        return $remoteAddr;
+        // A trusted proxy without a usable client-address header cannot be
+        // distinguished from every other client behind that proxy.
+        return null;
+    }
+
+    /** Compare proxy addresses by their packed IP representation, not text form. */
+    protected static function isTrustedProxyIp(string $ip): bool
+    {
+        $normalizedIp = self::normalizeIpAddress($ip);
+        if ($normalizedIp === null) {
+            return false;
+        }
+
+        foreach (self::$trustedProxies as $trustedProxy) {
+            if (!is_string($trustedProxy)) {
+                continue;
+            }
+            if ($normalizedIp === self::normalizeIpAddress($trustedProxy)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** Return a canonical IPv4/IPv6 string; malformed adapter values fail closed. */
+    protected static function normalizeIpAddress(?string $ip): ?string
+    {
+        if ($ip === null || filter_var($ip, FILTER_VALIDATE_IP) === false) {
+            return null;
+        }
+
+        $packed = inet_pton($ip);
+        if ($packed === false) {
+            return null;
+        }
+
+        $normalized = inet_ntop($packed);
+        return is_string($normalized) ? strtolower($normalized) : null;
+    }
+
+    protected static function getForwardedHeader(string $name): ?string
+    {
+        $request = self::getRequest();
+        if ($request instanceof \Psr\Http\Message\ServerRequestInterface) {
+            $values = $request->getHeader($name);
+            return $values !== [] ? implode(', ', $values) : null;
+        }
+
+        if (is_object($request) && method_exists($request, 'getHeaderLine')) {
+            $value = $request->getHeaderLine($name);
+            return is_string($value) && $value !== '' ? $value : null;
+        }
+
+        return self::getHeader($name);
     }
 
     /**
@@ -227,6 +434,84 @@ class SaTokenContext
     }
 
     /**
+     * 判断请求是否为指定 Header 提供了多个或被合并的值。
+     * 认证凭据不允许依赖不同代理/框架对重复 Header 的选取顺序。
+     */
+    public static function hasMultipleHeaderValues(string $name, bool $rejectCombinedValues = false): bool
+    {
+        $request = self::getRequest();
+        if ($request instanceof \Psr\Http\Message\ServerRequestInterface) {
+            $values = $request->getHeader($name);
+            return count($values) > 1
+                || ($rejectCombinedValues && self::containsCombinedHeaderValue($values));
+        }
+
+        if (!is_object($request)) {
+            return false;
+        }
+
+        // Laravel/Symfony expose the raw header values through a HeaderBag,
+        // while their convenience header() methods typically return only the
+        // first value. Inspect the bag before authenticating a credential.
+        $properties = get_object_vars($request);
+        $headerBag = $properties['headers'] ?? null;
+        if (is_object($headerBag) && method_exists($headerBag, 'all')) {
+            try {
+                $values = $headerBag->all($name);
+            } catch (\Throwable) {
+                // If a header bag is present but cannot be inspected reliably,
+                // fail closed for credentials rather than trusting header().
+                return true;
+            }
+
+            if (is_array($values)) {
+                if (array_is_list($values)) {
+                    return count($values) > 1
+                        || ($rejectCombinedValues && self::containsCombinedHeaderValue($values));
+                }
+                foreach ($values as $headerName => $headerValues) {
+                    if (is_string($headerName) && strcasecmp($headerName, $name) === 0) {
+                        return !is_array($headerValues)
+                            || count($headerValues) > 1
+                            || ($rejectCombinedValues && self::containsCombinedHeaderValue($headerValues));
+                    }
+                }
+                return false;
+            }
+
+            return true;
+        }
+
+        if (method_exists($request, 'header')) {
+            $values = $request->header($name);
+            if (is_array($values)) {
+                return count($values) > 1
+                    || ($rejectCombinedValues && self::containsCombinedHeaderValue($values));
+            }
+            return $rejectCombinedValues && is_string($values) && str_contains($values, ',');
+        }
+
+        if (method_exists($request, 'getHeaderLine')) {
+            $value = $request->getHeaderLine($name);
+            return $rejectCombinedValues && is_string($value) && str_contains($value, ',');
+        }
+
+        return false;
+    }
+
+    /** @param array<array-key, mixed> $values */
+    protected static function containsCombinedHeaderValue(array $values): bool
+    {
+        foreach ($values as $value) {
+            if (!is_string($value) || str_contains($value, ',')) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * 从请求 Cookie 中获取值
      *
      * @param  string      $name Cookie 名称
@@ -252,6 +537,95 @@ class SaTokenContext
         }
 
         return null;
+    }
+
+    /** Reject duplicate names in the raw Cookie header before trusting a parsed cookie map. */
+    public static function hasMultipleCookieValues(string $name): bool
+    {
+        $header = self::getCookieHeader();
+        if ($header === null || $header === '') {
+            return false;
+        }
+
+        $count = 0;
+        foreach (preg_split('/[;,]/', $header) ?: [] as $part) {
+            $separator = strpos($part, '=');
+            if ($separator === false || trim(substr($part, 0, $separator)) !== $name) {
+                continue;
+            }
+            if (++$count > 1) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    protected static function getCookieHeader(): ?string
+    {
+        $request = self::getRequest();
+        if ($request instanceof \Psr\Http\Message\ServerRequestInterface) {
+            $values = $request->getHeader('Cookie');
+            return self::joinCookieHeaderValues($values);
+        }
+
+        if (is_object($request)) {
+            $properties = get_object_vars($request);
+            $headerBag = $properties['headers'] ?? null;
+            if (is_object($headerBag) && method_exists($headerBag, 'all')) {
+                try {
+                    $values = $headerBag->all('Cookie');
+                } catch (\Throwable) {
+                    return null;
+                }
+                if (is_array($values)) {
+                    if (array_is_list($values)) {
+                        return self::joinCookieHeaderValues($values);
+                    }
+                    foreach ($values as $headerName => $headerValues) {
+                        if (is_string($headerName) && strcasecmp($headerName, 'Cookie') === 0
+                            && is_array($headerValues)) {
+                            return self::joinCookieHeaderValues($headerValues);
+                        }
+                    }
+                    return null;
+                }
+                return null;
+            }
+
+            if (method_exists($request, 'getHeaderLine')) {
+                $value = $request->getHeaderLine('Cookie');
+                return is_string($value) && $value !== '' ? $value : null;
+            }
+
+            if (method_exists($request, 'header')) {
+                $value = $request->header('Cookie');
+                if (is_array($value)) {
+                    return self::joinCookieHeaderValues($value);
+                }
+                return is_string($value) && $value !== '' ? $value : null;
+            }
+        }
+
+        return null;
+    }
+
+    /** @param array<array-key, mixed> $values */
+    protected static function joinCookieHeaderValues(array $values): ?string
+    {
+        if ($values === []) {
+            return null;
+        }
+
+        $strings = [];
+        foreach ($values as $value) {
+            if (!is_string($value)) {
+                return null;
+            }
+            $strings[] = $value;
+        }
+
+        return implode('; ', $strings);
     }
 
     /**
@@ -293,6 +667,100 @@ class SaTokenContext
         return null;
     }
 
+    /** Reject ambiguous credentials supplied more than once through request parameters. */
+    public static function hasConflictingParamValues(string $name): bool
+    {
+        $request = self::getRequest();
+        if ($request instanceof \Psr\Http\Message\ServerRequestInterface) {
+            $queryParams = $request->getQueryParams();
+            $body = $request->getParsedBody();
+            $rawQuery = $request->getUri()->getQuery();
+        } elseif (is_object($request)) {
+            // Laravel and Symfony expose their parsed query/body through public
+            // ParameterBag instances, while input() may merge those sources
+            // using framework-specific precedence rules.
+            $properties = get_object_vars($request);
+            $hasQueryBag = array_key_exists('query', $properties);
+            $hasBodyBag = array_key_exists('request', $properties);
+            if (!$hasQueryBag && !$hasBodyBag) {
+                return false;
+            }
+
+            $queryParams = $hasQueryBag ? self::getParameterBagValues($properties['query']) : [];
+            $body = $hasBodyBag ? self::getParameterBagValues($properties['request']) : [];
+            if ($queryParams === null || $body === null) {
+                return true;
+            }
+
+            $rawQuery = '';
+            if (method_exists($request, 'getQueryString')) {
+                try {
+                    $queryString = $request->getQueryString();
+                } catch (\Throwable) {
+                    return true;
+                }
+                if (is_string($queryString)) {
+                    $rawQuery = $queryString;
+                }
+            }
+        } else {
+            return false;
+        }
+
+        $hasQueryValue = array_key_exists($name, $queryParams);
+        $hasBodyValue = is_array($body) && array_key_exists($name, $body);
+        if (is_object($body) && property_exists($body, $name)) {
+            return true;
+        }
+
+        if (($hasQueryValue && !is_string($queryParams[$name]))
+            || ($hasBodyValue && !is_string($body[$name]))) {
+            return true;
+        }
+        if ($hasQueryValue && $hasBodyValue && $queryParams[$name] !== $body[$name]) {
+            return true;
+        }
+
+        // PSR-7 query parsing may collapse repeated keys to one value. Inspect
+        // the raw query so `?token=a&token=b` cannot silently select a bearer.
+        if ($rawQuery === '') {
+            return false;
+        }
+
+        $queryValueCount = 0;
+        foreach (preg_split('/[&;]/', $rawQuery) ?: [] as $pair) {
+            $separator = strpos($pair, '=');
+            $rawName = $separator === false ? $pair : substr($pair, 0, $separator);
+            $parameterName = urldecode($rawName);
+            if ($parameterName === $name || str_starts_with($parameterName, $name . '[')) {
+                if (++$queryValueCount > 1 || $parameterName !== $name) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /** @return array<array-key, mixed>|null */
+    protected static function getParameterBagValues(mixed $bag): ?array
+    {
+        if (is_array($bag)) {
+            return $bag;
+        }
+        if (!is_object($bag) || !method_exists($bag, 'all')) {
+            return null;
+        }
+
+        try {
+            $values = $bag->all();
+        } catch (\Throwable) {
+            return null;
+        }
+
+        return is_array($values) ? $values : null;
+    }
+
     /**
      * 将 Token 值写入响应头
      *
@@ -302,10 +770,11 @@ class SaTokenContext
      */
     public static function setHeader(string $name, string $value): void
     {
-        // 头名/值中的 CR/LF/NUL 会让攻击者注入任意响应头（HTTP 响应拆分）。
-        // 框架内部值均为服务端生成，但 setHeader 是公开 API——在入口统一剥离，
-        // 集成方把用户可控数据写头时不再形成注入面
-        $name = str_replace(["\r", "\n", "\0"], '', $name);
+        // 头名不做净化后继续使用：删除控制字符可能把非法输入改成另一个有效头名。
+        // 按 HTTP token 语法拒绝非法名称，并剥离值中的 CR/LF/NUL 防止响应头注入。
+        if (preg_match("/^[!#$%&'*+\\-.^_`|~0-9A-Za-z]+$/D", $name) !== 1) {
+            throw new SaTokenException('响应头名称包含无效字符');
+        }
         $value = str_replace(["\r", "\n", "\0"], '', $value);
 
         $response = self::getResponse();
@@ -319,6 +788,82 @@ class SaTokenContext
         }
 
         self::$responseMap[self::getContextId()] = self::applyHeaderToResponse($response, $name, $value);
+    }
+
+    /** Add one token to a comma-separated response header without discarding existing tokens. */
+    public static function addHeaderToken(string $name, string $token): void
+    {
+        $id = self::getContextId();
+        $existing = self::getResponseHeader($name);
+        foreach (array_reverse(self::$pendingHeadersMap[$id] ?? []) as $pending) {
+            if (strcasecmp($pending['name'], $name) === 0) {
+                $existing = $pending['value'];
+                break;
+            }
+        }
+
+        $tokens = [];
+        $normalizedTokens = [];
+        foreach (explode(',', $existing ?? '') as $existingToken) {
+            $existingToken = trim($existingToken);
+            if ($existingToken === '*') {
+                self::setHeader($name, '*');
+                return;
+            }
+            $normalized = strtolower($existingToken);
+            if ($existingToken !== '' && !isset($normalizedTokens[$normalized])) {
+                $tokens[] = $existingToken;
+                $normalizedTokens[$normalized] = true;
+            }
+        }
+        $normalized = strtolower($token);
+        if (!isset($normalizedTokens[$normalized])) {
+            $tokens[] = $token;
+        }
+
+        self::setHeader($name, implode(', ', $tokens));
+    }
+
+    protected static function getResponseHeader(string $name): ?string
+    {
+        $response = self::getResponse();
+        if ($response === null) {
+            return null;
+        }
+        if ($response instanceof \Psr\Http\Message\ResponseInterface) {
+            $value = $response->getHeaderLine($name);
+            return $value !== '' ? $value : null;
+        }
+        if (is_object($response) && isset($response->headers)) {
+            if (is_object($response->headers) && method_exists($response->headers, 'get')) {
+                $value = $response->headers->get($name);
+                return is_string($value) ? $value : null;
+            }
+            if (is_array($response->headers)) {
+                foreach ($response->headers as $headerName => $value) {
+                    if (is_string($headerName) && strcasecmp($headerName, $name) === 0) {
+                        if (is_string($value)) {
+                            return $value;
+                        }
+                        if (is_array($value)) {
+                            $values = [];
+                            foreach ($value as $item) {
+                                if (is_scalar($item)) {
+                                    $values[] = (string) $item;
+                                }
+                            }
+                            return implode(', ', $values);
+                        }
+                        return null;
+                    }
+                }
+            }
+        }
+        if (is_object($response) && method_exists($response, 'getHeaderLine')) {
+            $value = $response->getHeaderLine($name);
+            return is_string($value) && $value !== '' ? $value : null;
+        }
+        return null;
     }
 
     /**
@@ -350,6 +895,19 @@ class SaTokenContext
         $value = str_replace(["\r", "\n", "\0"], '', $value);
         $path = str_replace(["\r", "\n", "\0"], '', $path);
         $domain = str_replace(["\r", "\n", "\0"], '', $domain);
+
+        if ($name === '' || preg_match('/[=;,\x00-\x20\x7f]/', $name) === 1) {
+            throw new SaTokenException('Cookie 名称包含无效字符');
+        }
+        if (preg_match('/[;\x00-\x1f\x7f]/', $path) === 1) {
+            throw new SaTokenException('Cookie Path 包含无效字符');
+        }
+        if ($domain !== '' && preg_match('/[;=,\x00-\x20\x7f]/', $domain) === 1) {
+            throw new SaTokenException('Cookie Domain 包含无效字符');
+        }
+        if ($sameSite !== '' && !in_array(strtolower($sameSite), ['strict', 'lax', 'none'], true)) {
+            throw new SaTokenException('Cookie SameSite 必须是 Strict、Lax、None 或空值');
+        }
 
         $response = self::getResponse();
         if ($response === null) {
@@ -443,11 +1001,6 @@ class SaTokenContext
             return $response->withAddedHeader('Set-Cookie', $cookieStr);
         }
 
-        if (is_object($response) && method_exists($response, 'cookie')) {
-            $response->cookie($name, $value, $timeout > 0 ? time() + $timeout : 0, $path, $domain, $secure, $httpOnly);
-            return $response;
-        }
-
         if (
             is_object($response)
             && isset($response->headers)
@@ -455,7 +1008,7 @@ class SaTokenContext
             && method_exists($response->headers, 'setCookie')
             && class_exists(\Symfony\Component\HttpFoundation\Cookie::class)
         ) {
-            $expire = $timeout > 0 ? time() + $timeout : 0;
+            $expire = $timeout > 0 ? time() + $timeout : ($timeout < 0 ? 1 : 0);
             $cookie = new \Symfony\Component\HttpFoundation\Cookie(
                 $name,
                 $value,
@@ -468,6 +1021,29 @@ class SaTokenContext
                 $sameSite !== '' ? $sameSite : null
             );
             $response->headers->setCookie($cookie);
+            return $response;
+        }
+
+        if (is_object($response) && method_exists($response, 'getCookie') && method_exists($response, 'cookie')) {
+            // ThinkPHP Response::cookie() takes one options array; its Cookie
+            // manager interprets numeric expire values as relative seconds.
+            $response->cookie($name, $value, [
+                'expire' => $timeout,
+                'path' => $path,
+                'domain' => $domain,
+                'secure' => $secure,
+                'httponly' => $httpOnly,
+                'samesite' => $sameSite,
+            ]);
+            return $response;
+        }
+
+        if (is_object($response) && method_exists($response, 'cookie')) {
+            // Laravel-style cookie() expects a lifetime in minutes, not an
+            // absolute timestamp. Round positive second-based TTLs up so the
+            // client cookie cannot expire before the server-side token.
+            $minutes = $timeout > 0 ? (int) ceil($timeout / 60) : $timeout;
+            $response->cookie($name, $value, $minutes, $path, $domain, $secure, $httpOnly, false, $sameSite !== '' ? $sameSite : null);
         }
 
         return $response;
@@ -498,9 +1074,10 @@ class SaTokenContext
     ): string {
         $parts = [$name . '=' . urlencode($value)];
 
-        if ($timeout > 0) {
-            $parts[] = 'Expires=' . gmdate('D, d M Y H:i:s T', time() + $timeout);
-            $parts[] = 'Max-Age=' . $timeout;
+        if ($timeout !== 0) {
+            $expiresAt = $timeout > 0 ? time() + $timeout : 1;
+            $parts[] = 'Expires=' . gmdate('D, d M Y H:i:s T', $expiresAt);
+            $parts[] = 'Max-Age=' . max(0, $timeout);
         }
 
         if ($path !== '') {

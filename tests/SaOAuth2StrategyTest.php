@@ -25,7 +25,7 @@ class SaOAuth2StrategyTest extends TestCase
         // 注册测试客户端
         $this->handle->registerClient(new SaOAuth2Client([
             'clientId' => 'test-client',
-            'clientSecret' => 'test-secret',
+            'clientSecret' => 'oauth-strategy-test-secret-at-least-32-bytes',
             'redirectUris' => ['http://localhost/callback'],
             'grantTypes' => ['authorization_code', 'password', 'client_credentials', 'refresh_token'],
             'scopes' => ['read', 'write'],
@@ -76,6 +76,36 @@ class SaOAuth2StrategyTest extends TestCase
         $strategy->validateRequest(['client_id' => 'test-client']);
     }
 
+    public function testStrategiesRejectNonStringCredentialParameters(): void
+    {
+        $cases = [
+            [new PasswordStrategy($this->handle), [
+                'client_id' => 'test-client', 'client_secret' => 'valid-secret',
+                'username' => 'alice', 'password' => 'password', 'scope' => ['read'],
+            ]],
+            [new ClientCredentialsStrategy($this->handle), [
+                'client_id' => 'test-client', 'client_secret' => 'valid-secret', 'scope' => ['read'],
+            ]],
+            [new RefreshTokenStrategy($this->handle), [
+                'client_id' => 'test-client', 'client_secret' => 'valid-secret', 'refresh_token' => 'refresh',
+            ]],
+        ];
+
+        foreach ($cases as [$strategy, $params]) {
+            foreach (array_keys($params) as $parameter) {
+                $invalidParams = $params;
+                $invalidParams[$parameter] = ['unexpected'];
+                try {
+                    $strategy->validateRequest($invalidParams);
+                    self::fail("非字符串参数 {$parameter} 必须在策略校验阶段拒绝");
+                } catch (\SaToken\Exception\SaTokenException $exception) {
+                    // Expected: malformed parameters fail as a domain error, not TypeError.
+                    self::assertStringContainsString('必须是字符串', $exception->getMessage());
+                }
+            }
+        }
+    }
+
     public function testStrategyIntegration(): void
     {
         // 测试完整的授权码流程
@@ -92,5 +122,38 @@ class SaOAuth2StrategyTest extends TestCase
         $this->assertNotNull($code->getCode());
         $this->assertEquals('test-client', $code->getClientId());
         $this->assertEquals(1001, $code->getLoginId());
+    }
+
+    public function testAuthorizationCodeStrategySupportsPublicPkceClient(): void
+    {
+        $handle = new SaOAuth2Handle(new SaOAuth2Config());
+        $handle->registerClient(new SaOAuth2Client([
+            'clientId'     => 'public-pkce-client',
+            'grantTypes'   => ['authorization_code'],
+            'redirectUris' => ['https://app.example.com/callback'],
+        ]));
+
+        $verifier = str_repeat('public-client-verifier-', 3);
+        $challenge = rtrim(strtr(base64_encode(hash('sha256', $verifier, true)), '+/', '-_'), '=');
+        $strategy = new AuthorizationCodeStrategy($handle);
+        $code = $strategy->generateAuthorizationCode(
+            'public-pkce-client',
+            1002,
+            'https://app.example.com/callback',
+            '',
+            $challenge,
+            'S256'
+        );
+        $params = [
+            'code'          => $code->getCode(),
+            'client_id'     => 'public-pkce-client',
+            'redirect_uri'  => 'https://app.example.com/callback',
+            'code_verifier' => $verifier,
+        ];
+
+        $strategy->validateRequest($params);
+        $accessToken = $strategy->execute($params);
+
+        $this->assertNotEmpty($accessToken->getAccessToken());
     }
 }

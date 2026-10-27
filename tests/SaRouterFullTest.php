@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace SaToken\Tests;
 
 use PHPUnit\Framework\TestCase;
+use SaToken\Exception\SaTokenException;
 use SaToken\SaRouter;
+use SaToken\Util\SaTokenContext;
 
 class SaRouterFullTest extends TestCase
 {
@@ -39,6 +41,27 @@ class SaRouterFullTest extends TestCase
             $matched = true;
         });
         $this->assertFalse($matched);
+    }
+
+    public function testExactProtectedRuleMatchesFrameworkRouteWithTrailingSlash(): void
+    {
+        SaTokenContext::setRequest(new class () {
+            public function getPathInfo(): string
+            {
+                return '/admin/';
+            }
+        });
+
+        try {
+            $matched = false;
+            SaRouter::match('/admin')->check(function () use (&$matched): void {
+                $matched = true;
+            });
+
+            self::assertTrue($matched, 'An exact protected rule must match a route after framework trailing-slash normalization');
+        } finally {
+            SaTokenContext::clear();
+        }
     }
 
     // ======== ** 多级通配 ========
@@ -262,6 +285,61 @@ class SaRouterFullTest extends TestCase
     }
 
     // ======== 特殊字符路径 ========
+
+    public function testDotSegmentsCannotBypassProtectedPathMatch(): void
+    {
+        foreach ([
+            '/public/../admin',
+            '/public/%2e%2e/admin',
+            '/public/./../admin',
+        ] as $path) {
+            SaRouter::setCurrentPath($path);
+            $matched = false;
+            SaRouter::match('/admin/**')->check(function () use (&$matched) {
+                $matched = true;
+            });
+            self::assertTrue($matched, "Dot-segment path {$path} must match the canonical protected route");
+        }
+    }
+
+    public function testBackslashPathSeparatorsCannotBypassProtectedRouteMatch(): void
+    {
+        foreach ([
+            '/public\\..\\admin',
+            '/public/%5c..%5cadmin',
+        ] as $path) {
+            SaRouter::setCurrentPath($path);
+            $matched = false;
+            SaRouter::match('/admin/**')->check(function () use (&$matched) {
+                $matched = true;
+            });
+            self::assertTrue($matched, "Backslash path {$path} must match the canonical protected route");
+        }
+    }
+
+    public function testBacktrackingLimitCannotSilentlySkipProtectedRouteRule(): void
+    {
+        $originalBacktrackLimit = ini_get('pcre.backtrack_limit');
+        $originalJit = ini_get('pcre.jit');
+        ini_set('pcre.backtrack_limit', '1000');
+        ini_set('pcre.jit', '0');
+
+        try {
+            SaRouter::setCurrentPath('/a' . str_repeat('/x', 3000) . '/end');
+
+            $this->expectException(SaTokenException::class);
+            SaRouter::match('/a/**/**/z')->check(static function (): void {
+                self::fail('A protected route rule must not silently miss after a regex engine error');
+            });
+        } finally {
+            if (is_string($originalBacktrackLimit)) {
+                ini_set('pcre.backtrack_limit', $originalBacktrackLimit);
+            }
+            if (is_string($originalJit)) {
+                ini_set('pcre.jit', $originalJit);
+            }
+        }
+    }
 
     public function testPathWithNumbers(): void
     {

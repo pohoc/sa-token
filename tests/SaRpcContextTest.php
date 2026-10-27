@@ -13,6 +13,7 @@ use SaToken\Rpc\SaRpcContext;
 use SaToken\Rpc\SaRpcInterceptor;
 use SaToken\SaToken;
 use SaToken\StpUtil;
+use SaToken\TokenManager;
 use SaToken\Util\SaTokenContext;
 
 class SaRpcContextTest extends TestCase
@@ -48,13 +49,16 @@ class SaRpcContextTest extends TestCase
     }
 
     /**
-     * @param array<string, string> $headers
+     * @param array<string, string|list<string>> $headers
      */
     protected function mockRequestWithHeaders(array $headers): ServerRequestInterface
     {
         $request = $this->createMock(ServerRequestInterface::class);
         $request->method('getHeader')->willReturnCallback(function (string $name) use ($headers): array {
-            return isset($headers[$name]) ? [$headers[$name]] : [];
+            if (!isset($headers[$name])) {
+                return [];
+            }
+            return is_array($headers[$name]) ? $headers[$name] : [$headers[$name]];
         });
         return $request;
     }
@@ -77,6 +81,17 @@ class SaRpcContextTest extends TestCase
         $this->assertEquals('login', $headers['X-Sa-Login-Type']);
     }
 
+    public function testAttachToHeadersRejectsLoginIdWithHeaderControlCharacters(): void
+    {
+        $loginResult = StpUtil::login("user\r\nX-Injected: yes");
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'satoken' => $loginResult->getAccessToken(),
+        ]));
+
+        $this->expectException(SaTokenException::class);
+        SaRpcContext::attachToHeaders([]);
+    }
+
     public function testAttachToHeadersWithoutLogin(): void
     {
         $headers = SaRpcContext::attachToHeaders([]);
@@ -85,6 +100,44 @@ class SaRpcContextTest extends TestCase
         $this->assertArrayNotHasKey('X-Sa-Login-Id', $headers);
         $this->assertArrayHasKey('X-Sa-Login-Type', $headers);
         $this->assertEquals('login', $headers['X-Sa-Login-Type']);
+    }
+
+    public function testAttachToHeadersRemovesCallerSuppliedAuthWhenNotLoggedIn(): void
+    {
+        $headers = SaRpcContext::attachToHeaders([
+            'x-sa-token'      => 'forged-token',
+            'X-Sa-Login-Id'   => 'forged-user',
+            'X-Sa-Login-Type' => 'admin',
+            'X-Correlation-Id' => 'request-123',
+        ]);
+
+        self::assertArrayNotHasKey('x-sa-token', $headers);
+        self::assertArrayNotHasKey('X-Sa-Login-Id', $headers);
+        self::assertSame('login', $headers['X-Sa-Login-Type']);
+        self::assertSame('request-123', $headers['X-Correlation-Id']);
+    }
+
+    public function testAttachToRequestRemovesCallerSuppliedAuthWhenNotLoggedIn(): void
+    {
+        $request = $this->createMock(\Psr\Http\Message\RequestInterface::class);
+        $removedHeaders = [];
+        $request->method('withoutHeader')->willReturnCallback(
+            function (string $name) use (&$removedHeaders, $request): \Psr\Http\Message\RequestInterface {
+                $removedHeaders[] = $name;
+                return $request;
+            }
+        );
+        $addedHeaders = [];
+        $request->method('withHeader')->willReturnCallback(
+            function (string $name, $value) use (&$addedHeaders, $request): \Psr\Http\Message\RequestInterface {
+                $addedHeaders[$name] = $value;
+                return $request;
+            }
+        );
+
+        self::assertSame($request, SaRpcContext::attachToRequest($request));
+        self::assertSame(['X-Sa-Token', 'X-Sa-Login-Id', 'X-Sa-Login-Type'], $removedHeaders);
+        self::assertSame(['X-Sa-Login-Type' => 'login'], $addedHeaders);
     }
 
     public function testExtractAndValidateWithValidToken(): void
@@ -101,6 +154,38 @@ class SaRpcContextTest extends TestCase
 
         SaRpcContext::extractAndValidate();
         $this->assertTrue(true);
+    }
+
+    public function testExtractAndValidateRejectsIdleExpiredToken(): void
+    {
+        SaToken::setConfig(SaToken::getConfig()->setActivityTimeout(60));
+        $token = StpUtil::login(10002)->getAccessToken();
+        SaToken::getDao()->set(TokenManager::LAST_ACTIVE_PREFIX . $token, (string) (time() - 120), 300);
+
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token'      => $token,
+            'X-Sa-Login-Id'   => '10002',
+            'X-Sa-Login-Type' => 'login',
+        ]));
+
+        $this->expectException(SaTokenException::class);
+        SaRpcContext::extractAndValidate();
+    }
+
+    public function testExtractAndValidateRejectsFingerprintMismatch(): void
+    {
+        SaToken::setConfig(SaToken::getConfig()->setTokenFingerprint(true));
+        $token = StpUtil::login(10003)->getAccessToken();
+        StpUtil::getStpLogic()->getTokenManager()->saveFingerprint($token, hash('sha256', 'different-device'), 300);
+
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token'      => $token,
+            'X-Sa-Login-Id'   => '10003',
+            'X-Sa-Login-Type' => 'login',
+        ]));
+
+        $this->expectException(SaTokenException::class);
+        SaRpcContext::extractAndValidate();
     }
 
     public function testExtractAndValidateThrowsOnMissingToken(): void
@@ -121,6 +206,69 @@ class SaRpcContextTest extends TestCase
         SaRpcContext::extractAndValidate();
     }
 
+    public function testExtractAndValidateDoesNotRegisterUntrustedLoginTypes(): void
+    {
+        $loginType = 'untrusted-' . bin2hex(random_bytes(8));
+        self::assertFalse(SaToken::hasStpLogic($loginType));
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token' => 'invalid-token-value',
+            'X-Sa-Login-Type' => $loginType,
+        ]));
+
+        try {
+            SaRpcContext::extractAndValidate();
+            self::fail('未注册的 RPC LoginType 必须在实例化 StpLogic 前拒绝');
+        } catch (SaTokenException $exception) {
+            self::assertSame('RPC LoginType 未注册', $exception->getMessage());
+        }
+
+        self::assertFalse(SaToken::hasStpLogic($loginType));
+    }
+
+    public function testExtractAndValidateAcceptsPreviouslyRegisteredLoginType(): void
+    {
+        $logic = SaToken::getStpLogic('registered-rpc-user');
+        $token = $logic->login(10021)->getAccessToken();
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token' => $token,
+            'X-Sa-Login-Id' => '10021',
+            'X-Sa-Login-Type' => 'registered-rpc-user',
+        ]));
+
+        SaRpcContext::extractAndValidate();
+
+        self::assertSame('10021', $logic->getLoginIdByToken($token));
+    }
+
+    public function testExtractAndValidateRejectsDuplicateCredentialHeaders(): void
+    {
+        $token = StpUtil::login(10007)->getAccessToken();
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token' => ['attacker-value', $token],
+            'X-Sa-Login-Id' => '10007',
+            'X-Sa-Login-Type' => 'login',
+        ]));
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('RPC 认证 Header 存在多个值');
+        SaRpcContext::extractAndValidate();
+    }
+
+    public function testExtractAndValidateRejectsProxyCombinedTokenHeader(): void
+    {
+        $firstToken = StpUtil::login(10008)->getAccessToken();
+        $secondToken = StpUtil::login(10009)->getAccessToken();
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token' => $firstToken . ', ' . $secondToken,
+        ]));
+
+        self::assertFalse(SaRpcContext::isRpcRequest());
+        self::assertNull(SaRpcContext::getForwardedToken());
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('RPC 认证 Header 存在多个值');
+        SaRpcContext::extractAndValidate();
+    }
+
     public function testIsRpcRequestReturnsTrue(): void
     {
         $request = $this->mockRequestWithHeaders(['X-Sa-Token' => 'some-token']);
@@ -132,6 +280,16 @@ class SaRpcContextTest extends TestCase
     public function testIsRpcRequestReturnsFalse(): void
     {
         $this->assertFalse(SaRpcContext::isRpcRequest());
+    }
+
+    public function testIsRpcRequestReturnsFalseForDuplicateTokenHeaders(): void
+    {
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token' => ['token-one', 'token-two'],
+        ]));
+
+        $this->assertFalse(SaRpcContext::isRpcRequest());
+        $this->assertNull(SaRpcContext::getForwardedToken());
     }
 
     public function testGetForwardedLoginId(): void
@@ -158,6 +316,20 @@ class SaRpcContextTest extends TestCase
         $this->assertEquals('my-token', SaRpcContext::getForwardedToken());
     }
 
+    public function testCustomTokenHeaderNameRejectsInvalidAndReservedNames(): void
+    {
+        foreach (['', 'Bad Header', 'Bad:Header', "Bad\rName", 'X-Sa-Login-Id', 'x-sa-login-type'] as $name) {
+            try {
+                SaRpcContext::setTokenHeaderName($name);
+                self::fail('无效或冲突的 Token Header 名称必须拒绝');
+            } catch (SaTokenException $exception) {
+                self::assertSame('RPC Token Header 名称无效或与保留身份头冲突', $exception->getMessage());
+            }
+        }
+
+        self::assertSame('X-Sa-Token', SaRpcContext::getTokenHeaderName());
+    }
+
     public function testRpcInterceptorIncoming(): void
     {
         $loginResult = StpUtil::login(10001);
@@ -174,6 +346,195 @@ class SaRpcContextTest extends TestCase
         $interceptor->handleIncoming();
 
         $this->assertTrue(true);
+    }
+
+    public function testValidationOnlyRpcRequestCannotFallBackToNativeBearerOrPriorOverride(): void
+    {
+        $forwardedToken = StpUtil::login('forwarded-rpc-account')->getAccessToken();
+        $nativeToken = StpUtil::login('unrelated-native-account')->getAccessToken();
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token' => $forwardedToken,
+            'satoken' => $nativeToken,
+        ]));
+        SaTokenContext::setTokenOverride('login', $nativeToken);
+
+        (new SaRpcInterceptor())->handleIncoming();
+
+        self::assertSame($forwardedToken, SaRpcContext::getForwardedToken());
+        self::assertNull(StpUtil::getLoginId(), 'autoLogin=false 时不得把本地 bearer 或旧 override 当作 RPC 身份');
+    }
+
+    public function testInvalidRpcTokenCannotFallBackToAnUnrelatedBearerTokenWhenExceptionIsCaught(): void
+    {
+        $bearerToken = StpUtil::login('local-bearer-account')->getAccessToken();
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token' => 'invalid-rpc-token',
+            'satoken' => $bearerToken,
+        ]));
+
+        try {
+            (new SaRpcInterceptor())->handleIncoming();
+            self::fail('无效 RPC Token 必须拒绝认证');
+        } catch (SaTokenException) {
+            self::assertNull(StpUtil::getLoginId(), '捕获 RPC 校验异常后不得回退到本地 bearer token');
+        }
+    }
+
+    public function testInvalidRpcTokenBlocksBearerFallbackAcrossLoginTypes(): void
+    {
+        $adminLogic = SaToken::getStpLogic('admin');
+        $adminToken = $adminLogic->login('admin-rpc-bearer')->getAccessToken();
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token' => 'invalid-rpc-token',
+            'satoken' => $adminToken,
+        ]));
+
+        try {
+            (new SaRpcInterceptor())->handleIncoming();
+            self::fail('无效 RPC Token 必须拒绝认证');
+        } catch (SaTokenException) {
+            self::assertNull($adminLogic->getLoginId(), 'RPC 认证失败后任何 loginType 都不得回退到原生 bearer token');
+        }
+    }
+
+    public function testInvalidRpcTokenClearsPreviouslyBoundRequestIdentities(): void
+    {
+        $loginToken = StpUtil::login('previous-login-identity')->getAccessToken();
+        $adminToken = SaToken::getStpLogic('admin')->login('previous-admin-identity')->getAccessToken();
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token' => 'invalid-rpc-token',
+        ]));
+        SaTokenContext::setTokenOverride('login', $loginToken);
+        SaTokenContext::setTokenOverride('admin', $adminToken);
+
+        try {
+            (new SaRpcInterceptor())->handleIncoming();
+            self::fail('无效 RPC Token 必须拒绝认证');
+        } catch (SaTokenException) {
+            self::assertNull(StpUtil::getStpLogic()->getLoginId());
+            self::assertNull(SaToken::getStpLogic('admin')->getLoginId());
+        }
+    }
+
+    public function testRpcInterceptorEnforcesConfiguredLoginType(): void
+    {
+        $token = SaToken::getStpLogic('user')->login(10004)->getAccessToken();
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token'      => $token,
+            'X-Sa-Login-Id'   => '10004',
+            'X-Sa-Login-Type' => 'user',
+        ]));
+
+        $interceptor = (new SaRpcInterceptor())->setLoginType('admin');
+
+        $this->expectException(SaTokenException::class);
+        $interceptor->handleIncoming();
+    }
+
+    public function testRpcInterceptorUsesConfiguredLoginTypeWhenHeaderIsMissing(): void
+    {
+        $token = SaToken::getStpLogic('admin')->login(10005)->getAccessToken();
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token'    => $token,
+            'X-Sa-Login-Id' => '10005',
+        ]));
+
+        (new SaRpcInterceptor())->setLoginType('admin')->handleIncoming();
+
+        $this->assertTrue(true);
+    }
+
+    public function testRpcAutoLoginDoesNotSendLocallyIssuedCredentialsInResponse(): void
+    {
+        $token = StpUtil::login(10006)->getAccessToken();
+        $conflictingToken = StpUtil::login(10007)->getAccessToken();
+        SaTokenContext::clear();
+        SaToken::getConfig()
+            ->setIsWriteCookie(true)
+            ->setIsWriteHeader(true)
+            ->setRefreshToken(true);
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token' => $token,
+            'satoken' => $conflictingToken,
+        ]));
+
+        (new SaRpcInterceptor())->setAutoLogin(true)->handleIncoming();
+
+        $pendingCookies = new \ReflectionProperty(SaTokenContext::class, 'pendingCookiesMap');
+        $pendingHeaders = new \ReflectionProperty(SaTokenContext::class, 'pendingHeadersMap');
+        $contextId = SaTokenContext::getContextId();
+        $cookiesByContext = $pendingCookies->getValue();
+        $headersByContext = $pendingHeaders->getValue();
+        self::assertIsArray($cookiesByContext);
+        self::assertIsArray($headersByContext);
+        self::assertSame([], $cookiesByContext[$contextId] ?? []);
+        self::assertSame([], $headersByContext[$contextId] ?? []);
+        self::assertSame('10006', StpUtil::getLoginId(), '下游身份必须与已验证的 RPC Token 一致');
+
+        SaTokenContext::setRequest($this->mockRequestWithHeaders(['satoken' => $conflictingToken]));
+        self::assertSame('10007', StpUtil::getLoginId(), '下一请求必须清除 RPC Token 覆盖');
+    }
+
+    public function testRpcAutoLoginRejectsInvalidForwardedTokenInsteadOfFallingBack(): void
+    {
+        $conflictingToken = StpUtil::login(10008)->getAccessToken();
+        SaTokenContext::clear();
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token' => 'invalid-rpc-token',
+            'satoken' => $conflictingToken,
+        ]));
+
+        $interceptor = (new SaRpcInterceptor())->setValidateToken(false)->setAutoLogin(true);
+        try {
+            $interceptor->handleIncoming();
+            self::fail('autoLogin 必须拒绝无效的 RPC Token');
+        } catch (SaTokenException $exception) {
+            self::assertSame('RPC Token 无效', $exception->getMessage());
+        }
+
+        self::assertNull(SaToken::getStpLogic()->getLoginId());
+    }
+
+    public function testRpcAutoLoginValidatesForwardedIdentityWhenTokenValidationToggleIsOff(): void
+    {
+        $token = StpUtil::login(10009)->getAccessToken();
+        SaTokenContext::clear();
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token'      => $token,
+            'X-Sa-Login-Id'   => 'attacker-controlled-id',
+            'X-Sa-Login-Type' => 'login',
+        ]));
+
+        $interceptor = (new SaRpcInterceptor())->setValidateToken(false)->setAutoLogin(true);
+        try {
+            $interceptor->handleIncoming();
+            self::fail('autoLogin 必须将转发身份绑定到已验证的 Token');
+        } catch (SaTokenException $exception) {
+            self::assertSame('RPC Token 与转发身份信息不匹配', $exception->getMessage());
+        }
+
+        self::assertNull(StpUtil::getLoginId(), '身份不匹配时不得留下有效登录覆盖');
+    }
+
+    public function testRpcAutoLoginRejectsRepeatedForwardedIdentityHeadersWhenValidationToggleIsOff(): void
+    {
+        $token = StpUtil::login(10010)->getAccessToken();
+        SaTokenContext::clear();
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token'      => $token,
+            'X-Sa-Login-Id'   => ['10010', 'attacker-controlled-id'],
+            'X-Sa-Login-Type' => 'login',
+        ]));
+
+        $interceptor = (new SaRpcInterceptor())->setValidateToken(false)->setAutoLogin(true);
+        try {
+            $interceptor->handleIncoming();
+            self::fail('autoLogin 必须拒绝重复身份 Header');
+        } catch (SaTokenException $exception) {
+            self::assertSame('RPC 认证 Header 存在多个值', $exception->getMessage());
+        }
+
+        self::assertNull(StpUtil::getLoginId(), '拒绝重复身份 Header 后不得留下登录覆盖');
     }
 
     public function testRpcInterceptorOutgoing(): void

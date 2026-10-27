@@ -16,6 +16,10 @@ trait StpLogicPermissionTrait
         $loginId = $this->getLoginIdAsNotNull();
         $permissionList = $this->getPermissionList($loginId);
 
+        if (trim($permission) === '') {
+            throw new NotPermissionException($permission);
+        }
+
         if (!SaFoxUtil::inArray($permissionList, $permission)) {
             throw new NotPermissionException((string) $permission);
         }
@@ -28,6 +32,7 @@ trait StpLogicPermissionTrait
     {
         $loginId = $this->getLoginIdAsNotNull();
         $permissionList = $this->getPermissionList($loginId);
+        $this->validatePermissionRequirements($permissions);
 
         foreach ($permissions as $permission) {
             if (SaFoxUtil::inArray($permissionList, $permission)) {
@@ -44,6 +49,7 @@ trait StpLogicPermissionTrait
     {
         $loginId = $this->getLoginIdAsNotNull();
         $permissionList = $this->getPermissionList($loginId);
+        $this->validatePermissionRequirements($permissions);
 
         foreach ($permissions as $permission) {
             if (!SaFoxUtil::inArray($permissionList, $permission)) {
@@ -69,6 +75,10 @@ trait StpLogicPermissionTrait
         $loginId = $this->getLoginIdAsNotNull();
         $roleList = $this->getRoleList($loginId);
 
+        if (trim($role) === '') {
+            throw new NotRoleException($role);
+        }
+
         if (!SaFoxUtil::inArray($roleList, $role)) {
             throw new NotRoleException($role);
         }
@@ -81,6 +91,7 @@ trait StpLogicPermissionTrait
     {
         $loginId = $this->getLoginIdAsNotNull();
         $roleList = $this->getRoleList($loginId);
+        $this->validateRoleRequirements($roles);
 
         foreach ($roles as $role) {
             if (SaFoxUtil::inArray($roleList, $role)) {
@@ -97,6 +108,7 @@ trait StpLogicPermissionTrait
     {
         $loginId = $this->getLoginIdAsNotNull();
         $roleList = $this->getRoleList($loginId);
+        $this->validateRoleRequirements($roles);
 
         foreach ($roles as $role) {
             if (!SaFoxUtil::inArray($roleList, $role)) {
@@ -114,6 +126,34 @@ trait StpLogicPermissionTrait
             return false;
         } catch (NotLoginException $e) { // @phpstan-ignore catch.neverThrown
             return false;
+        }
+    }
+
+    /** @param array<mixed> $permissions */
+    protected function validatePermissionRequirements(array $permissions): void
+    {
+        if ($permissions === []) {
+            throw new NotPermissionException('');
+        }
+
+        foreach ($permissions as $permission) {
+            if (!is_string($permission) || trim($permission) === '') {
+                throw new NotPermissionException(is_scalar($permission) ? (string) $permission : '');
+            }
+        }
+    }
+
+    /** @param array<mixed> $roles */
+    protected function validateRoleRequirements(array $roles): void
+    {
+        if ($roles === []) {
+            throw new NotRoleException('');
+        }
+
+        foreach ($roles as $role) {
+            if (!is_string($role) || trim($role) === '') {
+                throw new NotRoleException(is_scalar($role) ? (string) $role : '');
+            }
         }
     }
 

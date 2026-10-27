@@ -15,7 +15,7 @@ namespace SaToken\Dao;
  *   $dao->set('key', 'value', 3600);
  *   echo $dao->get('key'); // 'value'
  */
-class SaTokenDaoMemory implements SaTokenDaoInterface
+class SaTokenDaoMemory implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface, SaTokenDaoCompareAndExpireInterface, SaTokenDaoCompareAndSetInterface, SaTokenDaoCompareAndUpdateInterface, SaTokenDaoDeleteIfExpiredInterface
 {
     /**
      * 存储数据 [key => ['value' => string, 'expire_at' => int|null]]
@@ -132,6 +132,71 @@ class SaTokenDaoMemory implements SaTokenDaoInterface
         $value = $this->dataMap[$key]['value'];
         unset($this->dataMap[$key]);
         return $value;
+    }
+
+    public function compareAndDelete(string $key, string $expectedValue): bool
+    {
+        return $this->get($key) === $expectedValue && $this->getAndDelete($key) !== null;
+    }
+
+    public function compareAndExpire(string $key, string $expectedValue, int $timeout): bool
+    {
+        if ($this->get($key) !== $expectedValue) {
+            return false;
+        }
+
+        if ($timeout === -1) {
+            $this->dataMap[$key]['expire_at'] = null;
+            return true;
+        }
+        if ($timeout <= 0) {
+            return false;
+        }
+
+        $currentExpireAt = $this->dataMap[$key]['expire_at'];
+        if ($currentExpireAt === null || $currentExpireAt >= time() + $timeout) {
+            return true;
+        }
+
+        $this->dataMap[$key]['expire_at'] = time() + $timeout;
+        return true;
+    }
+
+    public function compareAndSet(string $key, ?string $expectedValue, ?string $newValue, ?int $timeout = null): bool
+    {
+        if ($this->get($key) !== $expectedValue) {
+            return false;
+        }
+        if ($newValue === null) {
+            $this->delete($key);
+        } else {
+            $this->set($key, $newValue, $timeout);
+        }
+        return true;
+    }
+
+    public function compareAndUpdate(string $key, string $expectedValue, string $newValue): bool
+    {
+        if ($this->get($key) !== $expectedValue || !isset($this->dataMap[$key])) {
+            return false;
+        }
+
+        $this->dataMap[$key]['value'] = $newValue;
+        return true;
+    }
+
+    public function deleteIfExpired(string $key): bool
+    {
+        if (!isset($this->dataMap[$key])) {
+            return false;
+        }
+        $expireAt = $this->dataMap[$key]['expire_at'];
+        if ($expireAt === null || $expireAt > time()) {
+            return false;
+        }
+        $this->removeFromPrefixIndex($key);
+        unset($this->dataMap[$key]);
+        return true;
     }
 
     /**

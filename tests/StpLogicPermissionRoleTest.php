@@ -66,6 +66,62 @@ class StpLogicPermissionRoleTest extends TestCase
         return $token;
     }
 
+    /** @param array<string> $permissions
+     * @param array<string> $roles
+     */
+    private function setAuthorizationLists(array $permissions, array $roles): void
+    {
+        SaToken::setAction(new class ($permissions, $roles) implements SaTokenActionInterface {
+            /** @param array<string> $permissions
+             * @param array<string> $roles
+             */
+            public function __construct(private array $permissions, private array $roles)
+            {
+            }
+
+            public function getPermissionList(mixed $loginId, string $loginType): array
+            {
+                return $this->permissions;
+            }
+
+            public function getRoleList(mixed $loginId, string $loginType): array
+            {
+                return $this->roles;
+            }
+
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return null;
+            }
+        });
+    }
+
+    /** @param class-string<\Throwable> $exceptionClass */
+    private function assertAuthorizationDenied(callable $operation, string $exceptionClass): void
+    {
+        try {
+            $operation();
+            self::fail('空白的授权条件必须拒绝');
+        } catch (\Throwable $exception) {
+            self::assertInstanceOf($exceptionClass, $exception);
+        }
+    }
+
+    public function testEmptyAuthorizationRequirementsFailClosed(): void
+    {
+        $this->setAuthorizationLists([''], ['']);
+        $this->loginAndGetToken();
+
+        $this->assertAuthorizationDenied(fn () => $this->logic->checkPermission(''), NotPermissionException::class);
+        $this->assertAuthorizationDenied(fn () => $this->logic->checkPermissionOr(['']), NotPermissionException::class);
+        $this->assertAuthorizationDenied(fn () => $this->logic->checkPermissionAnd([]), NotPermissionException::class);
+        $this->assertAuthorizationDenied(fn () => $this->logic->checkPermissionAnd(['']), NotPermissionException::class);
+        $this->assertAuthorizationDenied(fn () => $this->logic->checkRole(''), NotRoleException::class);
+        $this->assertAuthorizationDenied(fn () => $this->logic->checkRoleOr(['']), NotRoleException::class);
+        $this->assertAuthorizationDenied(fn () => $this->logic->checkRoleAnd([]), NotRoleException::class);
+        $this->assertAuthorizationDenied(fn () => $this->logic->checkRoleAnd(['']), NotRoleException::class);
+    }
+
     // ======== checkPermission ========
 
     public function testCheckPermissionSuccess(): void

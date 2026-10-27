@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace SaToken\Sso;
 
+use SaToken\Exception\SaTokenException;
 use SaToken\Sso\Mode\SsoModeCrossDomain;
 use SaToken\Sso\Mode\SsoModeFrontSeparate;
 use SaToken\Sso\Mode\SsoModeNoSdk;
 use SaToken\Sso\Mode\SsoModeSameDomain;
 use SaToken\StpUtil;
+use SaToken\Util\SaFoxUtil;
+use SaToken\Util\SaTokenContext;
 
 class SaSsoManager
 {
@@ -64,13 +67,23 @@ class SaSsoManager
 
     public function doLoginCallback(string $ticket, ?string $redirect = null, ?string $state = null): mixed
     {
+        // The cross-Redis branch validates the ticket here instead of through
+        // SaSsoHandle::doLoginCallback(), so establish fail-closed request
+        // authentication semantics before either callback path runs.
+        SaTokenContext::denyTokenFallback();
+
+        if (SaFoxUtil::isEmpty($ticket)) {
+            throw new SaTokenException('SSO ticket 不能为空');
+        }
+
         if ($this->config->isCrossRedis()) {
             // 跨 Redis 路径同样必须经过 state/redirect 校验，不能成为绕过防护的旁路
             $this->handle->validateCallbackRequest($redirect, $state);
 
             $loginId = $this->handle->checkTicketCrossRedis($ticket);
             if ($loginId !== null) {
-                StpUtil::login($loginId);
+                $loginResult = StpUtil::login($loginId);
+                SaTokenContext::setTokenOverride(StpUtil::getStpLogic()->getLoginType(), $loginResult->getAccessToken());
             }
             return $loginId;
         }

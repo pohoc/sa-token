@@ -18,6 +18,7 @@ class SaOAuth2AccessToken
     protected string $clientId = '';
     protected int $createTime = 0;
     protected string $idToken = '';
+    protected string $familyId = '';
 
     /**
      * @param array<string, mixed> $data
@@ -48,6 +49,7 @@ class SaOAuth2AccessToken
             'clientId'     => $this->clientId,
             'createTime'   => $this->createTime,
             'idToken'      => $this->idToken,
+            'familyId'     => $this->familyId,
         ];
     }
 
@@ -76,10 +78,13 @@ class SaOAuth2AccessToken
      */
     public function isExpired(): bool
     {
-        if ($this->createTime <= 0) {
-            return false;
+        $now = time();
+        if ($this->createTime <= 0 || $this->createTime > $now || $this->expiresIn <= 0
+            || $this->expiresIn > PHP_INT_MAX - $this->createTime - 60) {
+            return true;
         }
-        return time() > $this->createTime + $this->expiresIn;
+
+        return $now >= $this->createTime + $this->expiresIn;
     }
 
     public function getAccessToken(): string
@@ -178,6 +183,17 @@ class SaOAuth2AccessToken
     public function setIdToken(string $idToken): static
     {
         $this->idToken = $idToken;
+        return $this;
+    }
+
+    public function getFamilyId(): string
+    {
+        return $this->familyId;
+    }
+
+    public function setFamilyId(string $familyId): static
+    {
+        $this->familyId = $familyId;
         return $this;
     }
 }

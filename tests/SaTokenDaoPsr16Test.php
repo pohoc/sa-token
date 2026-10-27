@@ -31,6 +31,33 @@ class SaTokenDaoPsr16Test extends TestCase
         $this->assertEquals('value1', $this->dao->get('key1'));
     }
 
+    public function testWriteDoesNotReportFailureWhileReadableCredentialRemainsAfterTtlSidecarFailure(): void
+    {
+        $cache = new class () extends ArrayPsr16Cache {
+            public function set(string $key, mixed $value, \DateInterval|int|null $ttl = null): bool
+            {
+                if (str_starts_with($key, 'sat_ttl_')) {
+                    return false;
+                }
+                return parent::set($key, $value, $ttl);
+            }
+
+            public function delete(string $key): bool
+            {
+                if (str_starts_with($key, 'sat_')) {
+                    return false;
+                }
+                return parent::delete($key);
+            }
+        };
+        $dao = new SaTokenDaoPsr16($cache);
+
+        $dao->set('partial-write-token', 'usable-secret', 60);
+
+        self::assertSame('usable-secret', $dao->get('partial-write-token'));
+        self::assertGreaterThan(0, $dao->getTimeout('partial-write-token'));
+    }
+
     public function testGetNonExistentKey(): void
     {
         $this->assertNull($this->dao->get('nonexistent'));
@@ -57,6 +84,153 @@ class SaTokenDaoPsr16Test extends TestCase
         $this->assertNull($this->dao->get('nonexistent'));
     }
 
+    public function testDeleteRejectsCacheThatLeavesExistingCredentialInPlace(): void
+    {
+        $cache = new class () extends ArrayPsr16Cache {
+            public bool $rejectDeletes = false;
+
+            public function delete(string $key): bool
+            {
+                if ($this->rejectDeletes) {
+                    return false;
+                }
+                return parent::delete($key);
+            }
+        };
+        $dao = new SaTokenDaoPsr16($cache);
+        $dao->set('refresh-token', 'still-valid');
+        $cache->rejectDeletes = true;
+
+        try {
+            $dao->delete('refresh-token');
+            self::fail('DAO must report a failed credential deletion');
+        } catch (\SaToken\Exception\SaTokenException $exception) {
+            self::assertSame('still-valid', $dao->get('refresh-token'));
+        }
+    }
+
+    public function testCompareAndSetMissingValueToMissingValueSucceedsWhenCacheDeleteReturnsFalse(): void
+    {
+        $cache = new class () extends ArrayPsr16Cache {
+            public function delete(string $key): bool
+            {
+                if (!$this->has($key)) {
+                    return false;
+                }
+                return parent::delete($key);
+            }
+        };
+        $dao = new SaTokenDaoPsr16($cache);
+
+        self::assertTrue($dao->compareAndSet('empty-cas', null, null));
+        self::assertNull($dao->get('empty-cas'));
+    }
+
+    public function testCompareAndExpireOnlyRenewsMatchingValue(): void
+    {
+        $this->dao->set('lock', 'owner-a', 60);
+
+        self::assertFalse($this->dao->compareAndExpire('lock', 'owner-b', 120));
+        self::assertLessThanOrEqual(60, $this->dao->getTimeout('lock'));
+        self::assertTrue($this->dao->compareAndExpire('lock', 'owner-a', 120));
+        self::assertLessThanOrEqual(120, $this->dao->getTimeout('lock'));
+    }
+
+    public function testCompareAndExpireNeverShortensAndCanMakeAKeyPermanent(): void
+    {
+        $this->dao->set('session-index', 'value', 180);
+
+        self::assertTrue($this->dao->compareAndExpire('session-index', 'value', 30));
+        self::assertGreaterThan(30, $this->dao->getTimeout('session-index'));
+        self::assertTrue($this->dao->compareAndExpire('session-index', 'value', -1));
+        self::assertSame(-1, $this->dao->getTimeout('session-index'));
+    }
+
+    public function testCompareAndExpireDoesNotReviveKeyThatExpiresDuringTtlRead(): void
+    {
+        $cache = new ArrayPsr16Cache();
+        $dao = new class ($cache) extends SaTokenDaoPsr16 {
+            public bool $reportExpired = false;
+
+            public function getTimeout(string $key): int
+            {
+                return $this->reportExpired ? -2 : parent::getTimeout($key);
+            }
+        };
+        $dao->set('expiring-session-index', 'value', 60);
+        $dao->reportExpired = true;
+
+        self::assertFalse($dao->compareAndExpire('expiring-session-index', 'value', 120));
+
+        $dao->reportExpired = false;
+        self::assertSame('value', $dao->get('expiring-session-index'));
+        self::assertLessThanOrEqual(60, $dao->getTimeout('expiring-session-index'));
+    }
+
+    public function testCompareAndUpdatePreservesValueAndTtlOnMismatch(): void
+    {
+        $this->dao->set('session', 'old-record', 60);
+        $ttl = $this->dao->getTimeout('session');
+        self::assertFalse($this->dao->compareAndUpdate('session', 'stale-record', 'wrong'));
+        self::assertSame('old-record', $this->dao->get('session'));
+        self::assertTrue($this->dao->compareAndUpdate('session', 'old-record', 'new-record'));
+        self::assertSame('new-record', $this->dao->get('session'));
+        self::assertLessThanOrEqual($ttl, $this->dao->getTimeout('session'));
+    }
+
+    public function testCompareAndUpdateDoesNotMakeEvictedTtlMetadataPermanent(): void
+    {
+        $key = 'session-ttl-metadata-eviction';
+        $this->dao->set($key, 'before', 120);
+        $ttl = $this->dao->getTimeout($key);
+        $ttlKey = 'sat_ttl_' . substr(hash('sha256', $key), 0, 56);
+        $this->cache->delete($ttlKey);
+
+        self::assertTrue($this->dao->compareAndUpdate($key, 'before', 'after'));
+        self::assertSame('after', $this->dao->get($key));
+        self::assertGreaterThan(0, $this->dao->getTimeout($key));
+        self::assertLessThanOrEqual($ttl, $this->dao->getTimeout($key));
+    }
+
+    public function testUpdateDoesNotMakeEvictedTtlMetadataPermanent(): void
+    {
+        $key = 'updated-session-ttl-metadata-eviction';
+        $this->dao->set($key, 'before', 120);
+        $ttl = $this->dao->getTimeout($key);
+        $ttlKey = 'sat_ttl_' . substr(hash('sha256', $key), 0, 56);
+        $this->cache->delete($ttlKey);
+
+        $this->dao->update($key, 'after');
+
+        self::assertSame('after', $this->dao->get($key));
+        self::assertGreaterThan(0, $this->dao->getTimeout($key));
+        self::assertLessThanOrEqual($ttl, $this->dao->getTimeout($key));
+    }
+
+    public function testLegacyValueWithMissingTtlMetadataFailsClosed(): void
+    {
+        $key = 'legacy-ttl-metadata-eviction';
+        $cacheKey = 'sat_' . substr(hash('sha256', $key), 0, 60);
+        $ttlKey = 'sat_ttl_' . substr(hash('sha256', $key), 0, 56);
+        $this->cache->set($cacheKey, 'legacy-token-value', 120);
+        $this->cache->set($ttlKey, (string) (time() + 120), 120);
+        $this->cache->delete($ttlKey);
+
+        self::assertNull($this->dao->get($key));
+        self::assertFalse($this->dao->exists($key));
+        self::assertSame(-2, $this->dao->getTimeout($key));
+
+        $updateKey = 'legacy-update-ttl-metadata-eviction';
+        $updateCacheKey = 'sat_' . substr(hash('sha256', $updateKey), 0, 60);
+        $updateTtlKey = 'sat_ttl_' . substr(hash('sha256', $updateKey), 0, 56);
+        $this->cache->set($updateCacheKey, 'legacy-token-value', 120);
+        $this->cache->set($updateTtlKey, (string) (time() + 120), 120);
+        $this->cache->delete($updateTtlKey);
+
+        $this->dao->update($updateKey, 'replacement');
+        self::assertNull($this->dao->get($updateKey));
+    }
+
     // ======== update ========
 
     public function testUpdateExistingKey(): void
@@ -64,6 +238,39 @@ class SaTokenDaoPsr16Test extends TestCase
         $this->dao->set('key1', 'value1');
         $this->dao->update('key1', 'updated');
         $this->assertEquals('updated', $this->dao->get('key1'));
+    }
+
+    public function testUpdatePreservesExactSharedExpiry(): void
+    {
+        $key = 'session';
+        $ttlKey = 'sat_ttl_' . substr(hash('sha256', $key), 0, 56);
+        $this->dao->set($key, 'before', 10);
+        $expiresAt = $this->cache->get($ttlKey);
+
+        $dao = new class ($this->cache) extends SaTokenDaoPsr16 {
+            public function getTimeout(string $key): int
+            {
+                $timeout = parent::getTimeout($key);
+                sleep(1);
+                return $timeout;
+            }
+        };
+        $dao->update($key, 'after');
+
+        self::assertSame($expiresAt, $this->cache->get($ttlKey));
+        self::assertSame('after', $dao->get($key));
+    }
+
+    public function testCorruptExpiryMetadataDoesNotOverrideEmbeddedExpiry(): void
+    {
+        $key = 'corrupt-ttl';
+        $this->dao->set($key, 'value', 60);
+        $ttlKey = 'sat_ttl_' . substr(hash('sha256', $key), 0, 56);
+        $this->cache->set($ttlKey, 'not-an-expiry');
+
+        self::assertSame('value', $this->dao->get($key));
+        self::assertTrue($this->dao->exists($key));
+        self::assertGreaterThan(0, $this->dao->getTimeout($key));
     }
 
     public function testUpdateNonExistentKey(): void
@@ -93,8 +300,40 @@ class SaTokenDaoPsr16Test extends TestCase
     public function testGetTimeoutExistingKey(): void
     {
         $this->dao->set('key1', 'value1');
-        // PSR-16 无法获取 TTL，默认返回 -1（永不过期）
+        // 无 TTL 的键使用共享 metadata 表示为永久键
         $this->assertEquals(-1, $this->dao->getTimeout('key1'));
+    }
+
+    public function testTtlIsPreservedAcrossAdapterInstances(): void
+    {
+        $this->dao->set('shared-counter', '1', 120);
+        $secondDao = new SaTokenDaoPsr16($this->cache);
+        $remaining = $secondDao->getTimeout('shared-counter');
+
+        $this->assertGreaterThan(0, $remaining);
+        $this->assertLessThanOrEqual(120, $remaining);
+
+        $this->assertSame(2, $secondDao->increment('shared-counter', 1, 120));
+        $thirdDao = new SaTokenDaoPsr16($this->cache);
+        $remainingAfterIncrement = $thirdDao->getTimeout('shared-counter');
+        $this->assertGreaterThan(0, $remainingAfterIncrement);
+        $this->assertLessThanOrEqual($remaining, $remainingAfterIncrement);
+    }
+
+    public function testExpiredSharedCounterStartsAgainWithNewTtl(): void
+    {
+        $this->dao->set('expired-counter', '8', 1);
+        sleep(2);
+        $secondDao = new SaTokenDaoPsr16($this->cache);
+
+        $this->assertSame(1, $secondDao->increment('expired-counter', 1, 60));
+        $this->assertGreaterThan(0, $secondDao->getTimeout('expired-counter'));
+    }
+
+    public function testIncrementWithZeroTimeoutCreatesPermanentCounter(): void
+    {
+        self::assertSame(1, $this->dao->increment('permanent-counter', 1, 0));
+        self::assertSame(-1, $this->dao->getTimeout('permanent-counter'));
     }
 
     // ======== expire ========
@@ -149,6 +388,74 @@ class SaTokenDaoPsr16Test extends TestCase
         $this->assertTrue($this->dao->exists('key1'));
     }
 
+    public function testAtomicOperationsAreSerializedAcrossProcesses(): void
+    {
+        if (!function_exists('pcntl_fork')) {
+            $this->markTestSkipped('pcntl is required for the multi-process lock test');
+        }
+        class_exists(ArrayPsr16Cache::class);
+
+        $root = sys_get_temp_dir() . '/sa-token-psr16-test-' . bin2hex(random_bytes(8));
+        $cacheDir = $root . '/cache';
+        $lockDir = $root . '/locks';
+        $resultDir = $root . '/results';
+        mkdir($resultDir, 0700, true);
+
+        try {
+            $dao = new SaTokenDaoPsr16(new SharedFilePsr16Cache($cacheDir, 50000), $lockDir);
+            $dao->set('one-time-token', 'payload');
+
+            $runTwoProcesses = function (string $operation) use ($cacheDir, $lockDir, $resultDir): array {
+                $pids = [];
+                for ($index = 0; $index < 2; $index++) {
+                    $pid = pcntl_fork();
+                    if ($pid === -1) {
+                        $this->fail('Could not fork worker process');
+                    }
+                    if ($pid === 0) {
+                        $childDao = new SaTokenDaoPsr16(new SharedFilePsr16Cache($cacheDir, 50000), $lockDir);
+                        $result = $operation === 'consume'
+                            ? ($childDao->getAndDelete('one-time-token') === 'payload' ? 'consumed' : 'empty')
+                            : ($childDao->setIfNotExists('single-claim', 'winner', 60) ? 'won' : 'lost');
+                        file_put_contents($resultDir . '/' . $operation . '-' . $index, $result);
+                        exit(0);
+                    }
+                    $pids[] = $pid;
+                }
+
+                foreach ($pids as $pid) {
+                    $status = 0;
+                    $waitedPid = pcntl_waitpid($pid, $status);
+                    $this->assertSame($pid, $waitedPid);
+                }
+                return [
+                    file_get_contents($resultDir . '/' . $operation . '-0'),
+                    file_get_contents($resultDir . '/' . $operation . '-1'),
+                ];
+            };
+
+            $consumeResults = $runTwoProcesses('consume');
+            $this->assertSame(1, count(array_filter($consumeResults, static fn ($value): bool => $value === 'consumed')));
+            $this->assertSame(1, count(array_filter($consumeResults, static fn ($value): bool => $value === 'empty')));
+
+            $claimResults = $runTwoProcesses('claim');
+            $this->assertSame(1, count(array_filter($claimResults, static fn ($value): bool => $value === 'won')));
+            $this->assertSame(1, count(array_filter($claimResults, static fn ($value): bool => $value === 'lost')));
+        } finally {
+            $iterator = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS),
+                \RecursiveIteratorIterator::CHILD_FIRST
+            );
+            foreach ($iterator as $item) {
+                if (!$item instanceof \SplFileInfo) {
+                    continue;
+                }
+                $item->isDir() ? @rmdir($item->getPathname()) : @unlink($item->getPathname());
+            }
+            @rmdir($root);
+        }
+    }
+
     // ======== 特殊值 ========
 
     public function testEmptyValue(): void
@@ -156,6 +463,14 @@ class SaTokenDaoPsr16Test extends TestCase
         $this->dao->set('key1', '');
         // 空字符串被 get 返回为空字符串
         $this->assertEquals('', $this->dao->get('key1'));
+    }
+
+    public function testBinaryValueRoundTrip(): void
+    {
+        $value = random_bytes(32) . "\0\xff";
+        $this->dao->set('binary-value', $value, 60);
+
+        self::assertSame($value, $this->dao->get('binary-value'));
     }
 
     public function testJsonValue(): void

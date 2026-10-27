@@ -24,8 +24,11 @@ use SaToken\Exception\SaTokenException;
  * 或通过配置（SaToken::init 自动装配）：
  *   'storage' => ['type' => 'file', 'path' => 'runtime/sa-token']
  */
-class SaTokenDaoFile implements SaTokenDaoInterface
+class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface, SaTokenDaoCompareAndExpireInterface, SaTokenDaoCompareAndSetInterface, SaTokenDaoCompareAndUpdateInterface, SaTokenDaoDeleteIfExpiredInterface
 {
+    /** A fixed lock pool prevents unauthenticated lookups from creating unbounded files. */
+    private const LOCK_STRIPE_COUNT = 256;
+
     protected string $dataDir;
 
     protected string $lockDir;
@@ -45,8 +48,21 @@ class SaTokenDaoFile implements SaTokenDaoInterface
             $path = sys_get_temp_dir() . '/sa-token';
         }
 
-        $this->dataDir = rtrim($path, '/') . '/data';
-        $this->lockDir = rtrim($path, '/') . '/locks';
+        $baseDir = rtrim($path, '/\\');
+        if ($baseDir === ''
+            || in_array(basename($baseDir), ['.', '..'], true)
+            || preg_match('/^[A-Za-z]:$/D', $baseDir) === 1
+            || $baseDir === rtrim(sys_get_temp_dir(), '/\\')) {
+            throw new SaTokenException('文件存储路径必须是专用目录，不能使用文件系统根目录或系统临时目录');
+        }
+
+        // Validate and restrict the storage root itself before creating its
+        // children. Checking only data/ and locks/ would still follow a
+        // pre-planted symlink at the configured root (for example
+        // /tmp/sa-token -> an attacker-controlled directory).
+        $this->ensureDirectory($baseDir);
+        $this->dataDir = $baseDir . '/data';
+        $this->lockDir = $baseDir . '/locks';
         $this->ensureDirectory($this->dataDir);
         $this->ensureDirectory($this->lockDir);
 
@@ -58,11 +74,17 @@ class SaTokenDaoFile implements SaTokenDaoInterface
 
     protected function ensureDirectory(string $dir): void
     {
-        if (is_dir($dir)) {
-            return;
+        if (is_link($dir)) {
+            throw new SaTokenException("文件存储目录不能是符号链接：{$dir}");
         }
-        if (!@mkdir($dir, 0770, true) && !is_dir($dir)) {
+        if (!is_dir($dir) && !@mkdir($dir, 0700, true) && !is_dir($dir)) {
             throw new SaTokenException("文件存储目录创建失败：{$dir}");
+        }
+        // 配置目录可能早已存在且权限宽松；持有 token/密钥数据的目录必须
+        // 在每次装配时重新收紧，不能只依赖 mkdir 的初始 mode。
+        $stat = @lstat($dir);
+        if ($stat === false || ($stat['mode'] & 0170000) !== 0040000 || !@chmod($dir, 0700)) {
+            throw new SaTokenException("文件存储目录权限设置失败：{$dir}");
         }
     }
 
@@ -73,7 +95,8 @@ class SaTokenDaoFile implements SaTokenDaoInterface
 
     protected function lockFile(string $key): string
     {
-        return $this->lockDir . '/' . hash('sha256', $key) . '.lock';
+        $stripe = hexdec(substr(hash('sha256', $key), 0, 2)) % self::LOCK_STRIPE_COUNT;
+        return $this->lockDir . '/stripe-' . str_pad((string) $stripe, 3, '0', STR_PAD_LEFT) . '.lock';
     }
 
     /**
@@ -86,9 +109,22 @@ class SaTokenDaoFile implements SaTokenDaoInterface
     protected function withLock(string $key, callable $operation): mixed
     {
         $lockPath = $this->lockFile($key);
+        $this->assertRegularFileOrMissing($lockPath, '文件存储锁');
         $fp = fopen($lockPath, 'c');
         if ($fp === false) {
             throw new SaTokenException("文件存储锁打开失败：{$lockPath}");
+        }
+        // Recheck the opened inode as well as the path: a pre-planted or raced
+        // symlink must never make flock/chmod operate on an unrelated file.
+        try {
+            $this->assertOpenedRegularFile($fp, $lockPath, '文件存储锁');
+        } catch (\Throwable $exception) {
+            fclose($fp);
+            throw $exception;
+        }
+        if (!@chmod($lockPath, 0600)) {
+            fclose($fp);
+            throw new SaTokenException("文件存储锁权限设置失败：{$lockPath}");
         }
 
         $locked = flock($fp, LOCK_EX);
@@ -106,28 +142,93 @@ class SaTokenDaoFile implements SaTokenDaoInterface
     }
 
     /**
+     * Run a local operation while holding an OS file lock for the full callback.
+     * The lock is released by the operating system if the worker exits, so long
+     * cache operations cannot outlive a time-based lease and overlap another
+     * process using the same lock directory.
+     *
+     * @template T
+     * @param  callable(): T $operation
+     * @return T
+     */
+    public function executeAtomically(string $key, callable $operation): mixed
+    {
+        return $this->withLock($key, $operation);
+    }
+
+    /**
      * @return array{key: string, v: string, e: int|null}|null
      */
     protected function readRecord(string $key): ?array
     {
         $path = $this->dataFile($key);
-        if (!is_file($path)) {
+        if ($this->assertRegularFileOrMissing($path, '文件存储记录') === null) {
             return null;
         }
 
-        $raw = file_get_contents($path);
+        $raw = $this->readRegularFile($path, '文件存储记录');
         if ($raw === false || $raw === '') {
             return null;
         }
 
         $record = json_decode($raw, true);
-        if (!is_array($record) || !is_string($record['key'] ?? null) || !is_string($record['v'] ?? null)) {
+        $expireAt = is_array($record) ? ($record['e'] ?? null) : null;
+        if (!is_array($record)
+            || !array_key_exists('e', $record)
+            || !is_string($record['key'] ?? null)
+            || $record['key'] !== $key
+            || !is_string($record['v'] ?? null)
+            || ($expireAt !== null && !is_int($expireAt))) {
             // 损坏的记录文件视为不存在并清理
             @unlink($path);
             return null;
         }
-        /** @var array{key: string, v: string, e: int|null} $record */
-        return $record;
+
+        return [
+            'key' => $key,
+            'v' => $record['v'],
+            'e' => $expireAt,
+        ];
+    }
+
+    /** @return array{dev: int, ino: int, mode: int}|null */
+    protected function assertRegularFileOrMissing(string $path, string $label): ?array
+    {
+        $stat = @lstat($path);
+        if ($stat === false) {
+            return null;
+        }
+        if (($stat['mode'] & 0170000) !== 0100000) {
+            throw new SaTokenException("{$label}不能是符号链接或非普通文件：{$path}");
+        }
+
+        return ['dev' => $stat['dev'], 'ino' => $stat['ino'], 'mode' => $stat['mode']];
+    }
+
+    /** @param resource $stream */
+    protected function assertOpenedRegularFile($stream, string $path, string $label): void
+    {
+        $opened = fstat($stream);
+        $current = $this->assertRegularFileOrMissing($path, $label);
+        if ($opened === false || $current === null
+            || ($opened['mode'] & 0170000) !== 0100000
+            || $opened['dev'] !== $current['dev'] || $opened['ino'] !== $current['ino']) {
+            throw new SaTokenException("{$label}路径在打开时发生变化：{$path}");
+        }
+    }
+
+    protected function readRegularFile(string $path, string $label): string|false
+    {
+        $stream = @fopen($path, 'rb');
+        if ($stream === false) {
+            return false;
+        }
+        try {
+            $this->assertOpenedRegularFile($stream, $path, $label);
+            return stream_get_contents($stream);
+        } finally {
+            fclose($stream);
+        }
     }
 
     protected function isExpired(?int $expireAt): bool
@@ -160,9 +261,22 @@ class SaTokenDaoFile implements SaTokenDaoInterface
         if (file_put_contents($tmpPath, $payload) === false) {
             throw new SaTokenException("文件存储写入失败：{$path}");
         }
+        if (!@chmod($tmpPath, 0600)) {
+            @unlink($tmpPath);
+            throw new SaTokenException("文件存储权限设置失败：{$path}");
+        }
         if (!@rename($tmpPath, $path)) {
             @unlink($tmpPath);
             throw new SaTokenException("文件存储写入失败（rename）：{$path}");
+        }
+    }
+
+    /** Delete an existing record or fail closed when the filesystem rejects it. */
+    protected function removeRecordFile(string $key): void
+    {
+        $path = $this->dataFile($key);
+        if (!@unlink($path)) {
+            throw new SaTokenException("文件存储记录删除失败：{$path}");
         }
     }
 
@@ -185,12 +299,14 @@ class SaTokenDaoFile implements SaTokenDaoInterface
 
     public function get(string $key): ?string
     {
-        return $this->readValue($key);
+        return $this->withLock($key, fn (): ?string => $this->readValue($key));
     }
 
     public function set(string $key, string $value, ?int $timeout = null): void
     {
-        $this->writeRecord($key, $value, ($timeout !== null && $timeout > 0) ? time() + $timeout : null);
+        $this->withLock($key, function () use ($key, $value, $timeout): void {
+            $this->writeRecord($key, $value, ($timeout !== null && $timeout > 0) ? time() + $timeout : null);
+        });
     }
 
     public function update(string $key, string $value): void
@@ -206,19 +322,33 @@ class SaTokenDaoFile implements SaTokenDaoInterface
 
     public function delete(string $key): void
     {
-        @unlink($this->dataFile($key));
+        $this->withLock($key, function () use ($key): void {
+            $path = $this->dataFile($key);
+            if ($this->assertRegularFileOrMissing($path, '文件存储记录') === null) {
+                return;
+            }
+            if (!@unlink($path)) {
+                throw new SaTokenException("文件存储记录删除失败：{$path}");
+            }
+        });
     }
 
     public function getTimeout(string $key): int
     {
-        $record = $this->readRecord($key);
-        if ($record === null) {
-            return -2;
-        }
-        if ($record['e'] === null) {
-            return -1;
-        }
-        return max(0, $record['e'] - time());
+        return $this->withLock($key, function () use ($key): int {
+            $record = $this->readRecord($key);
+            if ($record === null) {
+                return -2;
+            }
+            if ($this->isExpired($record['e'])) {
+                @unlink($this->dataFile($key));
+                return -2;
+            }
+            if ($record['e'] === null) {
+                return -1;
+            }
+            return max(0, $record['e'] - time());
+        });
     }
 
     public function expire(string $key, int $timeout): void
@@ -226,6 +356,10 @@ class SaTokenDaoFile implements SaTokenDaoInterface
         $this->withLock($key, function () use ($key, $timeout): void {
             $record = $this->readRecord($key);
             if ($record === null) {
+                return;
+            }
+            if ($this->isExpired($record['e'])) {
+                @unlink($this->dataFile($key));
                 return;
             }
             // 直接透传 base64 值：decode 失败再重写会把原值破坏为空串
@@ -249,15 +383,96 @@ class SaTokenDaoFile implements SaTokenDaoInterface
         return $this->withLock($key, function () use ($key): ?string {
             $value = $this->readValue($key);
             if ($value !== null) {
-                @unlink($this->dataFile($key));
+                $this->removeRecordFile($key);
             }
             return $value;
         });
     }
 
+    public function compareAndDelete(string $key, string $expectedValue): bool
+    {
+        return $this->withLock($key, function () use ($key, $expectedValue): bool {
+            $value = $this->readValue($key);
+            if ($value === null || $value !== $expectedValue) {
+                return false;
+            }
+            return @unlink($this->dataFile($key));
+        });
+    }
+
+    public function compareAndExpire(string $key, string $expectedValue, int $timeout): bool
+    {
+        if ($timeout !== -1 && $timeout <= 0) {
+            return false;
+        }
+
+        return $this->withLock($key, function () use ($key, $expectedValue, $timeout): bool {
+            $record = $this->readRecord($key);
+            if ($record === null || $this->isExpired($record['e']) || $this->readValue($key) !== $expectedValue) {
+                return false;
+            }
+
+            if ($record['e'] === null || ($timeout !== -1 && $record['e'] >= time() + $timeout)) {
+                return true;
+            }
+
+            $expireAt = $timeout === -1 ? null : time() + $timeout;
+            $this->writeRecordRaw($key, $record['v'], $expireAt);
+
+            return true;
+        });
+    }
+
+    public function compareAndSet(string $key, ?string $expectedValue, ?string $newValue, ?int $timeout = null): bool
+    {
+        return $this->withLock($key, function () use ($key, $expectedValue, $newValue, $timeout): bool {
+            if ($this->readValue($key) !== $expectedValue) {
+                return false;
+            }
+            if ($newValue === null) {
+                if ($this->assertRegularFileOrMissing($this->dataFile($key), '文件存储记录') === null) {
+                    return true;
+                }
+                $this->removeRecordFile($key);
+            } else {
+                $this->writeRecord($key, $newValue, ($timeout !== null && $timeout > 0) ? time() + $timeout : null);
+            }
+            return true;
+        });
+    }
+
+    public function compareAndUpdate(string $key, string $expectedValue, string $newValue): bool
+    {
+        return $this->withLock($key, function () use ($key, $expectedValue, $newValue): bool {
+            $record = $this->readRecord($key);
+            if ($record === null || $this->isExpired($record['e'])) {
+                return false;
+            }
+
+            $current = base64_decode($record['v'], true);
+            if ($current === false || $current !== $expectedValue) {
+                return false;
+            }
+
+            $this->writeRecord($key, $newValue, $record['e']);
+            return true;
+        });
+    }
+
+    public function deleteIfExpired(string $key): bool
+    {
+        return $this->withLock($key, function () use ($key): bool {
+            $record = $this->readRecord($key);
+            if ($record === null || !$this->isExpired($record['e'])) {
+                return false;
+            }
+            return @unlink($this->dataFile($key));
+        });
+    }
+
     public function exists(string $key): bool
     {
-        return $this->readValue($key) !== null;
+        return $this->withLock($key, fn (): bool => $this->readValue($key) !== null);
     }
 
     public function setIfNotExists(string $key, string $value, ?int $timeout = null): bool
@@ -301,14 +516,34 @@ class SaTokenDaoFile implements SaTokenDaoInterface
 
     public function size(): int
     {
-        return count($this->scanDataFiles(static fn (): bool => true));
+        $directory = @opendir($this->dataDir);
+        if ($directory === false) {
+            return 0;
+        }
+
+        $size = 0;
+        try {
+            while (($file = readdir($directory)) !== false) {
+                if (!str_ends_with($file, '.dat')) {
+                    continue;
+                }
+                $stat = @lstat($this->dataDir . '/' . $file);
+                if ($stat !== false && ($stat['mode'] & 0170000) === 0100000) {
+                    $size++;
+                }
+            }
+        } finally {
+            closedir($directory);
+        }
+
+        return $size;
     }
 
     public function deleteMultiple(array $keys): void
     {
         foreach ($keys as $key) {
             if (is_string($key)) {
-                @unlink($this->dataFile($key));
+                $this->delete($key);
             }
         }
     }
@@ -346,12 +581,21 @@ class SaTokenDaoFile implements SaTokenDaoInterface
             }
             $record = json_decode($raw, true);
             if (!is_array($record) || !is_string($record['key'] ?? null) || !is_string($record['v'] ?? null)) {
-                @unlink($path);
                 continue;
             }
             /** @var array{key: string, v: string, e: int|null} $record */
-            if ($this->isExpired($record['e'])) {
-                @unlink($path);
+            $record = $this->withLock($record['key'], function () use ($record): ?array {
+                $latest = $this->readRecord($record['key']);
+                if ($latest === null) {
+                    return null;
+                }
+                if ($this->isExpired($latest['e'])) {
+                    @unlink($this->dataFile($record['key']));
+                    return null;
+                }
+                return $latest;
+            });
+            if ($record === null) {
                 continue;
             }
             if (!str_starts_with($record['key'], $prefix)) {
@@ -369,25 +613,47 @@ class SaTokenDaoFile implements SaTokenDaoInterface
      */
     protected function scanDataFiles(?callable $filter = null): array
     {
-        $files = @scandir($this->dataDir);
-        if ($files === false) {
+        $directory = @opendir($this->dataDir);
+        if ($directory === false) {
             return [];
         }
 
+        // Keep only the lexically first scanLimit regular records, matching
+        // scandir()'s previous deterministic ordering without materializing
+        // every directory entry in memory.
+        $files = new \SplMaxHeap();
+        try {
+            while (($file = readdir($directory)) !== false) {
+                if (!str_ends_with($file, '.dat')) {
+                    continue;
+                }
+                $path = $this->dataDir . '/' . $file;
+                $stat = @lstat($path);
+                if ($stat === false || ($stat['mode'] & 0170000) !== 0100000) {
+                    continue;
+                }
+
+                $files->insert($file);
+                if ($files->count() > $this->scanLimit) {
+                    $files->extract();
+                }
+            }
+        } finally {
+            closedir($directory);
+        }
+
+        $names = [];
+        while (!$files->isEmpty()) {
+            $name = $files->extract();
+            if (is_string($name)) {
+                $names[] = $name;
+            }
+        }
+        sort($names, SORT_STRING);
+
         $result = [];
-        $scanned = 0;
-        foreach ($files as $file) {
-            if ($scanned >= $this->scanLimit) {
-                break;
-            }
-            if (!str_ends_with($file, '.dat')) {
-                continue;
-            }
+        foreach ($names as $file) {
             $path = $this->dataDir . '/' . $file;
-            if (!is_file($path)) {
-                continue;
-            }
-            $scanned++;
             if ($filter === null || $filter($path)) {
                 $result[] = $path;
             }

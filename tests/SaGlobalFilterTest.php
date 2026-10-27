@@ -93,6 +93,58 @@ class SaGlobalFilterTest extends TestCase
         $this->assertEquals('3600', $this->responseTracker->headers['Access-Control-Max-Age']);
     }
 
+    public function testCorsPreservesExistingVaryTokens(): void
+    {
+        $this->responseTracker->headers['Vary'] = 'Accept-Encoding, Origin';
+        $filter = new SaGlobalFilter();
+        $filter->setCors(['allowOrigin' => 'https://example.com']);
+
+        $filter->applyCorsHeaders();
+
+        $this->assertSame('Accept-Encoding, Origin', $this->responseTracker->headers['Vary']);
+    }
+
+    public function testCorsAddsOriginToPendingVaryHeader(): void
+    {
+        SaTokenContext::setResponse(null);
+        SaTokenContext::setHeader('Vary', 'Accept-Language');
+
+        $filter = new SaGlobalFilter();
+        $filter->setCors(['allowOrigin' => 'https://example.com']);
+        $filter->applyCorsHeaders();
+
+        SaTokenContext::setResponse($this->responseTracker);
+
+        $this->assertSame('Accept-Language, Origin', $this->responseTracker->headers['Vary']);
+    }
+
+    public function testCorsCredentialsStringFalseDoesNotEnableCredentials(): void
+    {
+        $filter = new SaGlobalFilter();
+        $filter->setCors([
+            'allowOrigin' => 'https://example.com',
+            'allowCredentials' => 'false',
+        ]);
+
+        $filter->applyCorsHeaders();
+
+        $this->assertSame('false', $this->responseTracker->headers['Access-Control-Allow-Credentials']);
+    }
+
+    public function testCorsCredentialsStringFalseAllowsWildcardOriginWithoutCredentials(): void
+    {
+        $filter = new SaGlobalFilter();
+        $filter->setCors([
+            'allowOrigin' => '*',
+            'allowCredentials' => 'false',
+        ]);
+
+        $filter->applyCorsHeaders();
+
+        $this->assertSame('*', $this->responseTracker->headers['Access-Control-Allow-Origin']);
+        $this->assertSame('false', $this->responseTracker->headers['Access-Control-Allow-Credentials']);
+    }
+
     public function testIsCorsRequestReturnsTrueForOptionsWithOrigin(): void
     {
         $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);

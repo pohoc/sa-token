@@ -50,6 +50,48 @@ class SaTokenDaoMemoryTest extends TestCase
         $this->assertNull($this->dao->get('nonexistent'));
     }
 
+    public function testCompareAndDeleteOnlyRemovesMatchingValue(): void
+    {
+        $this->dao->set('lock', 'owner-b');
+
+        $this->assertFalse($this->dao->compareAndDelete('lock', 'owner-a'));
+        $this->assertSame('owner-b', $this->dao->get('lock'));
+        $this->assertTrue($this->dao->compareAndDelete('lock', 'owner-b'));
+        $this->assertNull($this->dao->get('lock'));
+    }
+
+    public function testCompareAndExpireOnlyRenewsMatchingValue(): void
+    {
+        $this->dao->set('lock', 'owner-a', 1);
+
+        self::assertFalse($this->dao->compareAndExpire('lock', 'owner-b', 60));
+        self::assertLessThanOrEqual(1, $this->dao->getTimeout('lock'));
+        self::assertTrue($this->dao->compareAndExpire('lock', 'owner-a', 60));
+        self::assertGreaterThan(0, $this->dao->getTimeout('lock'));
+        self::assertLessThanOrEqual(60, $this->dao->getTimeout('lock'));
+    }
+
+    public function testCompareAndExpireNeverShortensAndCanMakeAKeyPermanent(): void
+    {
+        $this->dao->set('session-index', 'value', 120);
+
+        self::assertTrue($this->dao->compareAndExpire('session-index', 'value', 30));
+        self::assertGreaterThan(30, $this->dao->getTimeout('session-index'));
+        self::assertTrue($this->dao->compareAndExpire('session-index', 'value', -1));
+        self::assertSame(-1, $this->dao->getTimeout('session-index'));
+    }
+
+    public function testCompareAndUpdatePreservesValueAndTtlOnMismatch(): void
+    {
+        $this->dao->set('session', 'old-record', 60);
+        $ttl = $this->dao->getTimeout('session');
+        self::assertFalse($this->dao->compareAndUpdate('session', 'stale-record', 'wrong'));
+        self::assertSame('old-record', $this->dao->get('session'));
+        self::assertTrue($this->dao->compareAndUpdate('session', 'old-record', 'new-record'));
+        self::assertSame('new-record', $this->dao->get('session'));
+        self::assertLessThanOrEqual($ttl, $this->dao->getTimeout('session'));
+    }
+
     public function testUpdate(): void
     {
         $this->dao->set('key1', 'value1');

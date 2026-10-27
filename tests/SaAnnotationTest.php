@@ -20,6 +20,7 @@ use SaToken\Exception\NotLoginException;
 use SaToken\Exception\NotPermissionException;
 use SaToken\Exception\NotRoleException;
 use SaToken\Exception\NotSafeException;
+use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
 use SaToken\StpLogic;
 use SaToken\Util\SaTokenContext;
@@ -36,6 +37,37 @@ class SaAnnotationTestLoginController
     public function publicAction(): string
     {
         return 'public';
+    }
+}
+
+#[SaCheckLogin]
+class SaAnnotationTestInvokableController
+{
+    public function __invoke(): string
+    {
+        return 'invoked';
+    }
+
+    public static function staticAction(): string
+    {
+        return 'static';
+    }
+}
+
+class SaAnnotationTestProtectedBaseController
+{
+    #[SaCheckLogin]
+    public function protectedAction(): string
+    {
+        return 'base';
+    }
+}
+
+class SaAnnotationTestOverrideController extends SaAnnotationTestProtectedBaseController
+{
+    public function protectedAction(): string
+    {
+        return 'override';
     }
 }
 
@@ -89,6 +121,42 @@ class SaAnnotationTestRoleOrController
     }
 }
 
+class SaAnnotationTestInvalidPermissionModeController
+{
+    #[SaCheckPermission('user:add,user:delete', mode: 'ADN')]
+    public function manage(): string
+    {
+        return 'managed';
+    }
+}
+
+class SaAnnotationTestInvalidRoleModeController
+{
+    #[SaCheckRole('admin,super', mode: '')]
+    public function adminPanel(): string
+    {
+        return 'admin';
+    }
+}
+
+class SaAnnotationTestEmptyPermissionController
+{
+    #[SaCheckPermission('user:add,')]
+    public function manage(): string
+    {
+        return 'managed';
+    }
+}
+
+class SaAnnotationTestEmptyRoleController
+{
+    #[SaCheckRole(',admin')]
+    public function adminPanel(): string
+    {
+        return 'admin';
+    }
+}
+
 class SaAnnotationTestSafeController
 {
     #[SaCheckSafe('payment')]
@@ -125,6 +193,88 @@ class SaAnnotationTestIgnoreClassController
     }
 }
 
+#[SaIgnore]
+class SaAnnotationTestIgnoredBaseController
+{
+    public function inheritedPublicAction(): string
+    {
+        return 'public';
+    }
+}
+
+#[SaCheckLogin]
+class SaAnnotationTestProtectedIgnoreSubclassController extends SaAnnotationTestIgnoredBaseController
+{
+}
+
+class SaAnnotationTestIgnoredMethodBaseController
+{
+    #[SaIgnore]
+    public function overridablePublicAction(): string
+    {
+        return 'public';
+    }
+}
+
+#[SaCheckLogin]
+class SaAnnotationTestProtectedInheritedIgnoreMethodController extends SaAnnotationTestIgnoredMethodBaseController
+{
+}
+
+class SaAnnotationTestProtectedIgnoreMethodSubclassController extends SaAnnotationTestIgnoredMethodBaseController
+{
+    #[SaCheckLogin]
+    public function overridablePublicAction(): string
+    {
+        return 'protected';
+    }
+}
+
+interface SaAnnotationTestSecuredInterface
+{
+    #[SaCheckLogin]
+    public function execute(): string;
+}
+
+class SaAnnotationTestInterfaceController implements SaAnnotationTestSecuredInterface
+{
+    public function execute(): string
+    {
+        return 'executed';
+    }
+}
+
+#[SaIgnore]
+class SaAnnotationTestIgnoredInterfaceController implements SaAnnotationTestSecuredInterface
+{
+    public function execute(): string
+    {
+        return 'executed';
+    }
+}
+
+class SaAnnotationTestIgnoredInterfaceMethodController implements SaAnnotationTestSecuredInterface
+{
+    #[SaIgnore]
+    public function execute(): string
+    {
+        return 'executed';
+    }
+}
+
+class SaAnnotationTestProtectedIgnoreInterfaceController extends SaAnnotationTestIgnoredBaseController implements SaAnnotationTestSecuredInterface
+{
+    public function execute(): string
+    {
+        return 'executed';
+    }
+}
+
+#[SaCheckLogin]
+function saTokenAnnotationSecuredFunctionForTest(): void
+{
+}
+
 class SaAnnotationTestMixedController
 {
     #[SaCheckLogin]
@@ -154,6 +304,7 @@ class SaAnnotationTest extends TestCase
             'isReadBody'      => false,
             'isWriteCookie'   => false,
             'isWriteHeader'   => false,
+            'signKey'         => 'sensitive-verify-test-sign-key-32-bytes',
         ]));
         SaToken::setDao(new SaTokenDaoMemory());
 
@@ -222,6 +373,39 @@ class SaAnnotationTest extends TestCase
         SaAnnotationProcessor::process(SaAnnotationTestLoginController::class, 'doSomething');
     }
 
+    public function testSaCheckLoginAttributeIsEnforcedOnClosureCallable(): void
+    {
+        $action = #[SaCheckLogin] static function (): void {
+        };
+
+        $this->expectException(NotLoginException::class);
+        SaAnnotationProcessor::processCallable($action);
+    }
+
+    public function testSaCheckLoginAttributeIsEnforcedOnNamedFunctionCallable(): void
+    {
+        $this->expectException(NotLoginException::class);
+        SaAnnotationProcessor::processCallable(__NAMESPACE__ . '\\saTokenAnnotationSecuredFunctionForTest');
+    }
+
+    public function testProcessCallableChecksObjectMethodAnnotations(): void
+    {
+        $this->expectException(NotLoginException::class);
+        SaAnnotationProcessor::processCallable([new SaAnnotationTestLoginController(), 'doSomething']);
+    }
+
+    public function testProcessCallableChecksStaticMethodAnnotations(): void
+    {
+        $this->expectException(NotLoginException::class);
+        SaAnnotationProcessor::processCallable(SaAnnotationTestInvokableController::class . '::staticAction');
+    }
+
+    public function testProcessCallableChecksInvokableObjectAnnotations(): void
+    {
+        $this->expectException(NotLoginException::class);
+        SaAnnotationProcessor::processCallable(new SaAnnotationTestInvokableController());
+    }
+
     public function testSaCheckLoginAttributePassesWhenLoggedIn(): void
     {
         $this->loginAndGetToken();
@@ -259,6 +443,38 @@ class SaAnnotationTest extends TestCase
         $this->loginAndGetToken();
         $this->expectException(NotPermissionException::class);
         SaAnnotationProcessor::process(SaAnnotationTestPermissionOrController::class, 'manage');
+    }
+
+    public function testInvalidPermissionModeFailsClosedInsteadOfBecomingOr(): void
+    {
+        $this->setActionWithPermissions(['user:add']);
+        $this->loginAndGetToken();
+        $this->expectException(SaTokenException::class);
+        SaAnnotationProcessor::process(SaAnnotationTestInvalidPermissionModeController::class, 'manage');
+    }
+
+    public function testInvalidRoleModeFailsClosedInsteadOfBecomingOr(): void
+    {
+        $this->setActionWithPermissions([], ['admin']);
+        $this->loginAndGetToken();
+        $this->expectException(SaTokenException::class);
+        SaAnnotationProcessor::process(SaAnnotationTestInvalidRoleModeController::class, 'adminPanel');
+    }
+
+    public function testEmptyPermissionItemIsRejected(): void
+    {
+        $this->setActionWithPermissions(['']);
+        $this->loginAndGetToken();
+        $this->expectException(SaTokenException::class);
+        SaAnnotationProcessor::process(SaAnnotationTestEmptyPermissionController::class, 'manage');
+    }
+
+    public function testEmptyRoleItemIsRejected(): void
+    {
+        $this->setActionWithPermissions([], ['']);
+        $this->loginAndGetToken();
+        $this->expectException(SaTokenException::class);
+        SaAnnotationProcessor::process(SaAnnotationTestEmptyRoleController::class, 'adminPanel');
     }
 
     public function testSaCheckRoleAttributeAndModePasses(): void
@@ -308,6 +524,24 @@ class SaAnnotationTest extends TestCase
         $this->assertTrue(true);
     }
 
+    public function testOtpVerificationOnOneTokenDoesNotAuthorizeAnotherToken(): void
+    {
+        $this->loginAndGetToken(10001);
+        $code = $this->logic->generateOtpCode('payment');
+        $this->logic->verifyOtpCode('payment', $code);
+
+        $secondLogin = $this->logic->login(
+            10001,
+            (new \SaToken\SaLoginParameter())->setIsShare(false)->setDeviceType('second-device')
+        );
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->with('satoken')->willReturn([$secondLogin->getAccessToken()]);
+        SaTokenContext::setRequest($request);
+
+        $this->expectException(NotSafeException::class);
+        SaAnnotationProcessor::process(SaAnnotationTestSafeController::class, 'pay');
+    }
+
     public function testSaIgnoreSkipsCheck(): void
     {
         SaAnnotationProcessor::process(SaAnnotationTestLoginController::class, 'publicAction');
@@ -318,6 +552,60 @@ class SaAnnotationTest extends TestCase
     {
         SaAnnotationProcessor::process(SaAnnotationTestIgnoreClassController::class, 'anything');
         $this->assertTrue(true);
+    }
+
+    public function testChildLoginRequirementOverridesIgnoredBaseClass(): void
+    {
+        $this->expectException(NotLoginException::class);
+        SaAnnotationProcessor::process(SaAnnotationTestProtectedIgnoreSubclassController::class, 'inheritedPublicAction');
+    }
+
+    public function testOverriddenLoginRequirementOverridesIgnoredBaseMethod(): void
+    {
+        $this->expectException(NotLoginException::class);
+        SaAnnotationProcessor::process(SaAnnotationTestProtectedIgnoreMethodSubclassController::class, 'overridablePublicAction');
+    }
+
+    public function testSubclassLoginRequirementOverridesInheritedIgnoredMethod(): void
+    {
+        $this->expectException(NotLoginException::class);
+        SaAnnotationProcessor::process(SaAnnotationTestProtectedInheritedIgnoreMethodController::class, 'overridablePublicAction');
+    }
+
+    public function testInterfaceMethodLoginRequirementIsEnforced(): void
+    {
+        $this->expectException(NotLoginException::class);
+        SaAnnotationProcessor::process(SaAnnotationTestInterfaceController::class, 'execute');
+    }
+
+    public function testInterfaceAuthorizationCannotBeDisabledByImplementingClassIgnore(): void
+    {
+        $this->expectException(NotLoginException::class);
+        SaAnnotationProcessor::process(SaAnnotationTestIgnoredInterfaceController::class, 'execute');
+    }
+
+    public function testInterfaceAuthorizationCannotBeDisabledByMethodIgnore(): void
+    {
+        $this->expectException(NotLoginException::class);
+        SaAnnotationProcessor::process(SaAnnotationTestIgnoredInterfaceMethodController::class, 'execute');
+    }
+
+    public function testInterfaceAuthorizationOverridesInheritedIgnore(): void
+    {
+        $this->expectException(NotLoginException::class);
+        SaAnnotationProcessor::process(SaAnnotationTestProtectedIgnoreInterfaceController::class, 'execute');
+    }
+
+    public function testOverriddenMethodInheritsSecurityAnnotations(): void
+    {
+        $attributes = SaAnnotationProcessor::getMethodAttributes(
+            SaAnnotationTestOverrideController::class,
+            'protectedAction'
+        );
+        $this->assertNotEmpty(array_filter($attributes, static fn (object $attribute): bool => $attribute instanceof SaCheckLogin));
+
+        $this->expectException(NotLoginException::class);
+        SaAnnotationProcessor::process(SaAnnotationTestOverrideController::class, 'protectedAction');
     }
 
     public function testClassLevelAttributeAppliesToAllMethods(): void
@@ -396,6 +684,13 @@ class SaAnnotationTest extends TestCase
         }
         $this->assertTrue($hasLogin);
         $this->assertTrue($hasPermission);
+    }
+
+    public function testGetMethodAttributesIncludesInterfaceAuthorization(): void
+    {
+        $attrs = SaAnnotationProcessor::getMethodAttributes(SaAnnotationTestInterfaceController::class, 'execute');
+        $this->assertCount(1, $attrs);
+        $this->assertInstanceOf(SaCheckLogin::class, $attrs[0]);
     }
 
     public function testGetMethodAttributesIncludesClassLevel(): void

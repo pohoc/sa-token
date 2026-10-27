@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SaToken\Session;
 
+use SaToken\Dao\SaTokenDaoDeleteIfExpiredInterface;
 use SaToken\Dao\SaTokenDaoInterface;
 use SaToken\SaToken;
 
@@ -12,10 +13,10 @@ use SaToken\SaToken;
  *
  * 职责：回收"存储后端未自动删除的已过期会话记录"。
  *
- * 内置存储后端（Redis EXPIRE / 内存惰性过期）会自动回收过期记录，
- * 但自定义 DAO（如数据库存储）可能只按 TTL 提供读取过滤而从不物理删除。
+ * 内置存储后端会自动回收过期记录。支持 SaTokenDaoDeleteIfExpiredInterface 的
+ * 自定义 DAO 也可安全回收惰性 TTL 记录；不支持该能力的 DAO 不执行物理清理。
  *
- * 安全设计：判断过期只依据 DAO 自身的 TTL 元数据（getTimeout），
+ * 安全设计：过期判断与删除必须由 DAO 原子完成，
  * 绝不解析存储值内容（值可能是密文，且信任值内字段可被诱导删除任意键）
  */
 class SaSessionCleaner
@@ -26,14 +27,20 @@ class SaSessionCleaner
     protected static int $batchSize = 100;
     protected static int $totalCleaned = 0;
 
+    /** @var array<string, int> Per-prefix scan offsets, reset when a prefix wraps. */
+    protected static array $scanOffsets = [];
+
     /** @var array<string> */
     protected static array $sweptPrefixes = [
         'satoken:login:token:',
         'satoken:login:lastActive:',
         'satoken:login:loginId:',
+        'satoken:login:v2:loginId:',
         'satoken:session:',
         'satoken:session:lock:',
+        'satoken:lock:',
         'satoken:tokenSession:',
+        'satoken:tokenSessionLineage:',
         'satoken:refresh:',
         'satoken:refreshMap:',
         'satoken:fingerprint:',
@@ -43,6 +50,8 @@ class SaSessionCleaner
         'satoken:disable:',
         'satoken:sign:nonce:',
         'satoken:auth:digest:nonce:',
+        'satoken:sso:state:used:',
+        'satoken:sso:slo:nonce:',
         'satoken:security:brute:',
         'satoken:security:device:',
         'satoken:sensitive:',
@@ -50,6 +59,8 @@ class SaSessionCleaner
         'oauth2:at:',
         'oauth2:rt:',
         'oauth2:rt:used:',
+        'oauth2:family:',
+        'oauth2:refresh:',
         'oauth2:client:fail:',
         'satoken:audit:',
     ];
@@ -61,6 +72,9 @@ class SaSessionCleaner
 
     public static function setBatchSize(int $size): void
     {
+        if ($size < 1) {
+            throw new \InvalidArgumentException('清理批次大小必须大于 0');
+        }
         self::$batchSize = $size;
     }
 
@@ -95,19 +109,24 @@ class SaSessionCleaner
      */
     protected static function sweepExpired(SaTokenDaoInterface $dao, string $prefix): int
     {
-        $keys = $dao->searchKeys($prefix, '', 0, self::$batchSize);
+        $offset = self::$scanOffsets[$prefix] ?? 0;
+        $keys = $dao->searchKeys($prefix, '', $offset, self::$batchSize);
         $cleaned = 0;
-
         foreach ($keys as $key) {
             if ($key === '') {
                 continue;
             }
-            $ttl = $dao->getTimeout($key);
-            if ($ttl !== -1 && $ttl !== -2 && $ttl <= 0) {
-                $dao->delete($key);
+            if ($dao instanceof SaTokenDaoDeleteIfExpiredInterface && $dao->deleteIfExpired($key)) {
                 $cleaned++;
             }
         }
+
+        // Deleting entries shifts later pages toward this offset. Keep the
+        // cursor in place after any deletion so those shifted entries are not
+        // skipped; advance only when the current page contained no removals.
+        self::$scanOffsets[$prefix] = $cleaned > 0
+            ? $offset
+            : (count($keys) < self::$batchSize ? 0 : $offset + self::$batchSize);
 
         return $cleaned;
     }
@@ -141,5 +160,6 @@ class SaSessionCleaner
         self::$running = false;
         self::$stopped = false;
         self::$totalCleaned = 0;
+        self::$scanOffsets = [];
     }
 }

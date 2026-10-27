@@ -7,6 +7,7 @@ namespace SaToken\Tests;
 use PHPUnit\Framework\MockObject\MockObject;
 use PHPUnit\Framework\TestCase;
 use SaToken\Dao\SaTokenDaoRedis;
+use SaToken\Exception\SaTokenException;
 
 class RedisDaoTest extends TestCase
 {
@@ -29,11 +30,9 @@ class RedisDaoTest extends TestCase
 
         // 注入属性
         $clientProp = $reflection->getProperty('client');
-        $clientProp->setAccessible(true);
         $clientProp->setValue($this->dao, $this->mockRedis);
 
         $saRedisProp = $reflection->getProperty('saRedis');
-        $saRedisProp->setAccessible(true);
         $saRedisProp->setValue($this->dao, null);
     }
 
@@ -46,7 +45,8 @@ class RedisDaoTest extends TestCase
         $this->mockRedis
             ->expects($this->once())
             ->method('setex')
-            ->with($key, 3600, $value);
+            ->with($key, 3600, $value)
+            ->willReturn(true);
 
         $this->mockRedis
             ->expects($this->once())
@@ -59,6 +59,83 @@ class RedisDaoTest extends TestCase
         $this->assertEquals($value, $result);
     }
 
+    public function testSetRejectsFailedRedisWrite(): void
+    {
+        $this->mockRedis
+            ->expects($this->once())
+            ->method('set')
+            ->with('test:failed-write', 'value')
+            ->willReturn(false);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('Redis 写入失败');
+        $this->dao->set('test:failed-write', 'value');
+    }
+
+    public function testSetExRejectsFailedRedisWrite(): void
+    {
+        $this->mockRedis
+            ->expects($this->once())
+            ->method('setex')
+            ->with('test:failed-write', 60, 'value')
+            ->willReturn(false);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('Redis 写入失败');
+        $this->dao->set('test:failed-write', 'value', 60);
+    }
+
+    public function testUpdateRejectsRedisScriptFailure(): void
+    {
+        $this->mockRedis
+            ->expects($this->once())
+            ->method('eval')
+            ->willReturn(false);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('Redis 更新失败');
+        $this->dao->update('test:failed-update', 'value');
+    }
+
+    public function testIncrementRejectsRedisScriptFailure(): void
+    {
+        $this->mockRedis
+            ->expects($this->once())
+            ->method('eval')
+            ->willReturn(false);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('Redis 原子计数失败');
+        $this->dao->increment('test:failed-increment');
+    }
+
+    public function testDeleteRejectsFailedRedisCommand(): void
+    {
+        $this->mockRedis
+            ->expects($this->once())
+            ->method('del')
+            ->with(['test:failed-delete'])
+            ->willReturn(false);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('Redis 删除失败');
+        $this->dao->delete('test:failed-delete');
+    }
+
+    public function testDeleteMultipleRejectsFailedRedisCommand(): void
+    {
+        $keys = ['test:failed-delete-one', 'test:failed-delete-two'];
+        $this->mockRedis
+            ->expects($this->once())
+            ->method('del')
+            ->with($keys)
+            ->willReturn(false);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('Redis 批量删除失败');
+        $this->dao->deleteMultiple($keys);
+    }
+
     public function testDelete(): void
     {
         $key = 'test:delete';
@@ -66,7 +143,8 @@ class RedisDaoTest extends TestCase
         $this->mockRedis
             ->expects($this->once())
             ->method('del')
-            ->with([$key]);
+            ->with([$key])
+            ->willReturn(1);
 
         $this->dao->delete($key);
     }
@@ -78,7 +156,8 @@ class RedisDaoTest extends TestCase
         $this->mockRedis
             ->expects($this->once())
             ->method('del')
-            ->with($keys);
+            ->with($keys)
+            ->willReturn(count($keys));
 
         $this->dao->deleteMultiple($keys);
     }

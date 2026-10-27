@@ -1,7 +1,7 @@
 # Sa-Token PHP
 
 <p align="center">
-<img src="https://img.shields.io/badge/PHP-8.1%20~%208.5-777BB4?style=flat-square&logo=php&logoColor=white" alt="PHP Version">
+<img src="https://img.shields.io/badge/PHP-8.2%20~%208.5-777BB4?style=flat-square&logo=php&logoColor=white" alt="PHP Version">
 <img src="https://img.shields.io/github/license/pohoc/sa-token?style=flat-square&label=License" alt="License">
 </p>
 
@@ -10,9 +10,11 @@
 > **致谢与声明**：本项目参考了 Java 生态 [dromara/sa-token](https://github.com/dromara/sa-token)（Apache-2.0）的 API 设计理念，
 > 代码为独立 PHP 实现。感谢原项目作者与社区。
 
-> **v0.1.3 安全加固说明**：本版本修复了安全审计发现的多处高危问题，部分行为为有意收紧（详见 [CHANGELOG.md](CHANGELOG.md)）：
-> OAuth2 换 token 必须携带 redirect_uri、SSO 回调强制校验 state、客户端注册必须配置非空 secret、
-> `SaSign` 强制 timestamp/nonce 且移除 MD5、加密插件密文格式升级（兼容读取旧格式）。升级前请阅读变更日志。
+> **未发布版本升级提示**：当前分支包含安全加固和兼容性收紧，最低 PHP 版本为 8.2（详见 [CHANGELOG.md](CHANGELOG.md)）：
+> OAuth2 换 token 必须携带 redirect_uri、SSO 回调强制校验 state、机密 OAuth2 客户端必须配置高熵 secret（公开客户端仅能使用授权码 + PKCE）、
+> `SaSign` 强制 timestamp/nonce 且移除 MD5、加密插件密文格式升级（AES 旧格式兼容读取；安全敏感路径拒绝旧版无密钥 SM3 摘要）。升级前请阅读变更日志。
+
+> **存储完整性说明**：安全敏感读取会拒绝 MAC 校验失败的密文。旧版 SM4 存储使用无密钥 SM3 摘要，无法验证篡改；启用 SM 模式升级后，应重新登录并清理旧版持久化会话和 OAuth2 令牌。
 
 ## 特性一览
 
@@ -47,7 +49,7 @@
 
 ## 环境要求
 
-- PHP >= 8.1
+- PHP >= 8.2
 - ext-openssl
 - ext-redis（可选：使用 Redis 存储适配器时需要）
 
@@ -174,6 +176,8 @@ $result = StpUtil::login(10001);
 StpUtil::checkLogin(); // 指纹不匹配时抛出异常
 ```
 
+该选项同时校验普通 Token 和无状态 JWT。开启后，缺少指纹记录的旧 Token 会按失效处理，需要重新登录；启用指纹绑定时会为无状态 JWT 额外保存每个 Token 的指纹状态。
+
 #### Token 黑名单
 
 手动拉黑 Token，无需等待过期：
@@ -194,9 +198,12 @@ $tokens = StpUtil::getBlacklistTokens();
 
 ### 5. 登录认证
 
+`StpUtil::login()` 只负责为已认证用户建立 Sa-Token 会话，不会校验账号密码。请先通过应用的用户认证逻辑确认身份，再把服务端查到的用户 ID 传入；不要直接使用请求提交的 `userId`。
+
 ```php
 use SaToken\StpUtil;
 
+// 此处假设上游登录流程已经验证了账号凭据。
 $result = StpUtil::login(10001);
 $token = $result->getAccessToken();
 
@@ -224,6 +231,8 @@ StpUtil::logoutByLoginId(10001);
 StpUtil::kickoutByTokenValue($tokenValue);
 StpUtil::kickout(10001);
 ```
+
+`logoutByLoginId()`、`kickout()` 和 `kickoutByTokenValue()` 是管理操作，不会判断当前调用者是否有权注销目标账号或 Token。对外提供这些操作时，必须在应用层校验专用管理权限，并验证目标账号/Token 属于调用者可管理的范围；不要直接把请求参数传入这些方法。
 
 ### 5. 权限校验
 
@@ -276,9 +285,10 @@ use SaToken\StpUtil;
 
 SaRouter::match('/user/**')->check(fn() => StpUtil::checkLogin());
 SaRouter::match('/admin/**', '/system/**')->check(fn() => StpUtil::checkRole('admin'));
-SaRouter::notMatch('/public/**')->match('**')->check(fn() => StpUtil::checkLogin());
-SaRouter::match('/api/**')->check(fn() => StpUtil::checkLogin())->stop();
+SaRouter::notMatch('/public/**')->check(fn() => StpUtil::checkLogin());
 ```
+
+`match()` 和 `notMatch()` 每次调用都会设置新的匹配条件；公开路径排除规则应直接交给 `notMatch()`，不要再链式调用 `match()` 覆盖它。
 
 通配符：`**` 匹配任意多级路径，`*` 匹配单级路径。
 
@@ -294,6 +304,8 @@ $level = StpUtil::getDisableLevel(10001, 'comment');
 
 StpUtil::untieDisable(10001, 'comment');
 ```
+
+封禁、解封及按 loginId 查询/操作会话或设备的 API 都是管理原语，本身不做调用者授权。应用必须先检查管理权限和目标范围，不能将请求提交的 loginId 直接传给这些方法。
 
 ### 8. 二级认证
 
@@ -311,7 +323,10 @@ StpUtil::closeSafe('payment');
 
 ### 9. 身份切换
 
+`switchTo()` 会让当前 Token 后续读取的登录 ID、角色和权限切换为目标账号。它不会判断调用者是否有权模拟该账号；必须先在应用层检查专用管理权限，并确认目标账号处于允许范围内。不要将未经授权的用户输入直接传给 `switchTo()`。
+
 ```php
+StpUtil::checkPermission('user:impersonate');
 StpUtil::switchTo(20002);
 $isSwitch = StpUtil::isSwitch();
 StpUtil::endSwitch();
@@ -344,6 +359,8 @@ $tempToken = StpUtil::createTempToken(10001, 600);
 $device = StpUtil::getLoginDeviceType();
 $terminals = StpUtil::getTerminalListByLoginId(10001);
 ```
+
+`getTerminalListByLoginId()` 返回终端元数据，不包含可用于认证的 Token。该方法和按 loginId 查询的设备管理接口不会验证调用者对目标账号的管理权限；面向用户提供时，应从已认证身份或服务端授权策略确定目标账号，并限制其可操作范围。
 
 ### 12. Refresh Token
 
@@ -510,6 +527,7 @@ SaToken::init([
 
 - 国际算法：AES-256-CBC + HMAC-SHA256
 - 国密算法：SM4-CBC + HMAC-SM3（需 `cryptoType => 'sm'`）
+- 安全敏感数据通过带密钥的 MAC 校验；旧版无密钥 SM3 摘要只保留在 `decrypt()` 的迁移兼容路径，不会被内置认证、Session 和 OAuth2 读取接受。
 
 ## 国密全链路
 
@@ -551,12 +569,19 @@ Token 自包含所有信息，无需 DAO 存储：
 
 ```php
 SaToken::init([
-    'jwtSecretKey' => 'your-secret-key',
+    // 通过密钥管理服务注入预生成的随机密钥，至少 32 字节
+    'jwtSecretKey' => getenv('SA_TOKEN_JWT_SECRET_KEY') ?: '',
     'jwtStateless' => true,
 ]);
 
 $token = StpUtil::loginStateless(10001);
 ```
+
+无状态 JWT 若启用正值 `activityTimeout`，会额外在 DAO 保存短期活动标记；标记缺失或超过活动窗口会使 Token 失效。
+
+`jwtStateless` 控制无状态签发与校验；`jwtMode` 用于有状态 JWT，支持 `simple`（默认）和 `mixed`（同时校验签名 JWT 与 DAO 登录记录）。`jwtMixed` 不是有效配置项。
+
+JWT Payload 仅签名、不加密，持有者可以解码读取其中的声明。不要把密码、密钥或其他机密写入 JWT；无状态 Token 不会自动携带服务端登录 Session 数据，需传入 `createStatelessToken()` 的显式 claims 也应仅包含可公开的数据。
 
 ### SM3 签名
 
@@ -579,7 +604,7 @@ SaToken::init([
         'sloUrl'       => 'https://sso.example.com/logout',
         'mode'         => 'cross-domain',
         'clientId'     => 'your-client-id',
-        'clientSecret' => 'your-client-secret',
+        'clientSecret' => 'replace-with-a-random-secret-of-at-least-32-bytes',
         'allowDomains' => ['*.example.com', 'app.mycompany.cn'],
         'checkState'   => true,   // 强制校验回调 state 防 CSRF（默认 true，不推荐关闭）
         'crossRedis'   => false,  // 认证中心与客户端是否跨 Redis 部署
@@ -599,6 +624,8 @@ SaToken::init([
 
 ### 使用
 
+check-ticket 端点必须把请求中的 `nonce` 原样放入签名响应的 `request_nonce` 字段，且回显 `ticket`。认证中心可用 `$sso->buildCheckTicketResponse($ticket, $loginId, $request['nonce'])` 构建响应；客户端会将两者与本次请求比较，拒绝旧响应重放。
+
 ```php
 use SaToken\Sso\SaSsoManager;
 
@@ -614,7 +641,11 @@ $loginId = $sso->doLoginCallback($ticket, $redirect, $state);
 
 ### 域名校验
 
-配置 `allowDomains` 后，SSO 回调会校验 redirect 域名是否在白名单内，防止开放重定向攻击。支持通配符（如 `*.example.com`）。
+配置 `allowDomains` 后，SSO 回调会校验 redirect 域名是否在白名单内，防止开放重定向攻击。支持通配符（如 `*.example.com`）；该规则匹配其子域，不包含 `example.com` 根域，若需允许根域请单独添加。白名单不带端口时只允许 HTTPS 默认端口 443（本机开发地址仍可使用自定义端口）；需要其他端口时显式配置，如 `app.example.com:8443` 或 `*.example.com:8443`。
+
+SSO `state` 使用 `__Host-` 前缀的 Secure、HttpOnly、host-only Cookie，固定 `Path=/` 且不设置 `Domain`，避免父域 Cookie 配置下被兄弟子域注入覆盖。SSO 回调应返回发起登录的同一主机；若跨子域回调，请在目标主机发起登录。该状态 Cookie 始终要求 HTTPS（浏览器对 localhost 开发地址有特殊处理）。
+
+`same-domain` 模式必须为共享 Token 配置 Cookie Domain，因此该主域下的所有子域都属于同一信任边界；不要把 Cookie 共享给不受信任或可被用户托管的子域。无法信任全部子域时，请使用 `cross-domain` 或 `front-separate` 模式。此模式每次取身份都要求 `X-CSRF-Token` 请求头，并要求配置 `signKey`（或 `tokenEncryptKey` / `aesKey`）用于 HMAC 绑定；不会在缺少密钥时退化成可预测的纯哈希。前端从 `__Host-sso_csrf_token` Cookie 读取该值并放入请求头；该 Cookie 固定 Secure、host-only、`Path=/`，防止兄弟子域覆盖。
 
 ### 参数防丢
 
@@ -624,12 +655,12 @@ $loginId = $sso->doLoginCallback($ticket, $redirect, $state);
 // buildLoginUrl 只有一个参数，携带当前 URL 请通过模式处理器调用
 $loginUrl = $sso->getModeHandler()->buildLoginUrl(null, $currentUrl);
 
-$result = $sso->getModeHandler()->doLoginCallbackWithRedirect($ticket);
+$result = $sso->getModeHandler()->doLoginCallbackWithRedirect($ticket, $state);
 $loginId = $result['loginId'];
 $redirect = $result['redirect'];
 ```
 
-注意：`restorePreLoginUrl` 恢复登录前 URL 时会强制过 `allowDomains` 白名单（未配置 `allowDomains` 时返回空串）；配置 `clientSecret` 后预登录 URL Cookie 附带 HMAC 签名防篡改。
+注意：`restorePreLoginUrl` 恢复登录前 URL 时会强制通过 `allowDomains` 白名单（未配置时返回空串），并要求预登录 URL Cookie 的 HMAC 签名有效。签名密钥依次使用至少 32 字节的 SSO `clientSecret`、全局 `signKey`、`hmacKey`、`tokenEncryptKey` 或 `aesKey`；未配置可用密钥时不保存或恢复预登录 URL，避免信任可被兄弟子域覆盖的 Cookie。
 
 ### 单点注销回调
 
@@ -641,7 +672,7 @@ $params = $sso->buildSloCallbackParams($loginId);
 $sso->doSloCallback($loginId, $params);
 ```
 
-配置 `clientSecret` 后，`doSloCallback` 会强制验签（回调参数必须包含 `sign`），防止伪造注销请求。
+`doSloCallback` 必须配置 `clientSecret` 并验签；参数须包含 `sign`、签名的 `loginId` 和一次性 `nonce`。同一注销回调在时间窗内只能处理一次，防止重放旧请求注销后续会话。
 
 ## OAuth2.0
 
@@ -649,10 +680,11 @@ $sso->doSloCallback($loginId, $params);
 
 ```php
 SaToken::init([
-    // 签发 id_token（OpenID Connect）必需
-    'jwtSecretKey' => 'your-jwt-secret-key',
+    // 签发 id_token（OpenID Connect）必需；仅服务端保存 RSA 私钥
+    // 将对应 RSA 公钥安全分发给客户端用于验签，最低 2048 位
+    'rsaPrivateKey' => getenv('SA_TOKEN_OIDC_RSA_PRIVATE_KEY') ?: '',
     'oauth2' => [
-        'grantTypes'           => ['authorization_code', 'password'],
+        'grantTypes'           => ['authorization_code'],
         'codeTimeout'          => 60,
         'accessTokenTimeout'   => 7200,
         'refreshTokenTimeout'  => 2592000,
@@ -667,14 +699,18 @@ SaToken::init([
 
 | 模式 | 说明 |
 |------|------|
-| `authorization_code` | 授权码模式（推荐） |
-| `implicit` | 隐藏式 |
-| `password` | 密码模式 |
+| `authorization_code` | 授权码模式（推荐；公开客户端必须使用 PKCE） |
+| `implicit` | 隐藏式（仅用于旧系统兼容，不建议新部署启用） |
+| `password` | 密码模式（旧式兼容模式；新部署应使用授权码 + PKCE） |
 | `client_credentials` | 客户端凭证模式 |
+
+新部署只启用所需的 grant。尤其不要为了方便默认开启 `password`：它会把用户密码验证暴露在 Token 端点；旧系统确需使用时，必须显式配置用户凭据验证回调、来源限速和账户锁定策略。密码模式不会签发 OpenID Connect `id_token`。
+
+访问令牌和 ID Token 必须经 grant 专用入口签发。`SaOAuth2Handle::generateAccessToken()` 与 `generateIdToken()` 是已弃用的低层 API，现在会拒绝直接签发；请使用授权码兑换、密码或客户端凭证流程，避免跳过客户端认证、授权码和 PKCE 校验。
 
 ### 使用
 
-使用前必须先注册客户端（clientId/clientSecret 强制非空，redirectUris 必须 HTTPS 且在白名单内，grantTypes/scopes 为白名单）：
+使用前必须先注册客户端（机密客户端 `clientSecret` 至少 32 字节；公开客户端可留空，但仅能使用授权码 + PKCE；redirectUris 必须 HTTPS 且在白名单内，grantTypes/scopes 为白名单）：
 
 ```php
 use SaToken\OAuth2\Data\SaOAuth2Client;
@@ -684,7 +720,7 @@ $oauth2 = SaToken::getOAuth2Manager();
 
 $oauth2->registerClient(new SaOAuth2Client([
     'clientId'     => 'your-client-id',
-    'clientSecret' => 'your-client-secret',
+    'clientSecret' => 'replace-with-a-random-secret-of-at-least-32-bytes',
     'redirectUris' => ['https://app.example.com/callback'],
     'grantTypes'   => ['authorization_code', 'refresh_token'],
     'scopes'       => ['user:read', 'user:write'],
@@ -711,7 +747,7 @@ $accessToken = $oauth2->exchangeTokenByCode($code, $clientId, $clientSecret, $re
 
 ### OpenID Connect
 
-配置 `openIdMode => true` 且请求 scope 必须包含 `openid` 时，响应中自动包含 `id_token`（依赖 `jwtSecretKey` 配置）：
+配置 `openIdMode => true` 且请求 scope 必须包含 `openid` 时，响应中自动包含使用 RS256 签名的 `id_token`（依赖至少 2048 位的 `rsaPrivateKey` 配置）。私钥只留在签发端，并将对应公钥分发给客户端验签；不要把签名私钥或全局对称密钥交给客户端。`issuer` 必须配置为无凭据、无查询参数和片段的 HTTPS URL：
 
 ```php
 $accessToken = $oauth2->exchangeTokenByCode($code, $clientId, $clientSecret, $redirectUri);
@@ -728,14 +764,18 @@ $hasScope = $oauth2->hasScope($accessTokenValue, 'user:write');
 
 ## Http Basic / Digest 认证
 
+认证回调必须查询应用的用户存储并验证密码，不能使用示例账号或硬编码密码。生产环境应通过 HTTPS 使用 Basic；Digest 仅适用于兼容既有客户端的场景。Digest HA1 可用于离线猜测密码，必须按密码等价凭据保护。
+
 ```php
 use SaToken\SaToken;
 
 $auth = SaToken::getHttpAuth();
+$userRepository = app(UserRepository::class); // 替换为应用自己的用户仓库
 
-$auth->setBasicValidator(function (string $username, string $password): mixed {
-    if ($username === 'admin' && $password === '123456') {
-        return 10001;
+$auth->setBasicValidator(function (string $username, string $password) use ($userRepository): mixed {
+    $user = $userRepository->findByUsername($username);
+    if ($user !== null && password_verify($password, $user->passwordHash)) {
+        return $user->id;
     }
     return null;
 });
@@ -746,9 +786,9 @@ $auth->checkBasic('My Realm');
 Digest 认证：
 
 ```php
-$auth->setDigestValidator(function (string $username): ?string {
-    $users = ['admin' => md5('admin:My Realm:123456')];
-    return $users[$username] ?? null;
+$auth->setDigestValidator(function (string $username) use ($userRepository): ?string {
+    // 返回账户存储中为该 realm 预先保存的 HA1 值，不要在代码中硬编码账号或密码。
+    return $userRepository->findDigestHa1($username, 'My Realm');
 });
 
 $auth->checkDigest('My Realm');
@@ -756,9 +796,11 @@ $auth->checkDigest('My Realm');
 
 Digest 流程：服务端先返回 `401` + `WWW-Authenticate` 响应头（含服务端签发的一次性 nonce，TTL 300 秒），客户端携带该 nonce 完成认证；nonce 在认证成功后立即作废，重放直接拒绝。手搓 Digest 头调试时，必须先触发 challenge 获取服务端签发的 nonce。
 
+Basic 和 Digest 凭据失败会接入 `antiBruteMaxFailures` / `antiBruteLockDuration`，按账号和可信来源 IP 进行限流；认证成功会清除该账号当前来源的失败计数。
+
 ## 参数签名校验（SaSign）
 
-跨系统 API 调用签名，防参数篡改、防请求重放。使用前需先在配置中设置 `signKey`：
+跨系统 API 调用签名，防参数篡改、防请求重放。使用前需配置至少 32 字节的高熵 `signKey`：
 
 ```php
 use SaToken\SaToken;
@@ -779,7 +821,7 @@ $signed = $sign->signParams($params, 'POST', '/api/order');
 $isValid = $sign->verifySign($signed, 'POST', '/api/order');
 ```
 
-也可通过 `setNonceValidator` 接入自定义 nonce 存储。注意不要使用 `Cache::has` 这类"先查后写"的校验器——它存在并发重放窗口，推荐使用内置存储。
+也可通过 `setNonceValidator` 接入自定义 nonce 存储。关闭内置存储（`nonceStore=false`）时必须配置该 validator，否则签名校验会拒绝请求。注意不要使用 `Cache::has` 这类"先查后写"的校验器——它存在并发重放窗口，推荐使用内置存储。
 
 签名算法仅支持 `sha256`（MD5 因碰撞风险已移除）：
 
@@ -794,11 +836,14 @@ use SaToken\SaToken;
 
 $apiKey = SaToken::getApiKey();
 
-$apiKey->registerKey('ak-123456', 'sk-abcdef', 10001);
-$apiKey->registerKey('ak-789012', 'sk-ghijkl', 10002);
+$apiKey->registerKey('ak-123456', 'replace-with-random-api-secret-at-least-32-bytes-1', 10001);
+$apiKey->registerKey('ak-789012', 'replace-with-random-api-secret-at-least-32-bytes-2', 10002);
 
 $apiKey->checkApiKey();
 ```
+
+API Key/Secret 验证失败也会使用 `antiBruteMaxFailures` / `antiBruteLockDuration`，按 API Key 和可信来源 IP 限制连续错误的 Secret 尝试；验证成功会清除该 API Key 当前来源的失败计数。
+所有 API Secret（包括自定义验证器收到的凭据）都必须至少 32 字节；生产环境应为每个 Key 独立生成随机 Secret。自定义验证器还应将 Secret 安全存储并使用恒时比较。
 
 自定义验证器：
 
@@ -838,6 +883,8 @@ $filter->addAfterFilter(function () {
 $filter->execute();
 ```
 
+`allowCredentials` 可使用布尔值、`"true"` / `"false"` 或 `1` / `0`；其他值会被拒绝，避免字符串 `"false"` 被当成启用。
+
 CORS 预检请求自动处理：
 
 ```php
@@ -868,6 +915,8 @@ use SaToken\SaToken;
 SaToken::setDao(new SaTokenDaoFile(['path' => __DIR__ . '/runtime/sa-token']));
 ```
 
+新建的存储目录仅当前用户可访问，数据文件和锁文件使用 `0600` 权限。锁使用固定的 256 个条带，因此随机缺失 key 查询不会无限创建锁文件；不同 key 偶尔会共享一把锁。升级包含锁文件布局变化的版本时，需先停止旧 worker，再启动新 worker，避免新旧进程使用不同锁路径。
+
 ### Redis 存储
 
 ```php
@@ -876,6 +925,8 @@ use SaToken\SaToken;
 
 SaToken::setDao(new SaTokenDaoRedis());
 ```
+
+注入已有的 `\Redis` 客户端时，必须使用默认的原始值编码（关闭 PhpRedis serializer 和 compression）。DAO 的原子操作通过 Lua 直接比较 Redis 原始字节；编码选项会让普通 `GET/SET` 与 Lua 读写不一致，构造或设置不兼容客户端时会抛出异常。
 
 ### 独立 Redis
 
@@ -898,6 +949,8 @@ use SaToken\SaToken;
 $psr16Cache = new SomePsr16Cache();
 SaToken::setDao(new SaTokenDaoPsr16($psr16Cache));
 ```
+
+PSR-16 不提供原子 `getAndDelete`、`setIfNotExists` 或 `increment`。该适配器用主机本地文件锁串行化这些 DAO 操作；默认锁目录按当前有效 Unix UID 隔离，且目录和锁文件权限分别收紧为 `0700`、`0600`，因此只覆盖使用相同 UID 和同一锁目录的 PHP 进程。不同系统用户无法通过共享锁目录获得协调；跨 UID 或跨主机共享 PSR-16 缓存时，请使用 Redis DAO 或实现分布式原子操作的自定义 DAO。文件锁目录默认位于系统临时目录，也可通过构造函数第二个参数指定。
 
 ### 配置驱动自动装配
 
@@ -928,12 +981,21 @@ return [
 
 ### 自定义 DAO
 
-实现 `SaTokenDaoInterface`：
+实现 `SaTokenDaoInterface`。另外，登录、会话、OAuth2 刷新和敏感验证码状态更新使用带租约互斥锁，
+自定义 DAO 还必须实现 `SaTokenDaoCompareAndDeleteInterface`，并保证比较后删除是原子操作；
+否则这些加锁操作会在获取锁前抛出 `SaTokenException`。OAuth2 刷新家族状态变更还要求实现
+`SaTokenDaoCompareAndExpireInterface`，以原子方式比较并延长记录 TTL；调用 `TokenManager::renewLock()` 时也需要此接口。
+会话变更还要求实现
+`SaTokenDaoCompareAndSetInterface` 和 `SaTokenDaoCompareAndUpdateInterface`：条件更新必须原子地比较并替换，且保留记录原 TTL；条件删除用于阻止租约过期后的旧会话对象覆盖或删除新代际。不要用先读取再删除/更新来模拟原子操作。
 
 ```php
 use SaToken\Dao\SaTokenDaoInterface;
+use SaToken\Dao\SaTokenDaoCompareAndDeleteInterface;
+use SaToken\Dao\SaTokenDaoCompareAndExpireInterface;
+use SaToken\Dao\SaTokenDaoCompareAndSetInterface;
+use SaToken\Dao\SaTokenDaoCompareAndUpdateInterface;
 
-class MyDao implements SaTokenDaoInterface
+class MyDao implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface, SaTokenDaoCompareAndExpireInterface, SaTokenDaoCompareAndSetInterface, SaTokenDaoCompareAndUpdateInterface
 {
     public function get(string $key): ?string { /* ... */ }
     public function set(string $key, string $value, ?int $timeout = null): void { /* ... */ }
@@ -950,34 +1012,57 @@ class MyDao implements SaTokenDaoInterface
     public function searchKeys(string $prefix, string $keyword, int $start, int $size): array { /* ... */ } // 仅返回键名列表
     public function setIfNotExists(string $key, string $value, ?int $timeout = null): bool { /* ... */ } // 仅当 key 不存在时设置（登录锁/签名防重放依赖）
     public function increment(string $key, int $amount = 1, ?int $timeout = null): int { /* ... */ } // 原子计数（防爆破/OTP 依赖）
+    public function compareAndDelete(string $key, string $expectedValue): bool { /* 原子比较并删除 */ }
+    public function compareAndExpire(string $key, string $expectedValue, int $timeout): bool { /* 原子比较并续期，不缩短现有 TTL */ }
+    public function compareAndSet(string $key, ?string $expectedValue, ?string $newValue, ?int $timeout = null): bool { /* 原子条件设置或删除 */ }
+    public function compareAndUpdate(string $key, string $expectedValue, string $newValue): bool { /* 原子条件更新并保留原 TTL */ }
 }
 ```
 
-## 密码加密工具
+## 摘要与密码哈希工具
 
 ```php
 use SaToken\Plugin\SaTokenCrypto;
 
-$hash = SaTokenCrypto::md5('password');
-$hash = SaTokenCrypto::sha1('password');
-$hash = SaTokenCrypto::sha256('password');
+$digest = SaTokenCrypto::md5('payload');
+$digest = SaTokenCrypto::sha1('payload');
+$digest = SaTokenCrypto::sha256('payload');
 
-$hmac = SaTokenCrypto::hmacSha256('data', 'key');
-$hmac = SaTokenCrypto::hmacSha1('data', 'key');
+$hmacKey = bin2hex(random_bytes(32)); // 保存到安全配置中，后续签名与验签使用同一密钥
+$hmac = SaTokenCrypto::hmacSha256('data', $hmacKey);
+$hmac = SaTokenCrypto::hmacSha1('data', $hmacKey);
 
 $bcrypt = SaTokenCrypto::bcryptHash('password', 12);
 $valid = SaTokenCrypto::bcryptVerify('password', $bcrypt);
 ```
 
+MD5、SHA1 和 SHA256 是通用快速摘要，不能用于存储密码；密码应使用 Argon2id 等专用密码哈希。遗留系统必须使用 bcrypt 时，成本至少为 10，并应根据服务器性能选择更高成本；本方法拒绝低于 10 的成本。bcrypt 输入不能超过 72 字节；`bcryptHash()` 对超长密码抛出异常，`bcryptVerify()` 对超长输入返回 `false`，避免 bcrypt 静默忽略后缀导致不同密码被视为相同凭据。需要支持更长密码时，请使用 Argon2id 等不受该限制的算法。
+
 AES / RSA / SM2 / SM3 / SM4 等加解密功能参见 `SaTokenCrypto` 类。
+
+AES/SM4 解密默认只接受带 HMAC 的认证格式。旧版未认证 CBC 密文如需迁移，可在受控离线流程中临时使用 `aesDecryptLegacy()` / `sm4DecryptLegacy()` 读取，再用对应的加密方法重加密；迁移方法不能用于请求输入或在线解密路径。
+
+Token 存储加密器 `SaTokenEncryptor::decrypt()` 同样默认拒绝旧版无密钥 SM3 摘要的 SM4 密文；仅受控离线迁移可显式调用 `decryptLegacy()`，然后立即用 `encrypt()` 重加密。
 
 ## 防暴力破解
 
-登录失败次数记录与账号自动锁定：
+登录失败次数按账号和来源 IP 分别记录；单一账号达到阈值后只锁定该账号在当前来源的尝试，避免匿名请求锁住其他用户。另有来源级累计上限，防止攻击者不断更换账号名制造无界计数键；达到上限后，该来源在锁定时长内不能继续尝试该登录类型，并且同一来源同时进行的认证校验数不会超过该阈值。显式调用 `lock()` / `unlockAccount()` 仍按账号全局生效。部署在代理后时，应在应用启动时只信任实际反向代理的精确 IP，并确保代理会覆盖/清理客户端传入的转发头：
+
+```php
+use SaToken\Util\SaTokenContext;
+
+SaTokenContext::setTrustedProxies(['10.0.0.10', '10.0.0.11']);
+```
+
+配置后，只有来自可信代理的请求才会解析 `X-Forwarded-For`（从右向左跳过可信代理）或回退到 `X-Real-IP`；未配置可信代理时不会采信这些头。此列表只支持精确 IP，不支持 CIDR。启用任一防暴力阈值时，如果无法解析客户端 IP，认证检查和失败计数会拒绝继续；需要在 HTTP 请求上下文中提供可靠的客户端 IP。分布式来源的全局限流仍应由网关或应用层补充。
 
 ```php
 StpUtil::checkAntiBrute('user@example.com');
 
+// 凭据验证成功后释放并发槽位，并清理该账号在当前来源的失败状态。
+StpUtil::clearAntiBruteFailures('user@example.com');
+
+// 凭据验证失败后记录失败（不要同时调用成功清理）。
 StpUtil::recordAntiBruteFailure('user@example.com');
 
 $isLocked = StpUtil::isAccountLocked('user@example.com');
@@ -995,13 +1080,15 @@ $info = StpUtil::getAntiBruteInfo('user@example.com');
 SaToken::init([
     'antiBruteMaxFailures'  => 5,
     'antiBruteLockDuration' => 600,
+    'antiBruteIpMaxFailures' => 100,
 ]);
 ```
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
-| `antiBruteMaxFailures` | int | `0` | 最大失败次数，`0` 不限制 |
+| `antiBruteMaxFailures` | int | `5` | 单一账号、单一来源的最大失败次数，`0` 不限制 |
 | `antiBruteLockDuration` | int | `600` | 锁定时长（秒） |
+| `antiBruteIpMaxFailures` | int | `100` | 同一来源、同一登录类型在锁定窗口内的累计失败上限，并限制并发认证校验数；成功登录只清除该账号在当前来源的失败状态，不会重置来源累计失败数，避免用其他有效账号绕过来源限流。需 `antiBruteLockDuration` 大于 `0`，`0` 关闭此上限 |
 
 ## IP 异常检测
 
@@ -1046,6 +1133,8 @@ $kickedCount = StpUtil::kickoutAllDevices(10001, $currentToken);
 $device = StpUtil::findDevice(10001, 'device-id-xxx');
 ```
 
+设备列表、设备查询和踢出方法不会验证调用者对目标账号的管理权限。面向用户提供时，应从已认证身份或服务端授权策略确定目标账号，并限制其可操作范围。
+
 配置：
 
 ```php
@@ -1054,15 +1143,18 @@ SaToken::init([
 ]);
 ```
 
+无状态 JWT 调用 `kickoutAllDevices($loginId, $exceptToken)` 时，必须启用设备管理来记录并枚举该账号的令牌；未启用时方法会抛出异常，避免静默跳过撤销。
+
 设备信息自动检测（User-Agent 解析）：设备类型（PC/Mobile/Tablet）、设备名称（微信/钉钉/支付宝/Web）、操作系统、浏览器。
+
+启用 `tokenEncrypt` 后，设备管理记录中的 Token 字段也会加密保存；未加密的历史记录会在更新时逐步迁移。
 
 ## 敏感操作验证
 
-OTP 验证码与安全令牌：
+OTP 验证码与安全令牌。使用这些功能前必须配置至少 32 字节的高熵 `signKey`；敏感验证状态会使用派生 HMAC 绑定当前验证场景和账户，防止 DAO 数据被篡改或跨账户复制。升级后已有的验证码和未消费安全令牌会失效，需要重新获取。
 
 ```php
-$code = StpUtil::generateOtpCode('payment');
-$code = StpUtil::sendOtpCode('payment');
+StpUtil::sendOtpCode('payment');
 
 StpUtil::verifyOtpCode('payment', '123456');
 
@@ -1073,6 +1165,10 @@ StpUtil::clearSensitiveVerify('payment');
 $token = StpUtil::openSensitiveVerify('payment', 600);
 StpUtil::checkSensitiveVerify('payment', $token);
 ```
+
+`sendOtpCode()` 要求当前请求已登录，并按当前登录账号投递验证码，不会把验证码返回给调用方。底层静态方法 `SaSensitiveVerify::sendCode()` 可由服务端指定任意 `loginId`，本身不验证调用者身份或目标归属；只应从可信服务端流程调用，不要暴露为允许匿名用户任意指定手机号/邮箱的接口。对外发送端点还应校验目标归属并设置来源级限流。`generateOtpCode()` 同样仅供可信服务端自定义投递流程使用；验证码属于秘密凭据，不要将其放入 HTTP/RPC 响应返回给用户。
+
+一次性安全令牌必须在 OTP 成功验证后通过 `createSafeTokenAfterVerified()`（或 `StpUtil::openSensitiveVerify()`）签发。旧的 `SaSensitiveVerify::createSafeToken()` 入口现 fail-closed，因为直接调用会绕过 OTP 验证；请迁移到受验证状态保护的签发流程。
 
 ## 审计日志
 
@@ -1144,6 +1240,8 @@ $interceptor->setValidateToken(true)
 $interceptor->handleIncoming();
 $outHeaders = $interceptor->handleOutgoing();
 ```
+
+接收端拦截器会按 `setLoginType()` 配置验证 Token；若请求头声明了不同的 `X-Sa-Login-Type`，请求将被拒绝。
 
 ## 事件监听
 
@@ -1224,7 +1322,9 @@ try {
 | `cookieHttpOnly` | bool | `true` | Cookie HttpOnly |
 | `cookieSameSite` | string | `'Strict'` | Cookie SameSite：`Strict` / `Lax` / `None` |
 | `tokenFingerprint` | bool | `false` | 是否启用 Token 指纹绑定（IP + User-Agent） |
-| `storage` | array | `['type' => 'memory']` | 存储层配置，`type`: `memory` / `file` / `redis`；`file` 可配 `path`、`scanLimit`，`redis` 可配 `host` / `port` / `password` / `database` / `timeout`；PSR-16 请用 `SaToken::setDao()` |
+| `storage` | array | `['type' => 'memory']` | 存储层配置，`type`: `memory` / `file` / `redis`；`file` 可配 `path`、`scanLimit`，`redis` 可配 `url` 或 `host` / `port` / `username` / `password` / `database` / `timeout`；PSR-16 请用 `SaToken::setDao()` |
+
+启用正值 `activityTimeout` 时，Token 签发即创建活动标记，每次有效请求刷新标记；标记缺失或已过期会让 Token 失效，不会自动恢复。升级前已存在但没有活动标记的会话需要重新登录。
 
 ### 加密配置
 
@@ -1232,22 +1332,23 @@ try {
 |--------|------|--------|------|
 | `cryptoType` | string | `'intl'` | 加密类型：`intl` / `sm` |
 | `tokenEncrypt` | bool | `false` | 是否启用 Token 内容加密 |
-| `tokenEncryptKey` | string | `''` | Token 加密密钥 |
-| `aesKey` | string | `''` | AES 密钥（16/24/32 字节） |
+| `tokenEncryptKey` | string | `''` | Token 加密密钥（AES 至少 32 字节；SM4 使用 32 字节材料或 32 位十六进制密钥） |
+| `aesKey` | string | `''` | AES 密钥（至少 32 字节；旧版未认证密文迁移入口仍可读取历史短密钥密文） |
 | `rsaPrivateKey` | string | `''` | RSA 私钥 |
 | `rsaPublicKey` | string | `''` | RSA 公钥 |
 | `hmacKey` | string | `''` | HMAC 密钥 |
 | `sm2PrivateKey` | string | `''` | SM2 私钥 |
 | `sm2PublicKey` | string | `''` | SM2 公钥 |
-| `sm4Key` | string | `''` | SM4 密钥（16 字节） |
+| `sm4Key` | string | `''` | SM4 密钥（32 字节材料或 32 位十六进制密钥） |
 | `jwtSecretKey` | string | `''` | JWT 密钥 |
 | `jwtStateless` | bool | `false` | JWT 无状态模式 |
+| `jwtMode` | string | `'simple'` | 有状态 JWT 模式：`simple` / `mixed`；无状态模式由 `jwtStateless` 控制 |
 
 ### 签名配置
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
-| `signKey` | string | `''` | 参数签名密钥 |
+| `signKey` | string | `''` | 参数签名密钥，至少 32 字节；空值表示未启用 |
 | `signTimestampGap` | int | `600` | 签名时间戳容差（秒） |
 | `signAlg` | string | `'sha256'` | 签名算法：仅支持 `sha256`（MD5 因碰撞风险已移除） |
 
@@ -1303,7 +1404,7 @@ try {
 | `isNewRefreshToken` | `false` | 是否每次生成新 Refresh Token |
 | `openIdMode` | `false` | 是否启用 OpenID Connect |
 | `issuer` | `''` | OpenID 签发者 URL |
-| `clientSecretMaxFailures` | `10` | 密钥连续失败临时锁定阈值 |
+| `clientSecretMaxFailures` | `10` | 同一客户端和来源 IP 的密钥连续失败临时锁定阈值；请求上下文无法提供来源 IP 时跳过本地锁定，需由上游限流 |
 | `clientFailureWindow` | `300` | 失败计数窗口（秒） |
 
 ## 项目结构

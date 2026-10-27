@@ -5,12 +5,18 @@ declare(strict_types=1);
 namespace SaToken\Auth;
 
 use SaToken\Exception\SaTokenException;
-use SaToken\SaToken;
+use SaToken\Security\SaAntiBruteUtil;
 use SaToken\StpUtil;
 use SaToken\Util\SaTokenContext;
 
 class SaApiKey
 {
+    protected const MIN_SECRET_BYTES = 32;
+
+    protected const MAX_KEY_BYTES = 1024;
+
+    protected const MAX_SECRET_BYTES = 4096;
+
     protected string $keyHeaderName;
 
     protected string $secretHeaderName;
@@ -18,7 +24,7 @@ class SaApiKey
     /** @var callable(string, string): mixed|null */
     protected $validator = null;
 
-    /** @var array<string, array{secret: string, loginId: mixed}> */
+    /** @var array<array-key, array{secret: string, loginId: mixed}> */
     protected array $keyRegistry = [];
 
     /**
@@ -34,35 +40,98 @@ class SaApiKey
 
     public function checkApiKey(): void
     {
+        // A caller that catches the authentication exception must not fall
+        // through to an unrelated native bearer token from this request.
+        SaTokenContext::denyTokenFallback();
+
+        if (SaTokenContext::hasMultipleHeaderValues($this->keyHeaderName, true)
+            || SaTokenContext::hasMultipleHeaderValues($this->secretHeaderName, true)) {
+            throw new SaTokenException('API Key 或 Secret Header 存在多个值');
+        }
+
         $apiKey = SaTokenContext::getHeader($this->keyHeaderName);
         $apiSecret = SaTokenContext::getHeader($this->secretHeaderName);
 
-        if ($apiKey === null || $apiSecret === null) {
+        if ($apiKey === null || $apiSecret === null || trim($apiKey) === '' || trim($apiSecret) === '') {
             throw new SaTokenException('缺少 API Key 或 Secret');
+        }
+        if (strlen($apiKey) > self::MAX_KEY_BYTES || strlen($apiSecret) > self::MAX_SECRET_BYTES) {
+            throw new SaTokenException('API Key 或 Secret 超过最大长度');
+        }
+
+        SaAntiBruteUtil::checkAndThrow($apiKey, 'api-key');
+
+        try {
+            $this->authenticateReservedApiKey($apiKey, $apiSecret);
+        } finally {
+            SaAntiBruteUtil::releaseCurrentSourceAttempt($apiKey, 'api-key');
+        }
+    }
+
+    /** Complete all work after reserving a source concurrency slot. */
+    protected function authenticateReservedApiKey(string $apiKey, string $apiSecret): void
+    {
+        if (strlen($apiSecret) < self::MIN_SECRET_BYTES) {
+            SaAntiBruteUtil::recordFailure($apiKey, 'api-key');
+            throw new SaTokenException('API Secret 至少需要 32 字节');
         }
 
         if ($this->validator !== null) {
-            $loginId = ($this->validator)($apiKey, $apiSecret);
+            try {
+                $loginId = ($this->validator)($apiKey, $apiSecret);
+            } catch (\Throwable $exception) {
+                SaAntiBruteUtil::recordFailure($apiKey, 'api-key');
+                throw $exception;
+            }
         } else {
             $loginId = $this->validateFromRegistry($apiKey, $apiSecret);
         }
 
-        if ($loginId === null) {
+        if ($loginId === null || is_bool($loginId) || !is_scalar($loginId) || $loginId === '') {
+            SaAntiBruteUtil::recordFailure($apiKey, 'api-key');
             throw new SaTokenException('API Key 验证失败');
         }
 
         // 同一 Key 已存在有效会话时直接复用：每次请求全量 login() 会触发
         // 账号级分布式锁竞争、反复触发 onLogin 事件、并在多实例部署下互相踢线
         $deviceType = 'apikey:' . hash('sha256', $apiKey);
+        $logic = StpUtil::getStpLogic();
+        $tokenManager = $logic->getTokenManager();
+        $accountLockKey = 'login:' . $logic->getLoginType() . ':' . hash('sha256', (string) $loginId);
         for ($attempt = 0; $attempt < 3; $attempt++) {
-            $reuseToken = $this->findReusableToken($loginId, $apiKey);
-            if ($reuseToken !== null) {
-                SaTokenContext::setHeader(SaToken::getConfig()->getTokenName(), $reuseToken);
-                return;
+            if ($tokenManager->acquireLock($accountLockKey, 30)) {
+                try {
+                    $logic->checkDisable($loginId, 'login');
+                    $reuseToken = $this->findReusableToken($loginId, $apiKey);
+                    if ($reuseToken !== null) {
+                        // Disable and session reuse share the account lock.
+                        // Recheck after storage reads, then renew immediately
+                        // before making the cached bearer current for this request.
+                        $logic->checkDisable($loginId, 'login');
+                        if (!$tokenManager->renewLock($accountLockKey, 30)) {
+                            throw new SaTokenException('账号会话锁已失效，拒绝复用 API Key 会话');
+                        }
+
+                        $logic->writeTokenToResponse(
+                            $reuseToken,
+                            (new \SaToken\SaLoginParameter())->setWriteResponseCredentials(false)
+                        );
+                        SaTokenContext::setTokenOverride($logic->getLoginType(), $reuseToken);
+                        SaAntiBruteUtil::clearCurrentAccountFailures($apiKey, 'api-key');
+                        return;
+                    }
+                } finally {
+                    $tokenManager->releaseLock($accountLockKey);
+                }
             }
 
             try {
-                StpUtil::login($loginId, (new \SaToken\SaLoginParameter())->setDeviceType($deviceType));
+                $result = StpUtil::login($loginId, (new \SaToken\SaLoginParameter())->setDeviceType($deviceType));
+                SaTokenContext::setTokenOverride(
+                    StpUtil::getStpLogic()->getLoginType(),
+                    $result->getAccessToken()
+                );
+                SaAntiBruteUtil::clearCurrentAccountFailures($apiKey, 'api-key');
                 return;
             } catch (SaTokenException $e) {
                 // 冷启动并发：多个请求同时发现无可复用会话时，只有一个能拿到
@@ -82,11 +151,14 @@ class SaApiKey
     {
         $logic = StpUtil::getStpLogic();
         $deviceType = 'apikey:' . hash('sha256', $apiKey);
+        $expectedLoginId = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
         $tokens = $logic->getTokenManager()->getTokenListByLoginId($loginId, $logic->getLoginType());
         foreach ($tokens as $item) {
             $tokenValue = is_string($item['tokenValue'] ?? null) ? $item['tokenValue'] : '';
             $itemDevice = is_string($item['deviceType'] ?? null) ? $item['deviceType'] : '';
-            if ($tokenValue !== '' && $itemDevice === $deviceType && $logic->getTokenManager()->isTokenValid($tokenValue)) {
+            if ($tokenValue !== ''
+                && $itemDevice === $deviceType
+                && $logic->getLoginIdByToken($tokenValue) === $expectedLoginId) {
                 return $tokenValue;
             }
         }
@@ -99,15 +171,37 @@ class SaApiKey
         return $this;
     }
 
+    /** Update configured credential header names without discarding validators or registered keys. */
+    public function setHeaderNames(string $keyHeaderName, string $secretHeaderName): static
+    {
+        $this->keyHeaderName = $keyHeaderName;
+        $this->secretHeaderName = $secretHeaderName;
+        return $this;
+    }
+
+    /** Detect any configured API Key credential header, including malformed attempts. */
     public function isApiKeyRequest(): bool
     {
-        $apiKey = SaTokenContext::getHeader($this->keyHeaderName);
-        $apiSecret = SaTokenContext::getHeader($this->secretHeaderName);
-        return $apiKey !== null && $apiSecret !== null;
+        // Detect any authentication attempt, not only a complete valid pair.
+        // Partial or duplicated credentials must not fall through to bearer auth.
+        return SaTokenContext::hasMultipleHeaderValues($this->keyHeaderName, true)
+            || SaTokenContext::hasMultipleHeaderValues($this->secretHeaderName, true)
+            || SaTokenContext::getHeader($this->keyHeaderName) !== null
+            || SaTokenContext::getHeader($this->secretHeaderName) !== null;
     }
 
     public function registerKey(string $apiKey, string $apiSecret, mixed $loginId = null): void
     {
+        if (trim($apiKey) === '' || trim($apiSecret) === '') {
+            throw new SaTokenException('注册 API Key 必须提供非空 Key 和 Secret');
+        }
+        if (strlen($apiSecret) < self::MIN_SECRET_BYTES) {
+            throw new SaTokenException('API Secret 至少需要 32 字节');
+        }
+        if (strlen($apiKey) > self::MAX_KEY_BYTES || strlen($apiSecret) > self::MAX_SECRET_BYTES) {
+            throw new SaTokenException('API Key 或 Secret 超过最大长度');
+        }
+
         $this->keyRegistry[$apiKey] = [
             'secret'  => $apiSecret,
             'loginId' => $loginId,
@@ -115,10 +209,23 @@ class SaApiKey
     }
 
     /**
-     * @param array<string, array{secret: string, loginId: mixed}> $registry
+     * @param array<array-key, array{secret: string, loginId: mixed}> $registry
      */
     public function setKeyRegistry(array $registry): static
     {
+        foreach ($registry as $apiKey => $entry) {
+            if (trim((string) $apiKey) === '' || !is_array($entry)
+                || !is_string($entry['secret'] ?? null) || trim($entry['secret']) === '') {
+                throw new SaTokenException('API Key 注册表中的 Key 和 Secret 必须为非空字符串');
+            }
+            if (strlen($entry['secret']) < self::MIN_SECRET_BYTES) {
+                throw new SaTokenException('API Key 注册表中的 API Secret 至少需要 32 字节');
+            }
+            if (strlen((string) $apiKey) > self::MAX_KEY_BYTES || strlen($entry['secret']) > self::MAX_SECRET_BYTES) {
+                throw new SaTokenException('API Key 注册表中的 Key 或 Secret 超过最大长度');
+            }
+        }
+
         $this->keyRegistry = $registry;
         return $this;
     }

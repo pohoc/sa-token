@@ -7,8 +7,11 @@ namespace SaToken\Tests;
 use PHPUnit\Framework\TestCase;
 use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoMemory;
+use SaToken\Exception\NotSafeException;
 use SaToken\SaToken;
+use SaToken\Security\SaSensitiveVerify;
 use SaToken\StpLogic;
+use SaToken\StpUtil;
 use SaToken\TokenManager;
 use SaToken\Util\SaTokenContext;
 
@@ -17,6 +20,23 @@ class TestableStpLogic extends StpLogic
     public function checkFingerprint(string $tokenValue): void
     {
         parent::checkFingerprint($tokenValue);
+    }
+}
+
+class SaTokenDaoPausingTokenLineageWrite extends SaTokenDaoMemory
+{
+    public ?\Closure $beforeLineageWrite = null;
+
+    public function setIfNotExists(string $key, string $value, ?int $timeout = null): bool
+    {
+        if (str_starts_with($key, TokenManager::TOKEN_SESSION_LINEAGE_PREFIX)
+            && $this->beforeLineageWrite !== null) {
+            $callback = $this->beforeLineageWrite;
+            $this->beforeLineageWrite = null;
+            $callback();
+        }
+
+        return parent::setIfNotExists($key, $value, $timeout);
     }
 }
 
@@ -36,6 +56,7 @@ class StpLogicSecurityTest extends TestCase
             'tokenStyle'      => 'uuid',
             'tokenFingerprint' => true,
             'aesKey'          => 'test-encryption-key-for-sa-token-tests-only-32bytes',
+            'signKey'         => 'sensitive-verify-test-sign-key-32-bytes',
         ]);
         SaToken::setConfig($config);
         $this->dao = new SaTokenDaoMemory();
@@ -52,6 +73,353 @@ class StpLogicSecurityTest extends TestCase
         SaTokenContext::setContextId('test');
         SaTokenContext::clear();
         SaToken::reset();
+    }
+
+    public function testExpiredTokenLockCannotOverwriteNewOwnersLineage(): void
+    {
+        $dao = new SaTokenDaoPausingTokenLineageWrite();
+        $this->dao = $dao;
+        SaToken::setDao($dao);
+        $token = 'lineage-lease-race-token';
+        $tokenLockKey = TokenManager::LOCK_PREFIX . 'token-value:' . hash('sha256', $token);
+        $dao->beforeLineageWrite = function () use ($dao, $tokenLockKey, $token): void {
+            // Model the token lock lease expiring after the old owner checked
+            // the bearer, then let a different login type publish the token.
+            $dao->delete($tokenLockKey);
+            SaTokenContext::setContextId('replacement-worker');
+            try {
+                $this->manager->saveToken($token, 'new-owner', 'new-type', 'PC', 3600);
+            } finally {
+                SaTokenContext::setContextId('test');
+            }
+        };
+
+        $this->manager->saveToken($token, 'stale-owner', 'old-type', 'PC', 3600);
+
+        self::assertSame('new-owner', $this->manager->getLoginIdByToken($token));
+        self::assertSame('new-type', $this->manager->getTokenSessionLoginType($token));
+    }
+
+    public function testStaleLineageMigrationCannotOverwriteReusedTokenOwner(): void
+    {
+        $dao = new SaTokenDaoPausingTokenLineageWrite();
+        $this->dao = $dao;
+        SaToken::setDao($dao);
+        $token = 'lineage-migration-lease-race-token';
+        $this->manager->saveToken($token, 'old-owner', 'old-type', 'PC', 3600);
+        $dao->delete(TokenManager::TOKEN_SESSION_LINEAGE_PREFIX . $token);
+
+        $tokenLockKey = TokenManager::LOCK_PREFIX . 'token-value:' . hash('sha256', $token);
+        $dao->beforeLineageWrite = function () use ($dao, $tokenLockKey, $token): void {
+            // The migration already read the old bearer and its account index.
+            // Revoke/reuse the raw value before its conditional lineage claim.
+            $dao->delete(TokenManager::TOKEN_PREFIX . $token);
+            $dao->delete($tokenLockKey);
+            SaTokenContext::setContextId('replacement-migration-worker');
+            try {
+                $this->manager->saveToken($token, 'new-owner', 'new-type', 'PC', 3600);
+            } finally {
+                SaTokenContext::setContextId('test');
+            }
+        };
+
+        self::assertNull($this->manager->getTokenSessionBinding($token, 'old-type'));
+        self::assertSame('new-owner', $this->manager->getLoginIdByToken($token));
+        self::assertSame('new-type', $this->manager->getTokenSessionLoginType($token));
+    }
+
+    public function testRevokedCustomTokenCannotBeReissuedToAnotherAccount(): void
+    {
+        SaToken::setAction(new class () implements \SaToken\Action\SaTokenActionInterface {
+            public function getPermissionList(mixed $loginId, string $loginType): array
+            {
+                return [];
+            }
+
+            public function getRoleList(mixed $loginId, string $loginType): array
+            {
+                return [];
+            }
+
+            public function generateTokenValue(mixed $loginId, string $loginType): string
+            {
+                return 'custom-reused-token-value';
+            }
+        });
+
+        $oldToken = $this->stp->login('old-account')->getAccessToken();
+        self::assertSame('old-account', $this->stp->getLoginIdByToken($oldToken));
+        $this->stp->kickoutByTokenValue($oldToken);
+
+        try {
+            $this->stp->login('new-account');
+            self::fail('已吊销的 bearer 值不得再次签发');
+        } catch (\SaToken\Exception\SaTokenException $exception) {
+            self::assertStringContainsString('Token 值冲突', $exception->getMessage());
+        }
+        self::assertNull($this->stp->getLoginIdByToken($oldToken), '旧 bearer 不得认证为新账号');
+    }
+
+    public function testReplayingRevokedRefreshTokenDoesNotRevokeCurrentSession(): void
+    {
+        SaToken::getConfig()
+            ->setRefreshToken(true)
+            ->setRefreshTokenRotation(true)
+            ->setRefreshTokenTimeout(3600);
+        $login = $this->stp->login('refresh-revoke-user');
+        $accessToken = $login->getAccessToken();
+        $refreshToken = $login->getRefreshToken();
+        self::assertNotSame('', $refreshToken);
+
+        self::assertTrue($this->stp->revokeRefreshToken($refreshToken));
+        try {
+            $this->stp->refreshToken($refreshToken);
+            self::fail('已撤销的 RefreshToken 必须拒绝刷新');
+        } catch (\SaToken\Exception\SaTokenException) {
+        }
+
+        self::assertSame('refresh-revoke-user', $this->stp->getLoginIdByToken($accessToken));
+    }
+
+    public function testOpenSensitiveVerifyCannotMintProofBeforeOtpVerification(): void
+    {
+        $loginId = 'sensitive-user';
+        $token = $this->stp->login($loginId)->getAccessToken();
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->willReturnCallback(static fn (string $name): array => strcasecmp($name, 'satoken') === 0 ? [$token] : []);
+        SaTokenContext::setRequest($request);
+
+        $this->expectException(NotSafeException::class);
+        $this->expectExceptionMessage('请先完成该场景的一次性验证码验证');
+        $this->stp->openSensitiveVerify('payment');
+    }
+
+    public function testOpenSensitiveVerifyConsumesSuccessfulOtpBeforeIssuingProof(): void
+    {
+        $loginId = 'sensitive-user';
+        $token = $this->stp->login($loginId)->getAccessToken();
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->willReturnCallback(static fn (string $name): array => strcasecmp($name, 'satoken') === 0 ? [$token] : []);
+        SaTokenContext::setRequest($request);
+
+        $code = SaSensitiveVerify::generateCode('payment', $loginId);
+        $this->stp->verifyOtpCode('payment', $code);
+
+        $proof = $this->stp->openSensitiveVerify('payment');
+        $this->stp->checkSensitiveVerify('payment', $proof);
+        self::assertFalse(SaSensitiveVerify::isVerified('payment', $loginId));
+
+        $this->expectException(NotSafeException::class);
+        $this->stp->openSensitiveVerify('payment');
+    }
+
+    public function testOtpVerificationCannotMintSensitiveProofForAnotherSession(): void
+    {
+        SaToken::getConfig()->setTokenFingerprint(false);
+        $loginId = 'cross-session-sensitive-user';
+        $tokenA = $this->manager->createTokenValue($loginId, 'login');
+        $this->manager->saveToken($tokenA, $loginId, 'login', 'PC', 3600);
+        $tokenB = $this->manager->createTokenValue($loginId, 'login');
+        $this->manager->saveToken($tokenB, $loginId, 'login', 'APP', 3600);
+
+        $requestA = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $requestA->method('getHeader')->willReturnCallback(static fn (string $name): array => strcasecmp($name, 'satoken') === 0 ? [$tokenA] : []);
+        SaTokenContext::setRequest($requestA);
+
+        $code = SaSensitiveVerify::generateCode('payment', $loginId);
+        $this->stp->verifyOtpCode('payment', $code);
+
+        $requestB = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $requestB->method('getHeader')->willReturnCallback(static fn (string $name): array => strcasecmp($name, 'satoken') === 0 ? [$tokenB] : []);
+        SaTokenContext::setRequest($requestB);
+
+        try {
+            $this->stp->openSensitiveVerify('payment');
+            self::fail('A second session must not mint a proof from another session OTP');
+        } catch (NotSafeException $exception) {
+            self::assertSame('请先完成该场景的一次性验证码验证', $exception->getMessage());
+        }
+
+        SaTokenContext::setRequest($requestA);
+        $proof = $this->stp->openSensitiveVerify('payment');
+        SaTokenContext::setRequest($requestB);
+        try {
+            $this->stp->checkSensitiveVerify('payment', $proof);
+            self::fail('A sensitive proof must not be usable from another session');
+        } catch (NotSafeException $exception) {
+            self::assertSame('安全验证令牌无效或已过期', $exception->getMessage());
+        }
+
+        SaTokenContext::setRequest($requestA);
+        $this->stp->checkSensitiveVerify('payment', $proof);
+    }
+
+    public function testExpiredTokenReuseCannotCrossLoginTypeThroughStaleAccountIndex(): void
+    {
+        $dao = new class () extends SaTokenDaoMemory {
+            public ?\Closure $afterTokenWrite = null;
+
+            public function setIfNotExists(string $key, string $value, ?int $timeout = null): bool
+            {
+                $created = parent::setIfNotExists($key, $value, $timeout);
+                if ($created && str_starts_with($key, TokenManager::TOKEN_PREFIX) && $this->afterTokenWrite !== null) {
+                    $callback = $this->afterTokenWrite;
+                    $this->afterTokenWrite = null;
+                    $callback();
+                }
+
+                return $created;
+            }
+        };
+        $this->dao = $dao;
+        SaToken::setDao($dao);
+        SaToken::getConfig()->setConcurrent(true);
+        $legacyType = new StpLogic('legacy');
+        $otherType = new StpLogic('current');
+        $tokenValues = [
+            'legacy'  => ['reused-cross-type-token-value', 'legacy-keep-token-value'],
+            'current' => ['reused-cross-type-token-value'],
+        ];
+        SaToken::setAction(new class ($tokenValues) implements \SaToken\Action\SaTokenActionInterface {
+            /** @param array<string, array<string>> $tokenValues */
+            public function __construct(private array $tokenValues)
+            {
+            }
+
+            public function getPermissionList(mixed $loginId, string $loginType): array
+            {
+                return [];
+            }
+
+            public function getRoleList(mixed $loginId, string $loginType): array
+            {
+                return [];
+            }
+
+            public function generateTokenValue(mixed $loginId, string $loginType): ?string
+            {
+                return array_shift($this->tokenValues[$loginType]);
+            }
+        });
+
+        $loginId = 'same-login-id';
+        $expiredToken = $legacyType->login(
+            $loginId,
+            (new \SaToken\SaLoginParameter())->setTimeout(1)
+        )->getAccessToken();
+        $legacyType->login(
+            $loginId,
+            (new \SaToken\SaLoginParameter())->setTimeout(3600)->setDeviceType('mobile')
+        );
+        self::assertContains(
+            $expiredToken,
+            array_column($this->manager->getTokenListByLoginId($loginId, 'legacy'), 'tokenValue')
+        );
+
+        // Simulate expiry of one short-lived token while another token keeps
+        // the account index alive. A newly issued token in another login type
+        // may then legitimately reuse the expired bearer string.
+        $this->dao->delete(TokenManager::TOKEN_PREFIX . $expiredToken);
+        $this->dao->delete(TokenManager::TOKEN_SESSION_LINEAGE_PREFIX . $expiredToken);
+        $loginIdObservedDuringBearerPublish = 'not observed';
+        $dao->afterTokenWrite = function () use ($legacyType, $expiredToken, &$loginIdObservedDuringBearerPublish): void {
+            $loginIdObservedDuringBearerPublish = $legacyType->getLoginIdByToken($expiredToken);
+        };
+        $currentToken = $otherType->login($loginId)->getAccessToken();
+        self::assertSame($expiredToken, $currentToken);
+        self::assertNull($loginIdObservedDuringBearerPublish);
+
+        self::assertNull(
+            $legacyType->getLoginIdByToken($currentToken),
+            'A stale account index must not authenticate a token now owned by another login type'
+        );
+        $legacyType->kickoutByTokenValue($currentToken);
+        self::assertSame($loginId, $otherType->getLoginIdByToken($currentToken));
+    }
+
+    public function testSourceAntiBruteLimitRemainsEnabledWhenAccountLimitIsDisabled(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'antiBruteMaxFailures' => 0,
+            'antiBruteIpMaxFailures' => 2,
+            'antiBruteLockDuration' => 600,
+        ]));
+        SaTokenContext::setRequest(new class () {
+            public function getClientIp(): string
+            {
+                return '192.0.2.77';
+            }
+        });
+
+        $this->stp->checkAntiBrute('random-user-1');
+        $this->stp->recordAntiBruteFailure('random-user-1');
+        $this->stp->checkAntiBrute('random-user-2');
+        $this->stp->recordAntiBruteFailure('random-user-2');
+
+        $this->expectException(\SaToken\Exception\SaTokenException::class);
+        $this->expectExceptionMessage('当前来源失败次数过多');
+        $this->stp->checkAntiBrute('random-user-3');
+    }
+
+    public function testSuccessfulStandaloneAntiBruteCheckReleasesItsSourceSlot(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'antiBruteMaxFailures' => 0,
+            'antiBruteIpMaxFailures' => 1,
+            'antiBruteLockDuration' => 600,
+        ]));
+        SaTokenContext::setRequest(new class () {
+            public function getClientIp(): string
+            {
+                return '192.0.2.78';
+            }
+        });
+
+        StpUtil::checkAntiBrute('external-user');
+        StpUtil::clearAntiBruteFailures('external-user');
+        StpUtil::checkAntiBrute('external-user');
+        StpUtil::recordAntiBruteFailure('external-user');
+
+        $this->expectException(\SaToken\Exception\SaTokenException::class);
+        $this->expectExceptionMessage('当前来源失败次数过多');
+        StpUtil::checkAntiBrute('another-user');
+    }
+
+    public function testGetTokenValueRejectsRepeatedFrameworkCredentialHeaders(): void
+    {
+        $headerBag = new class () {
+            /** @return array<int, string> */
+            public function all(?string $name = null): array
+            {
+                return $name === 'satoken' ? ['valid-token', 'attacker-token'] : [];
+            }
+        };
+        SaTokenContext::setRequest(new class ($headerBag) {
+            public function __construct(public object $headers)
+            {
+            }
+
+            public function header(string $name): string
+            {
+                return 'valid-token';
+            }
+        });
+
+        self::assertNull($this->stp->getTokenValue());
+    }
+
+    public function testGetTokenValueRejectsDuplicateCookiesWithTheSameName(): void
+    {
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getCookieParams')->willReturn(['satoken' => 'victim-token']);
+        $request->method('getHeader')->willReturnCallback(static function (string $name): array {
+            return strcasecmp($name, 'Cookie') === 0
+                ? ['satoken=attacker-token; satoken=victim-token']
+                : [];
+        });
+        SaTokenContext::setRequest($request);
+
+        self::assertNull($this->stp->getTokenValue());
     }
 
     // ===== Token 指纹相关测试 =====
@@ -109,8 +477,8 @@ class StpLogicSecurityTest extends TestCase
         $token = 'sat_token-fingerprint-check';
         $fingerprint = $this->manager->computeFingerprint();
 
-        $this->manager->saveFingerprint($token, $fingerprint, 3600);
         $this->manager->saveToken($token, 10001, 'login', 'PC');
+        $this->manager->saveFingerprint($token, $fingerprint, 3600);
 
         SaToken::setConfig(SaToken::getConfig()->setTokenFingerprint(true));
 
@@ -129,8 +497,8 @@ class StpLogicSecurityTest extends TestCase
         $token = 'sat_token-fingerprint-fail';
         $wrongFp = hash('sha256', 'different-ip-and-ua');
 
-        $this->manager->saveFingerprint($token, $wrongFp, 3600);
         $this->manager->saveToken($token, 10001, 'login', 'PC');
+        $this->manager->saveFingerprint($token, $wrongFp, 3600);
 
         SaToken::setConfig(SaToken::getConfig()->setTokenFingerprint(true));
 
@@ -145,8 +513,8 @@ class StpLogicSecurityTest extends TestCase
         $token = 'sat_token-fingerprint-disabled';
         $wrongFp = hash('sha256', 'different-ip-and-ua');
 
-        $this->manager->saveFingerprint($token, $wrongFp, 3600);
         $this->manager->saveToken($token, 10001, 'login', 'PC');
+        $this->manager->saveFingerprint($token, $wrongFp, 3600);
 
         SaToken::setConfig(SaToken::getConfig()->setTokenFingerprint(false));
         $this->stp = new TestableStpLogic('login');
@@ -159,7 +527,7 @@ class StpLogicSecurityTest extends TestCase
         }
     }
 
-    public function testCheckFingerprintWhenNoneSaved(): void
+    public function testCheckFingerprintFailsClosedWhenNoneSaved(): void
     {
         $token = 'sat_token-no-fingerprint';
         $this->manager->saveToken($token, 10001, 'login', 'PC');
@@ -167,12 +535,8 @@ class StpLogicSecurityTest extends TestCase
         SaToken::setConfig(SaToken::getConfig()->setTokenFingerprint(true));
         $this->stp = new TestableStpLogic('login');
 
-        try {
-            $this->stp->checkFingerprint($token);
-            $this->assertTrue(true);
-        } catch (\Throwable $e) {
-            $this->fail('Fingerprint check should pass when no fingerprint saved');
-        }
+        $this->expectException(\SaToken\Exception\NotLoginException::class);
+        $this->stp->checkFingerprint($token);
     }
 
     public function testLogoutClearsFingerprint(): void
@@ -222,6 +586,55 @@ class StpLogicSecurityTest extends TestCase
         $this->assertTrue($this->stp->isTokenRevoked($token));
     }
 
+    public function testRevokedStatefulAccessTokenCannotBeReactivatedByRefreshTokenAfterCleanupFailure(): void
+    {
+        $dao = new class () extends SaTokenDaoMemory {
+            public bool $failNextRefreshDelete = false;
+
+            public function compareAndDelete(string $key, string $expectedValue): bool
+            {
+                if ($this->failNextRefreshDelete && str_starts_with($key, TokenManager::REFRESH_TOKEN_PREFIX)) {
+                    $this->failNextRefreshDelete = false;
+                    throw new \SaToken\Exception\SaTokenException('simulated refresh cleanup failure');
+                }
+
+                return parent::compareAndDelete($key, $expectedValue);
+            }
+        };
+        $this->dao = $dao;
+        SaToken::setDao($dao);
+        SaToken::getConfig()
+            ->setRefreshToken(true)
+            ->setRefreshTokenTimeout(3600)
+            ->setRefreshTokenRotation(false);
+
+        $accessToken = $this->stp->login('revoked-with-orphan-refresh')->getAccessToken();
+        $refreshToken = $this->stp->createRefreshToken($accessToken, 3600);
+        $dao->failNextRefreshDelete = true;
+
+        try {
+            $this->stp->revokeToken($accessToken);
+            self::fail('Token cleanup failure should be surfaced');
+        } catch (\SaToken\Exception\SaTokenException) {
+            self::assertTrue($this->manager->isBlacklisted($accessToken));
+            self::assertNotNull($this->manager->getLoginIdByToken($accessToken));
+            self::assertTrue($this->manager->isRefreshTokenValid($refreshToken));
+        }
+
+        try {
+            $this->stp->refreshToken($refreshToken);
+            self::fail('A revoked AccessToken must not be reactivated by its orphaned RefreshToken');
+        } catch (\SaToken\Exception\SaTokenException $exception) {
+            self::assertNotNull($this->manager->getLoginIdByToken($accessToken), $exception->getMessage());
+        }
+
+        // Retrying revoke is idempotent, and must finish cleanup instead of
+        // treating the blacklist marker as proof that the session is gone.
+        self::assertTrue($this->stp->revokeToken($accessToken));
+        self::assertNull($this->manager->getLoginIdByToken($accessToken));
+        self::assertFalse($this->manager->isRefreshTokenValid($refreshToken));
+    }
+
     public function testRevokeTokenUsesTokenTimeout(): void
     {
         $token = 'sat_token-with-timeout';
@@ -260,7 +673,7 @@ class StpLogicSecurityTest extends TestCase
         $this->assertFalse($this->stp->isTokenRevoked($token));
     }
 
-    public function testDeleteAllTokenByLoginIdClearsBlacklist(): void
+    public function testDeleteAllTokenByLoginIdPreservesBlacklist(): void
     {
         $token1 = $this->manager->createTokenValue(10001, 'login');
         $token2 = $this->manager->createTokenValue(10001, 'login');
@@ -276,8 +689,8 @@ class StpLogicSecurityTest extends TestCase
 
         $this->manager->deleteAllTokenByLoginId(10001, 'login');
 
-        $this->assertFalse($this->manager->isBlacklisted($token1));
-        $this->assertFalse($this->manager->isBlacklisted($token2));
+        $this->assertTrue($this->manager->isBlacklisted($token1));
+        $this->assertTrue($this->manager->isBlacklisted($token2));
     }
 
     // ===== StpUtil 静态方法测试 =====

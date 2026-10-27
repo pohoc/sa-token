@@ -6,10 +6,60 @@ namespace SaToken\Tests;
 
 use CryptoSm\SM4\Sm4;
 use PHPUnit\Framework\TestCase;
+use SaToken\Exception\SaTokenException;
 use SaToken\Util\SaTokenEncryptor;
 
 class SaTokenEncryptorTest extends TestCase
 {
+    public function testPhpunitTestingEnvironmentVariableDoesNotEnableEmptyEncryptionKey(): void
+    {
+        $previousValue = getenv('PHPUNIT_TESTING');
+        putenv('PHPUNIT_TESTING=0');
+
+        try {
+            foreach (['intl', 'sm'] as $cryptoType) {
+                try {
+                    new class (true, '', $cryptoType) extends SaTokenEncryptor {
+                        protected function isUnitTestRuntime(): bool
+                        {
+                            return false;
+                        }
+                    };
+                    $this->fail("{$cryptoType} 加密不能仅因 PHPUNIT_TESTING 环境变量而接受空密钥");
+                } catch (SaTokenException $e) {
+                    $this->assertStringContainsString('未配置', $e->getMessage());
+                }
+            }
+        } finally {
+            if ($previousValue === false) {
+                putenv('PHPUNIT_TESTING');
+            } else {
+                putenv('PHPUNIT_TESTING=' . $previousValue);
+            }
+        }
+    }
+
+    public function testDisabledEncryptionDoesNotRequireAKey(): void
+    {
+        $encryptor = new class (false, '') extends SaTokenEncryptor {
+            protected function isUnitTestRuntime(): bool
+            {
+                return false;
+            }
+        };
+
+        $this->assertSame('plain-value', $encryptor->encrypt('plain-value'));
+        $this->assertSame('plain-value', $encryptor->decrypt('plain-value'));
+    }
+
+    public function testUnknownCryptoTypeIsRejectedWhenEncryptionIsDisabled(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('不支持的加密类型');
+
+        new SaTokenEncryptor(false, '', 'smm');
+    }
+
     private function createAesEncryptor(bool $enabled = true, string $key = ''): SaTokenEncryptor
     {
         if ($key === '') {
@@ -49,6 +99,17 @@ class SaTokenEncryptorTest extends TestCase
         $encrypted = $encryptor->encrypt($plaintext);
         $this->assertNotEquals($plaintext, $encrypted);
         $this->assertEquals($plaintext, $encryptor->decrypt($encrypted));
+    }
+
+    public function testContextBoundCiphertextRejectsDifferentStorageKeyAndUnboundLegacyValue(): void
+    {
+        foreach (['intl', 'sm'] as $mode) {
+            $encryptor = new SaTokenEncryptor(true, 'context-binding-test-key-32-bytes!!', $mode);
+            $ciphertext = $encryptor->encryptForContext('owner', 'record:key:one');
+            self::assertSame('owner', $encryptor->decryptCheckedForContext($ciphertext, 'record:key:one'));
+            self::assertNull($encryptor->decryptCheckedForContext($ciphertext, 'record:key:two'));
+            self::assertNull($encryptor->decryptCheckedForContext($encryptor->encrypt('owner'), 'record:key:one'));
+        }
     }
 
     public function testAesEncryptProducesBase64(): void
@@ -105,13 +166,35 @@ class SaTokenEncryptorTest extends TestCase
         $this->assertEquals('sm4-integrity', $encryptor->decrypt($encrypted));
     }
 
+    public function testCheckedSm4DecryptRejectsLegacyUnkeyedIntegrity(): void
+    {
+        $encryptor = $this->createSm4Encryptor();
+        $options = new \CryptoSm\SM4\Sm4Options();
+        $iv = $options->getIv();
+        $key = $this->getDerivedKey($encryptor);
+        $ciphertext = \CryptoSm\SM4\Sm4::encrypt('legacy-data', $key, $options);
+        $legacyHmac = \CryptoSm\SM3\Sm3::sm3($iv . $ciphertext);
+        $legacyPayload = base64_encode(hex2bin($legacyHmac) . hex2bin($iv) . hex2bin($ciphertext));
+
+        // 默认解密不能把公开可重算的摘要当作认证；迁移必须显式选择旧格式。
+        $tamperedIv = ($iv[0] === '0' ? '1' : '0') . substr($iv, 1);
+        $tamperedCiphertext = base64_encode(
+            hex2bin(\CryptoSm\SM3\Sm3::sm3($tamperedIv . $ciphertext))
+                . hex2bin($tamperedIv)
+                . hex2bin($ciphertext)
+        );
+        $this->assertSame($tamperedCiphertext, $encryptor->decrypt($tamperedCiphertext));
+        $this->assertNotSame('legacy-data', $encryptor->decryptLegacy($tamperedCiphertext));
+        $this->assertNull($encryptor->decryptChecked($legacyPayload));
+    }
+
     public function testAesTamperDetection(): void
     {
         $encryptor = $this->createAesEncryptor();
         $encrypted = $encryptor->encrypt('important-data');
         $decoded = base64_decode($encrypted, true);
         $this->assertNotFalse($decoded);
-        $tampered = substr($decoded, 0, 40) . chr(ord($decoded[40]) ^ 0xFF) . substr($decoded, 41);
+        $tampered = substr($decoded, 0, 40) . chr((ord($decoded[40]) ^ 0xFF) & 0xFF) . substr($decoded, 41);
         $tamperedEncoded = base64_encode($tampered);
         $this->assertEquals($tamperedEncoded, $encryptor->decrypt($tamperedEncoded));
     }
@@ -122,9 +205,10 @@ class SaTokenEncryptorTest extends TestCase
         $encrypted = $encryptor->encrypt('important-data');
         $decoded = base64_decode($encrypted, true);
         $this->assertNotFalse($decoded);
-        $tampered = chr(ord($decoded[0]) ^ 0xFF) . substr($decoded, 1);
+        $tampered = chr((ord($decoded[0]) ^ 0xFF) & 0xFF) . substr($decoded, 1);
         $tamperedEncoded = base64_encode($tampered);
         $this->assertEquals($tamperedEncoded, $encryptor->decrypt($tamperedEncoded));
+        $this->assertNull($encryptor->decryptChecked($tamperedEncoded));
     }
 
     public function testAesDisabledPassthrough(): void
@@ -149,6 +233,14 @@ class SaTokenEncryptorTest extends TestCase
         $this->assertSame($data, $encryptor->decrypt($data));
     }
 
+    public function testCheckedDecryptRejectsPlaintextWhenEncryptionIsEnabled(): void
+    {
+        $encryptor = $this->createAesEncryptor();
+
+        $this->assertNull($encryptor->decryptChecked('attacker-selected-login-id'));
+        $this->assertNull($encryptor->decryptChecked(base64_encode(str_repeat('x', 64))));
+    }
+
     public function testAesKeyDerivationEmptyKey(): void
     {
         $e1 = new SaTokenEncryptor(true, '', 'intl');
@@ -165,8 +257,8 @@ class SaTokenEncryptorTest extends TestCase
         $e2 = new SaTokenEncryptor(true, 'short', 'intl');
         $this->assertEquals($this->getDerivedKey($e1), $this->getDerivedKey($e2));
         $this->assertEquals(32, strlen($this->getDerivedKey($e1)));
-        $encrypted = $e1->encrypt('test');
-        $this->assertEquals('test', $e2->decrypt($encrypted));
+        $this->expectException(SaTokenException::class);
+        $e1->encrypt('test');
     }
 
     public function testAesKeyDerivationLongKey(): void
@@ -263,7 +355,7 @@ class SaTokenEncryptorTest extends TestCase
         $encrypted = $encryptor->encrypt('important-data');
         $decoded = base64_decode($encrypted, true);
         $this->assertNotFalse($decoded);
-        $tampered = substr($decoded, 0, 40) . chr(ord($decoded[40]) ^ 0xFF) . substr($decoded, 41);
+        $tampered = substr($decoded, 0, 40) . chr((ord($decoded[40]) ^ 0xFF) & 0xFF) . substr($decoded, 41);
         $tamperedEncoded = base64_encode($tampered);
         $this->assertEquals($tamperedEncoded, $encryptor->decrypt($tamperedEncoded));
     }
@@ -277,7 +369,7 @@ class SaTokenEncryptorTest extends TestCase
         $encrypted = $encryptor->encrypt('important-data');
         $decoded = base64_decode($encrypted, true);
         $this->assertNotFalse($decoded);
-        $tampered = chr(ord($decoded[0]) ^ 0xFF) . substr($decoded, 1);
+        $tampered = chr((ord($decoded[0]) ^ 0xFF) & 0xFF) . substr($decoded, 1);
         $tamperedEncoded = base64_encode($tampered);
         $this->assertEquals($tamperedEncoded, $encryptor->decrypt($tamperedEncoded));
     }
@@ -323,6 +415,8 @@ class SaTokenEncryptorTest extends TestCase
         $e2 = new SaTokenEncryptor(true, 'short', 'sm');
         $this->assertEquals($this->getDerivedKey($e1), $this->getDerivedKey($e2));
         $this->assertEquals(32, strlen($this->getDerivedKey($e1)));
+        $this->expectException(SaTokenException::class);
+        $e1->encrypt('test');
     }
 
     public function testSm4KeyDerivationShortKeyDerivesValidKey(): void
@@ -334,8 +428,8 @@ class SaTokenEncryptorTest extends TestCase
         $derivedKey = $this->getDerivedKey($encryptor);
         $this->assertEquals(32, strlen($derivedKey));
         $this->assertTrue(ctype_xdigit($derivedKey));
-        $encrypted = $encryptor->encrypt('test');
-        $this->assertEquals('test', $encryptor->decrypt($encrypted));
+        $this->expectException(SaTokenException::class);
+        $encryptor->encrypt('test');
     }
 
     public function testSm4KeyDerivationLongHexKey(): void

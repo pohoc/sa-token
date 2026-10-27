@@ -7,11 +7,150 @@ namespace SaToken\Tests;
 use PHPUnit\Framework\TestCase;
 use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoMemory;
+use SaToken\Dao\SaTokenDaoPsr16;
 use SaToken\Data\SaLoginDevice;
+use SaToken\Exception\SaTokenException;
+use SaToken\Listener\SaTokenListenerInterface;
 use SaToken\SaLoginParameter;
 use SaToken\SaToken;
+use SaToken\Security\SaAntiBruteUtil;
 use SaToken\Security\SaLoginDeviceManager;
 use SaToken\StpLogic;
+use SaToken\TokenManager;
+use SaToken\Util\SaTokenContext;
+
+class SaLoginDevicePausingDao extends SaTokenDaoMemory
+{
+    public ?string $pauseUpdateKey = null;
+
+    public function update(string $key, string $value): void
+    {
+        if ($key === $this->pauseUpdateKey) {
+            $this->pauseUpdateKey = null;
+            \Fiber::suspend();
+        }
+
+        parent::update($key, $value);
+    }
+
+    public function compareAndUpdate(string $key, string $expectedValue, string $newValue): bool
+    {
+        if ($key === $this->pauseUpdateKey) {
+            $this->pauseUpdateKey = null;
+            \Fiber::suspend();
+        }
+
+        return parent::compareAndUpdate($key, $expectedValue, $newValue);
+    }
+}
+
+class SaLoginDeviceFailingDao extends SaTokenDaoMemory
+{
+    public bool $failDeviceRecordWrite = false;
+
+    public function set(string $key, string $value, ?int $timeout = null): void
+    {
+        if ($this->failDeviceRecordWrite && str_starts_with($key, SaLoginDeviceManager::getKey('failed-login', 'login') . ':')) {
+            $this->failDeviceRecordWrite = false;
+            throw new \RuntimeException('simulated device storage failure');
+        }
+
+        parent::set($key, $value, $timeout);
+    }
+}
+
+class SaLoginDeviceLockStealingDao extends SaTokenDaoMemory
+{
+    public ?string $deviceRecordPrefix = null;
+
+    public ?string $accountLockKey = null;
+
+    public function compareAndSet(string $key, ?string $expectedValue, ?string $newValue, ?int $timeout = null): bool
+    {
+        if ($this->deviceRecordPrefix !== null && str_starts_with($key, $this->deviceRecordPrefix)) {
+            $this->deviceRecordPrefix = null;
+            $this->delete((string) $this->accountLockKey);
+            $this->set((string) $this->accountLockKey, 'concurrent-owner', 30);
+            return false;
+        }
+
+        return parent::compareAndSet($key, $expectedValue, $newValue, $timeout);
+    }
+}
+
+class SaLoginDevicePausingSetDao extends SaTokenDaoMemory
+{
+    public ?string $pauseCompareAndSetKey = null;
+
+    public function compareAndSet(string $key, ?string $expectedValue, ?string $newValue, ?int $timeout = null): bool
+    {
+        if ($key === $this->pauseCompareAndSetKey) {
+            $this->pauseCompareAndSetKey = null;
+            \Fiber::suspend();
+        }
+
+        return parent::compareAndSet($key, $expectedValue, $newValue, $timeout);
+    }
+}
+
+class SaLoginDeviceKickoutPausingDao extends SaTokenDaoMemory
+{
+    public ?string $pauseCompareAndSetKey = null;
+
+    public function compareAndSet(string $key, ?string $expectedValue, ?string $newValue, ?int $timeout = null): bool
+    {
+        if ($key === $this->pauseCompareAndSetKey) {
+            $this->pauseCompareAndSetKey = null;
+            \Fiber::suspend();
+        }
+
+        return parent::compareAndSet($key, $expectedValue, $newValue, $timeout);
+    }
+}
+
+class SaLoginDeviceOffsetMutatingDao extends SaTokenDaoMemory
+{
+    public ?string $deleteBeforeOffsetPage = null;
+
+    public ?string $deleteAfterKeySnapshot = null;
+
+    public function search(string $prefix, string $keyword, int $start, int $size): array
+    {
+        if ($start >= 100 && $this->deleteBeforeOffsetPage !== null) {
+            $key = $this->deleteBeforeOffsetPage;
+            $this->deleteBeforeOffsetPage = null;
+            $this->delete($key);
+        }
+
+        return parent::search($prefix, $keyword, $start, $size);
+    }
+
+    public function searchKeys(string $prefix, string $keyword, int $start, int $size): array
+    {
+        $keys = parent::searchKeys($prefix, $keyword, $start, $size);
+        if ($start === 0 && $this->deleteAfterKeySnapshot !== null) {
+            $key = $this->deleteAfterKeySnapshot;
+            $this->deleteAfterKeySnapshot = null;
+            $this->delete($key);
+        }
+
+        return $keys;
+    }
+}
+
+class SaLoginFailingResponseStpLogic extends StpLogic
+{
+    public ?SaTokenDaoMemory $failureDao = null;
+
+    public ?string $accountLockKey = null;
+
+    public function writeTokenToResponse(string $tokenValue, SaLoginParameter $parameter): void
+    {
+        $this->failureDao?->delete((string) $this->accountLockKey);
+        $this->failureDao?->set((string) $this->accountLockKey, 'concurrent-owner', 30);
+        throw new \RuntimeException('simulated response credential failure');
+    }
+}
 
 class SaLoginDeviceManagerTest extends TestCase
 {
@@ -48,6 +187,64 @@ class SaLoginDeviceManagerTest extends TestCase
         SaLoginDeviceManager::reset();
     }
 
+    public function testAccountDeviceKeysUseVersionedSha256Digests(): void
+    {
+        $loginId = 'test:user';
+        $loginType = 'admin:type';
+        $expected = 'satoken:security:device:v2:'
+            . \SaToken\TokenManager::encodeKeyComponent($loginType)
+            . ':' . hash('sha256', $loginId);
+
+        self::assertSame($expected, SaLoginDeviceManager::getKey($loginId, $loginType));
+        self::assertNotSame(SaLoginDeviceManager::getKey('test:user', 'admin:type'), SaLoginDeviceManager::getKey('test:user', 'admin'));
+    }
+
+    public function testDeviceIdSeparatesDelimiterBearingIdentityComponents(): void
+    {
+        $loginId = 'shared-device-account';
+        $firstDevice = new SaLoginDevice(['deviceType' => 'a-b', 'deviceName' => 'c', 'ip' => 'd']);
+        $secondDevice = new SaLoginDevice(['deviceType' => 'a', 'deviceName' => 'b-c', 'ip' => 'd']);
+        $firstToken = $this->logic->login($loginId, (new SaLoginParameter())
+            ->setDeviceType('a-b')->setDevice($firstDevice)->setIsShare(false))->getAccessToken();
+        $secondToken = $this->logic->login($loginId, (new SaLoginParameter())
+            ->setDeviceType('a')->setDevice($secondDevice)->setIsShare(false))->getAccessToken();
+
+        self::assertNotSame($firstDevice->getDeviceId(), $secondDevice->getDeviceId());
+        self::assertSame(2, $this->logic->getDeviceCount($loginId));
+
+        $this->logic->kickoutDevice($loginId, $firstDevice->getDeviceId());
+
+        self::assertFalse($this->logic->getTokenManager()->isTokenValid($firstToken));
+        self::assertTrue($this->logic->getTokenManager()->isTokenValid($secondToken));
+        self::assertSame(1, $this->logic->getDeviceCount($loginId));
+    }
+
+    public function testLegacyDeviceRecordRemainsManageableAfterDeviceIdUpgrade(): void
+    {
+        $loginId = 'legacy-device-id';
+        $device = new SaLoginDevice(['deviceType' => 'desktop', 'deviceName' => 'legacy-browser', 'ip' => '192.0.2.55']);
+        $firstToken = $this->logic->login($loginId, (new SaLoginParameter())->setDevice($device))->getAccessToken();
+        $newKey = SaLoginDeviceManager::getKey($loginId, 'login') . ':' . $device->getDeviceId();
+        $legacyId = md5($device->getDeviceType() . '-' . $device->getDeviceName() . '-' . $device->getIp());
+        $legacyKey = SaLoginDeviceManager::getKey($loginId, 'login') . ':' . $legacyId;
+        $legacyRecord = $this->dao->get($newKey);
+        self::assertNotNull($legacyRecord);
+        $this->dao->delete($newKey);
+        $this->dao->set($legacyKey, $legacyRecord, 3600);
+
+        self::assertNotNull($this->logic->findDevice($loginId, $device->getDeviceId()));
+        $secondToken = $this->logic->login($loginId, (new SaLoginParameter())
+            ->setDevice($device)->setIsShare(false))->getAccessToken();
+        self::assertSame(1, $this->logic->getDeviceCount($loginId));
+        self::assertNotNull($this->dao->get($legacyKey));
+
+        $this->logic->kickoutDevice($loginId, $device->getDeviceId());
+
+        self::assertFalse($this->logic->getTokenManager()->isTokenValid($firstToken));
+        self::assertFalse($this->logic->getTokenManager()->isTokenValid($secondToken));
+        self::assertNull($this->dao->get($legacyKey));
+    }
+
     public function testDeviceRegistration(): void
     {
         $device = new SaLoginDevice([
@@ -69,7 +266,415 @@ class SaLoginDeviceManagerTest extends TestCase
         $this->assertEquals('pc', $savedDevice->getDeviceType());
         $this->assertEquals('Chrome Browser', $savedDevice->getDeviceName());
         $this->assertEquals('192.168.1.100', $savedDevice->getIp());
-        $this->assertEquals($token, $savedDevice->getTokenValue());
+        $this->assertSame('', $savedDevice->getTokenValue());
+        $this->assertTrue($this->logic->getTokenManager()->isTokenValid($token));
+    }
+
+    public function testFailedDeviceRegistrationRevokesNewlyIssuedSession(): void
+    {
+        $this->dao = new SaLoginDeviceFailingDao();
+        SaToken::setDao($this->dao);
+        $this->dao->failDeviceRecordWrite = true;
+
+        try {
+            $this->logic->login('failed-login');
+            self::fail('设备记录写入失败时登录应失败');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('simulated device storage failure', $exception->getMessage());
+        }
+
+        self::assertSame([], $this->logic->getTokenManager()->getTokenListByLoginId('failed-login', 'login'));
+        self::assertSame(0, SaLoginDeviceManager::getDeviceCount('failed-login', 'login'));
+    }
+
+    public function testFailedLoginSetupDoesNotClearAntiBruteFailures(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'deviceManagement' => true,
+            'antiBruteMaxFailures' => 2,
+            'antiBruteIpMaxFailures' => 0,
+            'antiBruteLockDuration' => 600,
+        ]));
+        $this->dao = new SaLoginDeviceFailingDao();
+        SaToken::setDao($this->dao);
+        SaTokenContext::setRequest(new class () {
+            public function getClientIp(): string
+            {
+                return '192.0.2.88';
+            }
+        });
+
+        SaAntiBruteUtil::recordFailure('failed-login');
+        self::assertFalse(SaAntiBruteUtil::isAccountLocked('failed-login'));
+
+        self::assertInstanceOf(SaLoginDeviceFailingDao::class, $this->dao);
+        $this->dao->failDeviceRecordWrite = true;
+        try {
+            $this->logic->login('failed-login');
+            self::fail('设备记录写入失败时登录应失败');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('simulated device storage failure', $exception->getMessage());
+        }
+
+        self::assertSame(1, SaAntiBruteUtil::getFailCount('failed-login'));
+        SaAntiBruteUtil::recordFailure('failed-login');
+        self::assertTrue(SaAntiBruteUtil::isAccountLocked('failed-login'));
+    }
+
+    public function testFailedLoginInvalidatesTokenWhenCleanupLockWasTakenOver(): void
+    {
+        $loginId = 'failed-login-lock-takeover';
+        SaToken::getConfig()->setIsWriteHeader(true);
+        $this->dao = new SaLoginDeviceLockStealingDao();
+        $this->dao->deviceRecordPrefix = SaLoginDeviceManager::getKey($loginId, 'login') . ':';
+        $this->dao->accountLockKey = TokenManager::LOCK_PREFIX
+            . 'login:login:' . hash('sha256', $loginId);
+        SaToken::setDao($this->dao);
+
+        try {
+            $this->logic->login($loginId);
+            self::fail('设备状态写入失败后登录必须失败');
+        } catch (SaTokenException) {
+            // Expected: the account lock was replaced before the failing DAO write.
+        }
+
+        $tokens = $this->logic->getTokenManager()->getTokenListByLoginId($loginId, 'login');
+        self::assertNotEmpty($tokens);
+        $failedToken = $tokens[0]['tokenValue'] ?? null;
+        self::assertIsString($failedToken);
+        self::assertTrue($this->logic->getTokenManager()->isTokenValid($failedToken));
+        self::assertTrue($this->logic->getTokenManager()->isBlacklisted($failedToken));
+        self::assertNull($this->logic->getLoginIdByToken($failedToken));
+
+        $pendingHeaders = new \ReflectionProperty(SaTokenContext::class, 'pendingHeadersMap');
+        $headersByContext = $pendingHeaders->getValue();
+        self::assertIsArray($headersByContext);
+        $headers = $headersByContext[SaTokenContext::getContextId()] ?? [];
+        self::assertIsArray($headers);
+        foreach ($headers as $header) {
+            self::assertIsArray($header);
+            $name = $header['name'] ?? null;
+            self::assertIsString($name);
+            self::assertNotSame('satoken', strtolower($name));
+        }
+    }
+
+    public function testFailedLoginDoesNotPublishRefreshHeaderBeforeAccessHeaderWriteSucceeds(): void
+    {
+        SaTokenContext::clear();
+        $loginId = 'failed-login-response-write';
+        SaToken::getConfig()->setIsWriteHeader(true);
+        SaToken::getConfig()->setRefreshToken(true);
+        $this->dao = new SaTokenDaoMemory();
+        SaToken::setDao($this->dao);
+
+        $logic = new SaLoginFailingResponseStpLogic('login');
+        $logic->failureDao = $this->dao;
+        $logic->accountLockKey = TokenManager::LOCK_PREFIX
+            . 'login:login:' . hash('sha256', $loginId);
+
+        try {
+            $logic->login($loginId);
+            self::fail('响应凭据写入失败时登录应失败');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('simulated response credential failure', $exception->getMessage());
+        }
+
+        $refreshKeys = $this->dao->searchKeys(TokenManager::REFRESH_TOKEN_PREFIX, '', 0, 10);
+        self::assertCount(1, $refreshKeys);
+        $refreshToken = substr($refreshKeys[0], strlen(TokenManager::REFRESH_TOKEN_PREFIX));
+        $refreshData = $logic->getTokenManager()->getRefreshTokenData($refreshToken);
+        self::assertIsArray($refreshData);
+        $accessToken = $refreshData['accessToken'] ?? null;
+        self::assertIsString($accessToken);
+        self::assertTrue($logic->getTokenManager()->isBlacklisted($accessToken));
+        try {
+            $logic->refreshToken($refreshToken);
+            self::fail('失败登录残留的 RefreshToken 不得签发新会话');
+        } catch (SaTokenException) {
+            // The refresh credential remains unusable because its parent is revoked.
+        }
+
+        $pendingHeaders = new \ReflectionProperty(SaTokenContext::class, 'pendingHeadersMap');
+        $headersByContext = $pendingHeaders->getValue();
+        self::assertIsArray($headersByContext);
+        $headers = $headersByContext[SaTokenContext::getContextId()] ?? [];
+        self::assertIsArray($headers);
+        foreach ($headers as $header) {
+            self::assertIsArray($header);
+            $name = $header['name'] ?? null;
+            self::assertIsString($name);
+            self::assertNotSame('satoken-refresh', strtolower($name));
+        }
+    }
+
+    public function testKickoutAllDevicesDispatchesEventsAfterAccountLockRelease(): void
+    {
+        $loginId = 'device-kickout-event-lock';
+        $this->logic->login($loginId, (new SaLoginParameter())->setDeviceType('desktop'));
+        $this->logic->login($loginId, (new SaLoginParameter())->setDeviceType('mobile'));
+        $lockKey = \SaToken\TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId);
+
+        $listener = $this->createMock(SaTokenListenerInterface::class);
+        $listener->expects(self::exactly(2))
+            ->method('onKickout')
+            ->willReturnCallback(function () use ($lockKey): void {
+                self::assertNull($this->dao->get($lockKey));
+            });
+        SaToken::addListener($listener);
+
+        self::assertSame(2, $this->logic->kickoutAllDevices($loginId));
+    }
+
+    public function testDeviceListDoesNotCrossNestedLoginTypePrefixes(): void
+    {
+        $parentLoginId = 'device-owner';
+        $childLoginType = 'login:' . md5($parentLoginId);
+        $childLogic = new StpLogic($childLoginType);
+        $childLogic->login('child-account', (new SaLoginParameter())->setDevice(new SaLoginDevice([
+            'deviceType' => 'private',
+            'deviceName' => 'Internal admin workstation',
+            'ip'         => '203.0.113.42',
+        ])));
+
+        $devices = SaLoginDeviceManager::getDeviceList($parentLoginId, 'login');
+        self::assertCount(0, $devices);
+        self::assertCount(1, SaLoginDeviceManager::getDeviceList('child-account', $childLoginType));
+    }
+
+    public function testKickoutDeviceCannotDeleteNestedLoginTypeDeviceRecord(): void
+    {
+        $parentLoginId = 'device-owner';
+        $childLoginType = 'login:' . md5($parentLoginId);
+        $childLoginId = 'child-account';
+        $childLogic = new StpLogic($childLoginType);
+        $device = new SaLoginDevice([
+            'deviceType' => 'private',
+            'deviceName' => 'Internal admin workstation',
+            'ip'         => '203.0.113.42',
+        ]);
+        $token = $childLogic->login($childLoginId, (new SaLoginParameter())->setDevice($device))->getAccessToken();
+        $foreignDeviceId = md5($childLoginId) . ':' . $device->getDeviceId();
+
+        $this->logic->kickoutDevice($parentLoginId, $foreignDeviceId);
+
+        self::assertTrue($childLogic->getTokenManager()->isTokenValid($token));
+        self::assertCount(1, SaLoginDeviceManager::getDeviceList($childLoginId, $childLoginType));
+    }
+
+    public function testDeviceRecordDoesNotExposeTokenWhenTokenEncryptionIsEnabled(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenName'        => 'satoken',
+            'timeout'          => 86400,
+            'isReadHeader'     => false,
+            'isReadCookie'     => false,
+            'isReadBody'       => false,
+            'isWriteCookie'    => false,
+            'isWriteHeader'    => false,
+            'deviceManagement' => true,
+            'tokenEncrypt'     => true,
+            'tokenEncryptKey'  => 'device-record-test-encryption-key-32-bytes',
+        ]));
+
+        $token = $this->logic->login(10001, (new SaLoginParameter())->setDevice(new SaLoginDevice()))->getAccessToken();
+        $devices = $this->logic->getDeviceList(10001);
+        $key = SaLoginDeviceManager::getKey(10001, 'login') . ':' . $devices[0]->getDeviceId();
+        $storedRecord = $this->dao->get($key);
+
+        $this->assertNotNull($storedRecord);
+        $this->assertStringNotContainsString($token, $storedRecord);
+
+        $this->logic->kickoutDevice(10001, $devices[0]->getDeviceId());
+        $this->assertNull($this->logic->getTokenManager()->getLoginIdByToken($token));
+    }
+
+    public function testKickoutAllDevicesPreservesExceptTokenWhenTokenEncryptionIsEnabled(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenName'        => 'satoken',
+            'timeout'          => 86400,
+            'isReadHeader'     => false,
+            'isReadCookie'     => false,
+            'isReadBody'       => false,
+            'isWriteCookie'    => false,
+            'isWriteHeader'    => false,
+            'deviceManagement' => true,
+            'tokenEncrypt'     => true,
+            'tokenEncryptKey'  => 'device-record-test-encryption-key-32-bytes',
+        ]));
+
+        $keepToken = $this->logic->login(10001, (new SaLoginParameter())->setDeviceType('pc')->setDevice(new SaLoginDevice(['deviceType' => 'pc'])))->getAccessToken();
+        $removeToken = $this->logic->login(10001, (new SaLoginParameter())->setDeviceType('mobile')->setDevice(new SaLoginDevice(['deviceType' => 'mobile'])))->getAccessToken();
+
+        $this->assertCount(2, $this->logic->getDeviceList(10001));
+        $this->assertSame('10001', $this->logic->getTokenManager()->getLoginIdByToken($keepToken));
+        $this->assertSame('10001', $this->logic->getTokenManager()->getLoginIdByToken($removeToken));
+        $this->assertSame(1, $this->logic->kickoutAllDevices(10001, $keepToken));
+        $this->assertSame('10001', $this->logic->getTokenManager()->getLoginIdByToken($keepToken));
+        $this->assertNull($this->logic->getTokenManager()->getLoginIdByToken($removeToken));
+    }
+
+    public function testStatelessKickoutAllDevicesPreservesOnlyExceptTokenOnSharedDevice(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenName'        => 'satoken',
+            'timeout'          => 86400,
+            'activityTimeout'  => -1,
+            'isReadHeader'     => false,
+            'isReadCookie'     => false,
+            'isWriteCookie'    => false,
+            'isWriteHeader'    => false,
+            'deviceManagement' => true,
+            'jwtStateless'     => true,
+            'jwtSecretKey'     => 'test-stateless-device-secret-32-bytes-long',
+        ]));
+
+        $loginId = 'stateless-device-account';
+        $firstToken = $this->logic->loginStateless($loginId);
+        $secondToken = $this->logic->loginStateless($loginId);
+        $deviceData = [
+            'deviceType' => 'pc',
+            'deviceName' => 'Shared workstation',
+            'ip'         => '192.0.2.45',
+        ];
+        $firstDevice = new SaLoginDevice($deviceData);
+        $secondDevice = new SaLoginDevice($deviceData);
+        SaLoginDeviceManager::registerDevice($loginId, 'login', $firstDevice, $firstToken, $this->logic);
+        SaLoginDeviceManager::registerDevice($loginId, 'login', $secondDevice, $secondToken, $this->logic);
+
+        self::assertSame($firstDevice->getDeviceId(), $secondDevice->getDeviceId());
+        self::assertSame($loginId, $this->logic->getLoginIdByToken($firstToken));
+        self::assertSame($loginId, $this->logic->getLoginIdByToken($secondToken));
+
+        $this->logic->kickoutAllDevices($loginId, $secondToken);
+
+        self::assertNull($this->logic->getLoginIdByToken($firstToken));
+        self::assertSame($loginId, $this->logic->getLoginIdByToken($secondToken));
+    }
+
+    public function testStatelessKickoutAllDevicesRequiresDeviceTrackingWhenKeepingOneToken(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenName'       => 'satoken',
+            'timeout'         => 86400,
+            'activityTimeout' => -1,
+            'isReadHeader'    => false,
+            'isReadCookie'    => false,
+            'isWriteCookie'   => false,
+            'isWriteHeader'   => false,
+            'jwtStateless'    => true,
+            'jwtSecretKey'    => 'test-stateless-device-secret-32-bytes-long',
+        ]));
+
+        $loginId = 'stateless-device-untracked-kickout';
+        $firstToken = $this->logic->loginStateless($loginId);
+        $exceptToken = $this->logic->loginStateless($loginId);
+
+        try {
+            $this->logic->kickoutAllDevices($loginId, $exceptToken);
+            self::fail('未跟踪无状态令牌时不能静默成功执行保留令牌踢出');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('需要启用设备管理', $exception->getMessage());
+        }
+
+        self::assertSame($loginId, $this->logic->getLoginIdByToken($firstToken));
+        self::assertSame($loginId, $this->logic->getLoginIdByToken($exceptToken));
+    }
+
+    public function testStatelessLoginRegistersDevicesForExceptTokenKickout(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenName'        => 'satoken',
+            'timeout'          => 86400,
+            'activityTimeout'  => -1,
+            'isReadHeader'     => false,
+            'isReadCookie'     => false,
+            'isWriteCookie'    => false,
+            'isWriteHeader'    => false,
+            'deviceManagement' => true,
+            'jwtStateless'     => true,
+            'jwtSecretKey'     => 'test-stateless-device-secret-32-bytes-long',
+        ]));
+
+        $loginId = 'stateless-device-auto-registration';
+        $firstToken = $this->logic->loginStateless($loginId, (new SaLoginParameter())->setDevice(
+            new SaLoginDevice(['deviceType' => 'pc', 'deviceName' => 'first workstation'])
+        ));
+        $exceptToken = $this->logic->loginStateless($loginId, (new SaLoginParameter())->setDevice(
+            new SaLoginDevice(['deviceType' => 'mobile', 'deviceName' => 'current phone'])
+        ));
+
+        self::assertCount(2, $this->logic->getDeviceList($loginId));
+        self::assertSame(1, $this->logic->kickoutAllDevices($loginId, $exceptToken));
+        self::assertNull($this->logic->getLoginIdByToken($firstToken));
+        self::assertSame($loginId, $this->logic->getLoginIdByToken($exceptToken));
+        self::assertCount(1, $this->logic->getDeviceList($loginId));
+    }
+
+    public function testStatelessKickoutAllDevicesContinuesWhenEarlierRecordExpiresDuringDiscovery(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenName'        => 'satoken',
+            'timeout'          => 86400,
+            'activityTimeout'  => -1,
+            'isReadHeader'     => false,
+            'isReadCookie'     => false,
+            'isWriteCookie'    => false,
+            'isWriteHeader'    => false,
+            'deviceManagement' => true,
+            'jwtStateless'     => true,
+            'jwtSecretKey'     => 'test-stateless-device-secret-32-bytes-long',
+        ]));
+
+        $dao = new SaLoginDeviceOffsetMutatingDao();
+        $this->dao = $dao;
+        SaToken::setDao($dao);
+
+        $loginId = 'stateless-offset-race-account';
+        $tokens = [];
+        for ($i = 0; $i < 101; $i++) {
+            $tokens[] = $this->logic->loginStateless($loginId, (new SaLoginParameter())->setDeviceType('device-' . $i)->setDevice(
+                new SaLoginDevice(['deviceType' => 'device-' . $i, 'deviceName' => 'Device ' . $i])
+            ));
+        }
+
+        $devicePrefix = SaLoginDeviceManager::getKey($loginId, 'login') . ':';
+        $firstKey = $dao->searchKeys($devicePrefix, '', 0, 1)[0] ?? null;
+        self::assertNotNull($firstKey);
+        $dao->deleteBeforeOffsetPage = $firstKey;
+        $dao->deleteAfterKeySnapshot = $firstKey;
+
+        $this->logic->kickoutAllDevices($loginId, $tokens[0]);
+
+        self::assertSame($loginId, $this->logic->getLoginIdByToken($tokens[0]));
+        foreach (array_slice($tokens, 1) as $token) {
+            self::assertNull($this->logic->getLoginIdByToken($token), '分页中的设备记录消失后，不得漏撤销仍有效的令牌');
+        }
+    }
+
+    public function testStatelessKickoutAllDevicesRemovesDeviceRecords(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenName'        => 'satoken',
+            'timeout'          => 86400,
+            'activityTimeout'  => -1,
+            'isReadHeader'     => false,
+            'isReadCookie'     => false,
+            'isWriteCookie'    => false,
+            'isWriteHeader'    => false,
+            'deviceManagement' => true,
+            'jwtStateless'     => true,
+            'jwtSecretKey'     => 'test-stateless-device-secret-32-bytes-long',
+        ]));
+
+        $loginId = 'stateless-device-cleanup-account';
+        $token = $this->logic->loginStateless($loginId);
+
+        self::assertCount(1, $this->logic->getDeviceList($loginId));
+        self::assertSame(1, $this->logic->kickoutAllDevices($loginId));
+        self::assertNull($this->logic->getLoginIdByToken($token));
+        self::assertSame([], $this->logic->getDeviceList($loginId));
     }
 
     public function testMultipleDeviceLogin(): void
@@ -105,6 +710,7 @@ class SaLoginDeviceManagerTest extends TestCase
         $this->assertNotNull($foundDevice);
         $this->assertEquals('mobile', $foundDevice->getDeviceType());
         $this->assertEquals('iPhone', $foundDevice->getDeviceName());
+        $this->assertSame('', $foundDevice->getTokenValue());
     }
 
     public function testFindNonExistentDevice(): void
@@ -139,6 +745,40 @@ class SaLoginDeviceManagerTest extends TestCase
         $this->assertEquals(1, $this->logic->getDeviceCount(10001));
     }
 
+    public function testKickoutDeviceRevokesEverySessionRegisteredForThatDevice(): void
+    {
+        SaToken::getConfig()
+            ->setTokenEncrypt(true)
+            ->setTokenEncryptKey('device-session-list-encryption-key-32-bytes');
+
+        $device = new SaLoginDevice([
+            'deviceType' => 'pc',
+            'deviceName' => 'Shared workstation',
+            'ip' => '192.0.2.88',
+        ]);
+        $parameter = (new SaLoginParameter())
+            ->setDeviceType('pc')
+            ->setIsShare(false)
+            ->setDevice($device);
+
+        $firstToken = $this->logic->login(10001, $parameter)->getAccessToken();
+        $secondToken = $this->logic->login(10001, $parameter)->getAccessToken();
+        $devices = $this->logic->getDeviceList(10001);
+        $this->assertCount(1, $devices);
+        $this->assertSame('10001', $this->logic->getTokenManager()->getLoginIdByToken($firstToken));
+        $this->assertSame('10001', $this->logic->getTokenManager()->getLoginIdByToken($secondToken));
+        $deviceKey = SaLoginDeviceManager::getKey(10001, 'login') . ':' . $devices[0]->getDeviceId();
+        $storedDevice = $this->dao->get($deviceKey);
+        $this->assertNotNull($storedDevice);
+        $this->assertStringNotContainsString($firstToken, $storedDevice);
+        $this->assertStringNotContainsString($secondToken, $storedDevice);
+
+        $this->logic->kickoutDevice(10001, $devices[0]->getDeviceId());
+
+        $this->assertNull($this->logic->getTokenManager()->getLoginIdByToken($firstToken));
+        $this->assertNull($this->logic->getTokenManager()->getLoginIdByToken($secondToken));
+    }
+
     public function testKickoutAllDevices(): void
     {
         $device1 = new SaLoginDevice([
@@ -167,6 +807,59 @@ class SaLoginDeviceManagerTest extends TestCase
 
         $this->assertEquals(3, $count);
         $this->assertEquals(0, $this->logic->getDeviceCount(10001));
+    }
+
+    public function testKickoutAllDevicesDoesNotLeaveSessionsPastFirstHundredRecords(): void
+    {
+        $loginId = 'large-device-account';
+        $tokens = [];
+
+        for ($i = 0; $i < 101; $i++) {
+            $device = new SaLoginDevice([
+                'deviceType' => 'pc',
+                'deviceName' => 'Device ' . $i,
+                'ip' => '192.0.2.' . ($i + 1),
+            ]);
+            $parameter = (new SaLoginParameter())
+                ->setDeviceType('device-' . $i)
+                ->setDevice($device)
+                ->setIsShare(false)
+                ->setMaxLoginCount(-1);
+            $tokens[] = $this->logic->login($loginId, $parameter)->getAccessToken();
+        }
+
+        $this->assertSame(101, $this->logic->kickoutAllDevices($loginId));
+
+        $remaining = array_filter(
+            $tokens,
+            fn (string $token): bool => $this->logic->getTokenManager()->getLoginIdByToken($token) !== null
+        );
+        $this->assertCount(0, $remaining);
+    }
+
+    public function testKickoutAllDevicesUsesSessionIndexWhenDaoCannotSearchKeys(): void
+    {
+        SaToken::setDao(new SaTokenDaoPsr16(new ArrayPsr16Cache()));
+        $device = new SaLoginDevice([
+            'deviceType' => 'pc',
+            'deviceName' => 'PSR-16 device',
+            'ip' => '192.0.2.201',
+        ]);
+        $token = $this->logic->login(
+            'psr16-device-account',
+            (new SaLoginParameter())->setDeviceType('psr16-device-a')->setDevice($device)->setIsShare(false)
+        )->getAccessToken();
+        $keepToken = $this->logic->login(
+            'psr16-device-account',
+            (new SaLoginParameter())
+                ->setDeviceType('psr16-device-b')
+                ->setDevice(new SaLoginDevice(['deviceName' => 'PSR-16 second device', 'ip' => '192.0.2.202']))
+                ->setIsShare(false)
+        )->getAccessToken();
+
+        $this->assertSame(1, $this->logic->kickoutAllDevices('psr16-device-account', $keepToken));
+        $this->assertNull($this->logic->getTokenManager()->getLoginIdByToken($token));
+        $this->assertSame('psr16-device-account', $this->logic->getTokenManager()->getLoginIdByToken($keepToken));
     }
 
     public function testKickoutAllDevicesExceptToken(): void
@@ -201,7 +894,34 @@ class SaLoginDeviceManagerTest extends TestCase
 
         $devices = $this->logic->getDeviceList(10001);
         $this->assertCount(1, $devices);
-        $this->assertEquals($tokenToKeep, $devices[0]->getTokenValue());
+        $this->assertSame('', $devices[0]->getTokenValue());
+        $this->assertSame('10001', $this->logic->getTokenManager()->getLoginIdByToken($tokenToKeep));
+        $this->assertNull($this->logic->getTokenManager()->getLoginIdByToken($tokenToRemove));
+    }
+
+    public function testKickoutAllDevicesPreservesExceptTokenWhenSeveralSessionsShareADevice(): void
+    {
+        SaToken::getConfig()->setIsShare(false);
+        $device = new SaLoginDevice([
+            'deviceType' => 'pc',
+            'deviceName' => 'Shared workstation',
+            'ip' => '192.0.2.88',
+        ]);
+
+        $keepToken = $this->logic->login(10001, (new SaLoginParameter())->setDevice($device))->getAccessToken();
+        $removeToken = $this->logic->login(10001, (new SaLoginParameter())->setDevice($device))->getAccessToken();
+        self::assertNotSame($keepToken, $removeToken);
+        self::assertSame($device->getDeviceId(), SaLoginDeviceManager::getDeviceList(10001, 'login')[0]->getDeviceId());
+
+        self::assertSame(1, $this->logic->kickoutAllDevices(10001, $keepToken));
+        self::assertSame('10001', $this->logic->getTokenManager()->getLoginIdByToken($keepToken));
+        self::assertNull($this->logic->getTokenManager()->getLoginIdByToken($removeToken));
+        self::assertCount(1, $this->logic->getDeviceList(10001));
+
+        // The retained token must remain indexed by its device so normal
+        // device-management operations can still revoke it afterwards.
+        $this->logic->kickoutDevice(10001, $device->getDeviceId());
+        self::assertNull($this->logic->getTokenManager()->getLoginIdByToken($keepToken));
     }
 
     public function testDeviceIdUniqueness(): void
@@ -274,14 +994,229 @@ class SaLoginDeviceManagerTest extends TestCase
 
         $devices = $this->logic->getDeviceList(10001);
         $deviceId = $devices[0]->getDeviceId();
+        $deviceKey = SaLoginDeviceManager::getKey(10001, 'login') . ':' . $deviceId;
 
         $this->assertNull($devices[0]->getLastActiveTime());
+        $this->assertGreaterThan(0, $this->dao->getTimeout($deviceKey));
 
         SaLoginDeviceManager::updateLastActive(10001, $deviceId, 'login');
 
+        $this->assertGreaterThan(0, $this->dao->getTimeout($deviceKey), '更新设备活跃时间不能清除设备记录 TTL');
         $updatedDevice = $this->logic->findDevice(10001, $deviceId);
         $this->assertNotNull($updatedDevice);
         $this->assertNotNull($updatedDevice->getLastActiveTime());
         $this->assertGreaterThanOrEqual(time() - 5, $updatedDevice->getLastActiveTime());
+    }
+
+    public function testUpdateLastActiveSerializesWithDeviceRegistration(): void
+    {
+        $this->dao = new SaLoginDevicePausingDao();
+        SaToken::setDao($this->dao);
+        $device = new SaLoginDevice(['deviceType' => 'pc']);
+        $firstToken = $this->logic->login(10001, (new SaLoginParameter())->setDevice($device))->getAccessToken();
+        $deviceId = $device->getDeviceId();
+        $deviceKey = SaLoginDeviceManager::getKey(10001, 'login') . ':' . $deviceId;
+        $this->dao->pauseUpdateKey = $deviceKey;
+
+        $update = new \Fiber(static fn () => SaLoginDeviceManager::updateLastActive(10001, $deviceId, 'login'));
+        $update->start();
+        $this->assertTrue($update->isSuspended());
+
+        try {
+            $this->logic->login(10001, (new SaLoginParameter())->setDevice($device)->setIsShare(false));
+            $this->fail('设备活跃时间更新持有账号锁时，同账号注册应等待并发操作完成');
+        } catch (SaTokenException $exception) {
+            $this->assertStringContainsString('同账号登录正在处理中', $exception->getMessage());
+        }
+
+        $update->resume();
+        $this->assertFalse($update->isSuspended());
+        $secondToken = $this->logic->login(10001, (new SaLoginParameter())->setDevice($device)->setIsShare(false))->getAccessToken();
+
+        $this->logic->kickoutDevice(10001, $deviceId);
+        $this->assertFalse($this->logic->getTokenManager()->isTokenValid($firstToken));
+        $this->assertFalse($this->logic->getTokenManager()->isTokenValid($secondToken));
+    }
+
+    public function testExpiredUpdateLastActiveCannotOverwriteRecreatedDeviceRecord(): void
+    {
+        $loginId = 'expired-device-activity-update';
+        $this->dao = new SaLoginDevicePausingDao();
+        SaToken::setDao($this->dao);
+        $device = new SaLoginDevice(['deviceType' => 'pc', 'deviceName' => 'stable device']);
+        $firstToken = $this->logic->login($loginId, (new SaLoginParameter())->setDevice($device))->getAccessToken();
+        $deviceId = $device->getDeviceId();
+        $deviceKey = SaLoginDeviceManager::getKey($loginId, 'login') . ':' . $deviceId;
+        $this->dao->pauseUpdateKey = $deviceKey;
+
+        $staleUpdate = new \Fiber(static fn () => SaLoginDeviceManager::updateLastActive($loginId, $deviceId, 'login'));
+        $staleUpdate->start();
+        self::assertTrue($staleUpdate->isSuspended());
+
+        // Simulate the activity updater's account-lock lease expiring while its
+        // compare-and-update is stalled. A newer kickout and login replace the
+        // device record before the old worker resumes.
+        $accountLockKey = TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId);
+        $this->dao->delete($accountLockKey);
+        $newerLogic = new StpLogic('login');
+        $newerLogic->kickoutDevice($loginId, $deviceId);
+        self::assertFalse($this->logic->getTokenManager()->isTokenValid($firstToken));
+
+        $newToken = $newerLogic->login($loginId, (new SaLoginParameter())->setDevice($device))->getAccessToken();
+        try {
+            $staleUpdate->resume();
+            self::fail('过期锁持有者不得用旧设备快照覆盖重新创建的设备记录');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('设备记录已并发变更', $exception->getMessage());
+        }
+
+        $newerLogic->kickoutDevice($loginId, $deviceId);
+        self::assertFalse($this->logic->getTokenManager()->isTokenValid($newToken));
+    }
+
+    public function testExpiredDeviceRegistrationCannotOverwriteNewerTokenList(): void
+    {
+        $loginId = 'expired-device-registration';
+        $this->dao = new SaLoginDevicePausingSetDao();
+        SaToken::setDao($this->dao);
+        $device = new SaLoginDevice(['deviceType' => 'pc', 'deviceName' => 'same device']);
+        $firstToken = $this->logic->login($loginId, (new SaLoginParameter())->setDevice($device))->getAccessToken();
+        $deviceKey = SaLoginDeviceManager::getKey($loginId, 'login') . ':' . $device->getDeviceId();
+        $this->dao->pauseCompareAndSetKey = $deviceKey;
+
+        $staleLogin = new \Fiber(fn () => $this->logic->login(
+            $loginId,
+            (new SaLoginParameter())->setDevice($device)->setIsShare(false)
+        ));
+        $staleLogin->start();
+        self::assertTrue($staleLogin->isSuspended());
+        $tokensWhileStaleWriteIsPaused = array_column(
+            $this->logic->getTokenManager()->getTokenListByLoginId($loginId, 'login'),
+            'tokenValue'
+        );
+        self::assertCount(2, $tokensWhileStaleWriteIsPaused);
+        $staleToken = null;
+        foreach ($tokensWhileStaleWriteIsPaused as $token) {
+            if (is_string($token) && $token !== $firstToken) {
+                $staleToken = $token;
+            }
+        }
+        self::assertIsString($staleToken);
+
+        // Simulate the account lock lease expiring while the DAO write is stalled.
+        $lockKey = \SaToken\TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId);
+        $this->dao->delete($lockKey);
+        $newerLogic = new StpLogic('login');
+        $newerToken = $newerLogic->login(
+            $loginId,
+            (new SaLoginParameter())->setDevice($device)->setIsShare(false)
+        )->getAccessToken();
+
+        try {
+            $staleLogin->resume();
+            self::fail('过期锁持有者不得覆盖更新后的设备记录');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('设备记录已并发变更', $exception->getMessage());
+        }
+
+        $newerLogic->kickoutDevice($loginId, $device->getDeviceId());
+        self::assertFalse($this->logic->getTokenManager()->isTokenValid($firstToken));
+        self::assertFalse($this->logic->getTokenManager()->isTokenValid($newerToken));
+        self::assertFalse($this->logic->getTokenManager()->isTokenValid($staleToken));
+    }
+
+    public function testExpiredDeviceKickoutCannotDeleteReplacementDeviceRecord(): void
+    {
+        $loginId = 'expired-device-kickout';
+        $this->dao = new SaLoginDeviceKickoutPausingDao();
+        SaToken::setDao($this->dao);
+        $device = new SaLoginDevice(['deviceType' => 'pc', 'deviceName' => 'same device']);
+        $oldToken = $this->logic->login($loginId, (new SaLoginParameter())->setDevice($device))->getAccessToken();
+        $deviceKey = SaLoginDeviceManager::getKey($loginId, 'login') . ':' . $device->getDeviceId();
+        $originalDeviceRecord = $this->dao->get($deviceKey);
+        $this->dao->pauseCompareAndSetKey = $deviceKey;
+
+        $staleKickout = new \Fiber(fn () => $this->logic->kickoutDevice($loginId, $device->getDeviceId()));
+        $staleKickout->start();
+        self::assertTrue($staleKickout->isSuspended());
+
+        // Let a newer owner replace the device after the stale kickout has
+        // captured its record and token list but before it removes the record.
+        $accountLockKey = TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId);
+        $this->dao->delete($accountLockKey);
+        $newerLogic = new StpLogic('login');
+        $newerLogic->kickoutDevice($loginId, $device->getDeviceId());
+        self::assertFalse($this->logic->getTokenManager()->isTokenValid($oldToken));
+        $newToken = $newerLogic->login($loginId, (new SaLoginParameter())->setDevice($device))->getAccessToken();
+        self::assertNotSame($originalDeviceRecord, $this->dao->get($deviceKey));
+
+        try {
+            $staleKickout->resume();
+            self::fail('过期的踢出请求不能删除后来重新创建的设备记录');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('设备记录已并发变更', $exception->getMessage());
+        }
+
+        self::assertTrue($this->logic->getTokenManager()->isTokenValid($newToken));
+        self::assertCount(1, $newerLogic->getTokenManager()->getTokenListByLoginId($loginId, 'login'));
+        self::assertCount(1, $newerLogic->getDeviceList($loginId));
+    }
+
+    public function testDeviceManagerCannotAssociateOrKickoutAnotherAccountsToken(): void
+    {
+        $victimToken = $this->logic->login('victim-account')->getAccessToken();
+        $attackerId = 'attacker-account';
+        $device = new SaLoginDevice(['deviceType' => 'pc', 'deviceName' => 'Attacker device']);
+
+        try {
+            SaLoginDeviceManager::registerDevice($attackerId, 'login', $device, $victimToken, $this->logic);
+            $this->fail('设备记录不能关联其他账号的 Token');
+        } catch (SaTokenException $exception) {
+            $this->assertStringContainsString('设备 Token 与账号不匹配', $exception->getMessage());
+        }
+
+        // 防御旧版或被外部写入的错误设备记录，踢出操作也必须重新核实 Token 属主。
+        $device->setLoginType('login')->setLoginTime(time());
+        $record = $device->toArray();
+        $record['managedTokenValues'] = [$victimToken];
+        $record['managedTokenValuesEncrypted'] = false;
+        $deviceKey = SaLoginDeviceManager::getKey($attackerId, 'login') . ':' . $device->getDeviceId();
+        $this->dao->set($deviceKey, json_encode($record, JSON_THROW_ON_ERROR), 3600);
+
+        SaLoginDeviceManager::kickoutDevice($attackerId, $device->getDeviceId(), 'login', $this->logic);
+
+        $this->assertTrue($this->logic->getTokenManager()->isTokenValid($victimToken));
+    }
+
+    public function testDeviceManagerRejectsLogicInstanceForAnotherLoginType(): void
+    {
+        $loginId = 'same-id-across-login-types';
+        $adminLogic = new StpLogic('admin');
+        $adminToken = $adminLogic->login($loginId)->getAccessToken();
+        $device = new SaLoginDevice(['deviceType' => 'pc', 'deviceName' => 'Mismatched logic']);
+
+        try {
+            SaLoginDeviceManager::registerDevice($loginId, 'user', $device, $adminToken, $adminLogic);
+            $this->fail('设备注册不得用 admin 逻辑操作 user 类型的记录');
+        } catch (SaTokenException $exception) {
+            $this->assertStringContainsString('loginType 与 StpLogic 实例不匹配', $exception->getMessage());
+        }
+
+        $device->setLoginType('user')->setLoginTime(time());
+        $record = $device->toArray();
+        $record['managedTokenValues'] = [$adminToken];
+        $record['managedTokenValuesEncrypted'] = false;
+        $deviceKey = SaLoginDeviceManager::getKey($loginId, 'user') . ':' . $device->getDeviceId();
+        $this->dao->set($deviceKey, json_encode($record, JSON_THROW_ON_ERROR), 3600);
+
+        try {
+            SaLoginDeviceManager::kickoutDevice($loginId, $device->getDeviceId(), 'user', $adminLogic);
+            $this->fail('踢出操作不得用 admin 逻辑解析 user 类型的设备凭据');
+        } catch (SaTokenException $exception) {
+            $this->assertStringContainsString('loginType 与 StpLogic 实例不匹配', $exception->getMessage());
+        }
+
+        $this->assertTrue($adminLogic->getTokenManager()->isTokenValid($adminToken));
+        $this->assertNotNull($this->dao->get($deviceKey));
     }
 }

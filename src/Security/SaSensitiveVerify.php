@@ -11,6 +11,7 @@ use SaToken\SaToken;
 class SaSensitiveVerify
 {
     protected static string $keyPrefix = 'satoken:sensitive:';
+    private const MAX_SCENE_BYTES = 256;
     protected static int $codeLength = 6;
     protected static int $validSeconds = 300;
     protected static int $maxAttempts = 3;
@@ -18,16 +19,30 @@ class SaSensitiveVerify
 
     public static function setCodeLength(int $length): void
     {
+        if ($length < 6 || $length > 12) {
+            throw new SaTokenException('验证码长度必须在 6-12 位之间');
+        }
         self::$codeLength = $length;
     }
 
     public static function setValidSeconds(int $seconds): void
     {
+        self::validateLifetime($seconds);
         self::$validSeconds = $seconds;
+    }
+
+    protected static function validateLifetime(int $seconds): void
+    {
+        if ($seconds <= 0 || $seconds > PHP_INT_MAX - time() - 60) {
+            throw new SaTokenException('敏感验证有效期必须是可表示的正整数秒数');
+        }
     }
 
     public static function setMaxAttempts(int $max): void
     {
+        if ($max < 1) {
+            throw new SaTokenException('验证码最大尝试次数必须是正整数');
+        }
         self::$maxAttempts = $max;
     }
 
@@ -43,30 +58,85 @@ class SaSensitiveVerify
 
     public static function getKey(string $scene, mixed $loginId, string $loginType = 'login'): string
     {
-        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-        return self::$keyPrefix . $loginType . ':' . $scene . ':' . md5($loginIdStr);
+        if (strlen($scene) > self::MAX_SCENE_BYTES) {
+            throw new SaTokenException('敏感验证 scene 长度不能超过 ' . self::MAX_SCENE_BYTES . ' 字节');
+        }
+
+        $loginIdStr = self::normalizeLoginId($loginId);
+        return self::$keyPrefix
+            . \SaToken\TokenManager::encodeKeyComponent($loginType) . ':'
+            . \SaToken\TokenManager::encodeKeyComponent($scene) . ':'
+            . hash('sha256', $loginIdStr);
+    }
+
+    protected static function getAccountSendRateKey(mixed $loginId, string $loginType): string
+    {
+        $loginIdStr = self::normalizeLoginId($loginId);
+        return self::$keyPrefix . 'sent:'
+            . \SaToken\TokenManager::encodeKeyComponent($loginType) . ':'
+            . hash('sha256', $loginIdStr);
+    }
+
+    protected static function normalizeLoginId(mixed $loginId): string
+    {
+        if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
+            throw new SaTokenException('敏感验证 loginId 不能为空且必须是非布尔标量');
+        }
+        \SaToken\TokenManager::validateLoginIdLength($loginId);
+
+        return (string) $loginId;
     }
 
     public static function generateCode(string $scene, mixed $loginId, string $loginType = 'login'): string
     {
+        return self::generateCodeWithGeneration($scene, $loginId, $loginType)['code'];
+    }
+
+    /** @return array{code: string, generationId: string} */
+    protected static function generateCodeWithGeneration(string $scene, mixed $loginId, string $loginType = 'login'): array
+    {
         $dao = SaToken::getDao();
+        if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface) {
+            throw new SaTokenException('DAO 必须实现安全比较设置接口才能生成验证码');
+        }
         $key = self::getKey($scene, $loginId, $loginType);
+        $lockValue = self::acquireStateLock($key);
 
-        $code = self::generateRandomCode();
+        try {
+            $currentRecord = $dao->get($key);
+            if ($dao->get($key . ':state-lock') !== $lockValue) {
+                throw new SaTokenException('验证码状态锁已过期，请重试');
+            }
 
-        $data = [
-            'code' => $code,
-            'createdAt' => time(),
-            'expiresAt' => time() + self::$validSeconds,
-            'attempts' => 0,
-            'verified' => false,
-        ];
+            $code = self::generateRandomCode();
+            $codeHash = password_hash($code, PASSWORD_DEFAULT);
+            $generationId = bin2hex(random_bytes(16));
 
-        $jsonStr = json_encode($data);
-        $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', self::$validSeconds + 60);
-        $dao->delete($key . ':att');
+            $data = [
+                'codeHash' => $codeHash,
+                'generationId' => $generationId,
+                'createdAt' => time(),
+                'expiresAt' => time() + self::$validSeconds,
+                'attempts' => 0,
+                'verified' => false,
+            ];
 
-        return $code;
+            $newRecord = self::encodeSensitiveState($data, $key);
+            // A lock is a lease: if a storage write stalls past its TTL, a
+            // later request may already have replaced the OTP. Compare the
+            // snapshot atomically so a resumed stale worker cannot restore
+            // the previous generation over a newer code.
+            if ($dao->get($key . ':state-lock') !== $lockValue
+                || !$dao->compareAndSet($key, $currentRecord, $newRecord, self::$validSeconds + 60)) {
+                throw new SaTokenException('验证码状态已并发更新，请重试');
+            }
+            $dao->delete($key . ':att');
+            $dao->delete($key . ':verified');
+
+            return ['code' => $code, 'generationId' => $generationId];
+        } finally {
+            self::releaseStateLock($key, $lockValue);
+        }
     }
 
     protected static function generateRandomCode(): string
@@ -78,21 +148,80 @@ class SaSensitiveVerify
         return $code;
     }
 
-    public static function sendCode(string $scene, mixed $loginId, string $loginType = 'login'): string
+    /** Send an OTP through the configured callback without exposing it to the caller. */
+    public static function sendCode(string $scene, mixed $loginId, string $loginType = 'login'): void
     {
-        // 发送频控：同一 scene+loginId 默认 60 秒内只允许发送一次。
-        // 没有频控的验证码下发等于向任意手机号/邮箱发起短信/邮件轰炸
-        $dao = SaToken::getDao();
-        $rateKey = self::getKey($scene, $loginId, $loginType) . ':sent';
-        if (!$dao->setIfNotExists($rateKey, '1', self::$sendInterval)) {
-            throw new SaTokenException('验证码发送过于频繁，请 ' . self::$sendInterval . ' 秒后再试');
+        $sendCallback = SaToken::getConfig()->getSensitiveVerifyCallback();
+        if (!is_callable($sendCallback)) {
+            throw new SaTokenException('验证码发送回调未配置，拒绝生成未投递的验证码');
         }
 
-        $code = self::generateCode($scene, $loginId, $loginType);
+        // scene 级冷却方便不同验证流程独立重试；账号级冷却防止调用方
+        // 使用可控 scene 不断创建新桶，绕过短信/邮件发送限制。
+        $dao = SaToken::getDao();
+        $key = self::getKey($scene, $loginId, $loginType);
+        $rateReservations = [];
+        if (self::$sendInterval > 0) {
+            $accountRateKey = self::getAccountSendRateKey($loginId, $loginType);
+            $accountRateOwner = bin2hex(random_bytes(16));
+            if (!$dao->setIfNotExists($accountRateKey, $accountRateOwner, self::$sendInterval)) {
+                throw new SaTokenException('验证码发送过于频繁，请 ' . self::$sendInterval . ' 秒后再试');
+            }
+            $rateReservations[$accountRateKey] = $accountRateOwner;
 
-        self::sendNotification($scene, $code, $loginId);
+            $sceneRateKey = $key . ':sent';
+            $sceneRateOwner = bin2hex(random_bytes(16));
+            try {
+                $sceneRateAcquired = $dao->setIfNotExists($sceneRateKey, $sceneRateOwner, self::$sendInterval);
+            } catch (\Throwable $exception) {
+                self::releaseSendRateReservations($dao, $rateReservations);
+                throw $exception;
+            }
+            if (!$sceneRateAcquired) {
+                self::releaseSendRateReservations($dao, $rateReservations);
+                throw new SaTokenException('验证码发送过于频繁，请 ' . self::$sendInterval . ' 秒后再试');
+            }
+            $rateReservations[$sceneRateKey] = $sceneRateOwner;
+        }
 
-        return $code;
+        try {
+            $generated = self::generateCodeWithGeneration($scene, $loginId, $loginType);
+            $code = $generated['code'];
+            $generationId = $generated['generationId'];
+        } catch (\Throwable $e) {
+            self::releaseSendRateReservations($dao, $rateReservations);
+            throw $e;
+        }
+
+        try {
+            self::sendNotification($scene, $code, $loginId);
+        } catch (\Throwable $e) {
+            // A delivery failure must not leave an OTP that the caller believes
+            // was never sent. Delete only this exact generation so a concurrent
+            // resend cannot be invalidated by this stale failure handler.
+            $currentRecord = $dao->get($key);
+            if ($currentRecord !== null && $dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface) {
+                $info = self::decodeSensitiveState($currentRecord, $key);
+                if (is_array($info) && ($info['generationId'] ?? null) === $generationId) {
+                    $dao->compareAndSet($key, $currentRecord, null);
+                }
+            }
+            self::releaseSendRateReservations($dao, $rateReservations);
+            throw $e;
+        }
+    }
+
+    /** @param array<string, string> $reservations */
+    protected static function releaseSendRateReservations(
+        \SaToken\Dao\SaTokenDaoInterface $dao,
+        array $reservations
+    ): void {
+        if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
+            return;
+        }
+        foreach ($reservations as $key => $owner) {
+            $dao->compareAndDelete($key, $owner);
+        }
     }
 
     protected static function sendNotification(string $scene, string $code, mixed $loginId): void
@@ -105,64 +234,121 @@ class SaSensitiveVerify
         }
     }
 
-    public static function verifyCode(string $scene, string $code, mixed $loginId, string $loginType = 'login'): bool
+    public static function verifyCode(string $scene, string $code, mixed $loginId, string $loginType = 'login', ?string $tokenBinding = null): bool
     {
         $dao = SaToken::getDao();
+        if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndUpdateInterface
+            || !$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface) {
+            throw new SaTokenException('DAO 必须实现安全比较更新接口才能验证验证码');
+        }
         $key = self::getKey($scene, $loginId, $loginType);
-        $attemptsKey = $key . ':att';
-        $data = $dao->get($key);
-
-        if ($data === null) {
+        // Bind this attempt to the OTP generation visible when it starts. A
+        // stale request must not consume an attempt or proof from a resend.
+        $initialRecord = $dao->get($key);
+        $initialInfo = $initialRecord !== null ? self::decodeSensitiveState($initialRecord, $key) : null;
+        $initialCodeHash = is_array($initialInfo) ? ($initialInfo['codeHash'] ?? null) : null;
+        if (!is_string($initialCodeHash)) {
             return false;
         }
+        $lockValue = self::acquireStateLock($key);
+        try {
+            // The lock is a lease and may expire while a DAO call is stalled.
+            // CAS keeps concurrent workers from overwriting each other's
+            // authenticated attempt count even after that lease expires.
+            for ($retry = 0; $retry < 16; $retry++) {
+                $record = $dao->get($key);
+                if ($record === null) {
+                    return false;
+                }
+                if ($dao->exists($key . ':verified')) {
+                    return false;
+                }
 
-        $info = @json_decode($data, true);
-        if (!is_array($info)) {
-            return false;
+                $info = self::decodeSensitiveState($record, $key);
+                if (!is_array($info) || ($info['verified'] ?? false) === true) {
+                    return false;
+                }
+                if (($info['codeHash'] ?? null) !== $initialCodeHash) {
+                    return false;
+                }
+
+                $expiresAt = $info['expiresAt'] ?? null;
+                if (!is_int($expiresAt) || $expiresAt <= time()) {
+                    if ($dao->compareAndSet($key, $record, null)) {
+                        $dao->delete($key . ':att');
+                    }
+                    return false;
+                }
+
+                $attempts = is_int($info['attempts'] ?? null) ? $info['attempts'] + 1 : 1;
+                if ($attempts > self::$maxAttempts) {
+                    if (!$dao->compareAndSet($key, $record, null)) {
+                        continue;
+                    }
+                    $dao->delete($key . ':att');
+                    $dao->delete($key . ':verified');
+                    throw new SaTokenException('验证码尝试次数过多，请重新获取', -1);
+                }
+
+                $info['attempts'] = $attempts;
+                $attemptRecord = self::encodeSensitiveState($info, $key);
+                if (!$dao->compareAndUpdate($key, $record, $attemptRecord)) {
+                    continue;
+                }
+
+                $codeHash = $info['codeHash'] ?? null;
+                if (!is_string($codeHash) || !password_verify($code, $codeHash)) {
+                    return false;
+                }
+
+                // Mark success with another CAS. If another attempt changed
+                // the record, retry only while this exact OTP generation is
+                // still current; never write a stale snapshot over new state.
+                for ($successRetry = 0; $successRetry < 16; $successRetry++) {
+                    $currentRecord = $dao->get($key);
+                    if ($currentRecord === null) {
+                        return false;
+                    }
+                    $current = self::decodeSensitiveState($currentRecord, $key);
+                    if (!is_array($current)
+                        || ($current['verified'] ?? false) === true
+                        || ($current['codeHash'] ?? null) !== $codeHash
+                        || !is_int($current['expiresAt'] ?? null)
+                        || $current['expiresAt'] <= time()) {
+                        return false;
+                    }
+
+                    $current['verified'] = true;
+                    $current['verifiedAt'] = time();
+                    if ($tokenBinding !== null) {
+                        $current['verifiedTokenHash'] = hash('sha256', $tokenBinding);
+                    } else {
+                        unset($current['verifiedTokenHash']);
+                    }
+                    if ($dao->compareAndUpdate($key, $currentRecord, self::encodeSensitiveState($current, $key))) {
+                        $dao->delete($key . ':att');
+                        $dao->delete($key . ':verified');
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            throw new SaTokenException('验证码状态竞争过多，请重试');
+        } finally {
+            self::releaseStateLock($key, $lockValue);
         }
-
-        if (($info['verified'] ?? false) === true) {
-            return false;
-        }
-
-        $expiresAt = $info['expiresAt'] ?? 0;
-        if ($expiresAt > 0 && $expiresAt < time()) {
-            $dao->delete($key);
-            $dao->delete($attemptsKey);
-            return false;
-        }
-
-        // 先原子递增尝试计数再校验：读-改-写在并发提交下会被覆盖，
-        // 攻击者可用远超 maxAttempts 的次数爆破 6 位验证码
-        $attempts = $dao->increment($attemptsKey, 1, max(60, self::$validSeconds));
-        if ($attempts > self::$maxAttempts) {
-            $dao->delete($key);
-            $dao->delete($attemptsKey);
-            throw new SaTokenException('验证码尝试次数过多，请重新获取', -1);
-        }
-
-        $codeStr = $info['code'] ?? '';
-        if (!hash_equals(is_string($codeStr) ? $codeStr : (is_scalar($codeStr) ? (string) $codeStr : ''), $code)) {
-            return false;
-        }
-
-        $info['verified'] = true;
-        $info['verifiedAt'] = time();
-        $jsonStr = json_encode($info);
-        $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', 60);
-        $dao->delete($attemptsKey);
-
-        return true;
     }
 
-    public static function verifyCodeAndThrow(string $scene, string $code, mixed $loginId, string $loginType = 'login'): void
+    public static function verifyCodeAndThrow(string $scene, string $code, mixed $loginId, string $loginType = 'login', ?string $tokenBinding = null): void
     {
-        if (!self::verifyCode($scene, $code, $loginId, $loginType)) {
+        if (!self::verifyCode($scene, $code, $loginId, $loginType, $tokenBinding)) {
             throw new NotSafeException('敏感操作验证失败');
         }
     }
 
-    public static function isVerified(string $scene, mixed $loginId, string $loginType = 'login'): bool
+    public static function isVerified(string $scene, mixed $loginId, string $loginType = 'login', ?string $tokenBinding = null): bool
     {
         $dao = SaToken::getDao();
         $key = self::getKey($scene, $loginId, $loginType);
@@ -172,34 +358,222 @@ class SaSensitiveVerify
             return false;
         }
 
-        $info = @json_decode($data, true);
+        $info = self::decodeSensitiveState($data, $key);
         if (!is_array($info)) {
             return false;
         }
 
-        return ($info['verified'] ?? false) === true;
+        $expiresAt = $info['expiresAt'] ?? null;
+        $verifiedTokenHash = $info['verifiedTokenHash'] ?? null;
+        $expectedTokenHash = $tokenBinding !== null ? hash('sha256', $tokenBinding) : null;
+
+        return ($info['verified'] ?? false) === true
+            && is_int($expiresAt)
+            && $expiresAt > time()
+            && $verifiedTokenHash === $expectedTokenHash;
+    }
+
+    /** Issue a one-time safe token only after consuming a successful OTP verification. */
+    public static function createSafeTokenAfterVerified(string $scene, mixed $loginId, string $loginType = 'login', int $validSeconds = 600, ?string $tokenBinding = null): string
+    {
+        self::validateLifetime($validSeconds);
+        if (!self::consumeVerified($scene, $loginId, $loginType, $tokenBinding)) {
+            throw new NotSafeException('请先完成该场景的一次性验证码验证');
+        }
+
+        return self::issueSafeToken($scene, $loginId, $loginType, $validSeconds, $tokenBinding);
+    }
+
+    /** Atomically consume a successful OTP verification before issuing a safe token. */
+    protected static function consumeVerified(string $scene, mixed $loginId, string $loginType, ?string $tokenBinding = null): bool
+    {
+        $dao = SaToken::getDao();
+        if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
+            throw new SaTokenException('DAO 必须实现原子比较删除接口才能消费验证码');
+        }
+        $key = self::getKey($scene, $loginId, $loginType);
+        $initialData = $dao->get($key);
+        if ($initialData === null) {
+            return false;
+        }
+        $lockValue = self::acquireStateLock($key);
+        try {
+            // The distributed lock is a lease and can expire while storage is
+            // stalled. Compare-and-delete the validated snapshot so an old
+            // lock owner cannot consume a newer OTP generation or issue a
+            // second safe token after another worker consumes it.
+            $data = $dao->get($key);
+            if ($data === null || $data !== $initialData || $dao->get($key . ':state-lock') !== $lockValue) {
+                return false;
+            }
+
+            $info = self::decodeSensitiveState($data, $key);
+            $expiresAt = is_array($info) ? ($info['expiresAt'] ?? null) : null;
+            if (!is_array($info)
+                || ($info['verified'] ?? false) !== true
+                || !is_int($expiresAt)
+                || $expiresAt <= time()) {
+                return false;
+            }
+            $expectedTokenHash = $tokenBinding !== null ? hash('sha256', $tokenBinding) : null;
+            if (($info['verifiedTokenHash'] ?? null) !== $expectedTokenHash) {
+                return false;
+            }
+            if (!$dao->compareAndDelete($key, $data)) {
+                return false;
+            }
+
+            $dao->delete($key . ':att');
+            $dao->delete($key . ':verified');
+            return true;
+        } finally {
+            self::releaseStateLock($key, $lockValue);
+        }
     }
 
     public static function clearVerified(string $scene, mixed $loginId, string $loginType = 'login'): void
     {
         $dao = SaToken::getDao();
+        if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface) {
+            throw new SaTokenException('DAO 必须实现安全比较设置接口才能清除验证码');
+        }
         $key = self::getKey($scene, $loginId, $loginType);
-        $dao->delete($key);
+        $initialRecord = $dao->get($key);
+        $lockValue = self::acquireStateLock($key);
+        try {
+            // The state lock is a lease. A paused worker must not delete an
+            // OTP generation written after that lease expired.
+            $currentRecord = $dao->get($key);
+            if ($dao->get($key . ':state-lock') !== $lockValue
+                || $currentRecord !== $initialRecord
+                || !$dao->compareAndSet($key, $currentRecord, null)) {
+                throw new SaTokenException('验证码状态已并发更新，请重试');
+            }
+            $dao->delete($key . ':att');
+            $dao->delete($key . ':verified');
+        } finally {
+            self::releaseStateLock($key, $lockValue);
+        }
+    }
+
+    protected static function acquireStateLock(string $key): string
+    {
+        $lockValue = bin2hex(random_bytes(16));
+        if (!\SaToken\Dao\SaTokenDaoLock::acquire(SaToken::getDao(), $key . ':state-lock', $lockValue, 30)) {
+            throw new SaTokenException('敏感验证码状态正在更新，请重试');
+        }
+        return $lockValue;
+    }
+
+    protected static function releaseStateLock(string $key, string $lockValue): void
+    {
+        $dao = SaToken::getDao();
+        \SaToken\Dao\SaTokenDaoLock::release($dao, $key . ':state-lock', $lockValue);
     }
 
     public static function getRemainingAttempts(string $scene, mixed $loginId, string $loginType = 'login'): int
     {
         $dao = SaToken::getDao();
-        $attempts = $dao->get(self::getKey($scene, $loginId, $loginType) . ':att');
+        $data = $dao->get(self::getKey($scene, $loginId, $loginType));
+        if ($data === null) {
+            return max(0, self::$maxAttempts);
+        }
 
-        return max(0, self::$maxAttempts - ($attempts !== null ? (int) $attempts : 0));
+        $key = self::getKey($scene, $loginId, $loginType);
+        $info = self::decodeSensitiveState($data, $key);
+        if (!is_array($info)) {
+            return 0;
+        }
+        $attempts = is_int($info['attempts'] ?? null) ? $info['attempts'] : 0;
+
+        return max(0, self::$maxAttempts - $attempts);
     }
 
-    public static function createSafeToken(string $scene, mixed $loginId, string $loginType = 'login', int $validSeconds = 600): string
+    /** @param array<string, mixed> $data */
+    protected static function encodeSensitiveState(array $data, string $key): string
     {
+        $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if (!is_string($json)) {
+            throw new SaTokenException('敏感验证状态序列化失败');
+        }
+
+        $payload = base64_encode($json);
+        $record = json_encode([
+            'payload' => $payload,
+            'mac' => hash_hmac('sha256', self::stateMacInput($payload, $key), self::getStateMacKey()),
+        ]);
+        if (!is_string($record)) {
+            throw new SaTokenException('敏感验证状态序列化失败');
+        }
+
+        return $record;
+    }
+
+    /** @return array<string, mixed>|null */
+    protected static function decodeSensitiveState(string $record, string $key): ?array
+    {
+        $envelope = json_decode($record, true);
+        if (!is_array($envelope)
+            || !is_string($envelope['payload'] ?? null)
+            || !is_string($envelope['mac'] ?? null)) {
+            return null;
+        }
+
+        $expectedMac = hash_hmac('sha256', self::stateMacInput($envelope['payload'], $key), self::getStateMacKey());
+        if (!hash_equals($expectedMac, $envelope['mac'])) {
+            return null;
+        }
+
+        $json = base64_decode($envelope['payload'], true);
+        if ($json === false) {
+            return null;
+        }
+        $data = json_decode($json, true);
+        if (!is_array($data)) {
+            return null;
+        }
+
+        $normalized = [];
+        foreach ($data as $field => $value) {
+            if (!is_string($field)) {
+                return null;
+            }
+            $normalized[$field] = $value;
+        }
+
+        return $normalized;
+    }
+
+    protected static function stateMacInput(string $payload, string $key): string
+    {
+        return "sa-token-sensitive-state:v1\0" . pack('N', strlen($key)) . $key . $payload;
+    }
+
+    protected static function getStateMacKey(): string
+    {
+        $signKey = SaToken::getConfig()->getSignKey();
+        if (strlen($signKey) < 32) {
+            throw new SaTokenException('敏感验证状态保护需要配置至少 32 字节的 signKey');
+        }
+
+        return hash_hkdf('sha256', $signKey, 32, 'sa-token-sensitive-verify-state', '');
+    }
+
+    /**
+     * @deprecated Direct safe-token issuance bypasses OTP verification. Use createSafeTokenAfterVerified().
+     */
+    public static function createSafeToken(string $scene, mixed $loginId, string $loginType = 'login', int $validSeconds = 600, ?string $tokenBinding = null): string
+    {
+        throw new SaTokenException('安全令牌必须通过已验证的 OTP 流程签发');
+    }
+
+    /** Issue the bearer only after the verified OTP state has been consumed. */
+    protected static function issueSafeToken(string $scene, mixed $loginId, string $loginType = 'login', int $validSeconds = 600, ?string $tokenBinding = null): string
+    {
+        self::validateLifetime($validSeconds);
         $token = bin2hex(random_bytes(32));
-        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-        $key = self::$keyPrefix . $loginType . ':safe-token:' . $scene . ':' . md5($loginIdStr) . ':' . substr($token, 0, 16);
+        $loginIdStr = self::normalizeLoginId($loginId);
+        $key = self::getSafeTokenKey($scene, $loginIdStr, $loginType, $token, $tokenBinding);
 
         $dao = SaToken::getDao();
         $data = [
@@ -209,18 +583,18 @@ class SaSensitiveVerify
             'createdAt' => time(),
             'expiresAt' => time() + $validSeconds,
             'tokenHash' => hash('sha256', $token),
+            'tokenBindingHash' => $tokenBinding !== null ? hash('sha256', $tokenBinding) : null,
         ];
 
-        $jsonStr = json_encode($data);
-        $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', $validSeconds + 60);
+        $dao->set($key, self::encodeSensitiveState($data, $key), $validSeconds + 60);
 
         return $token;
     }
 
-    public static function verifySafeToken(string $scene, string $token, mixed $loginId, string $loginType = 'login'): bool
+    public static function verifySafeToken(string $scene, string $token, mixed $loginId, string $loginType = 'login', ?string $tokenBinding = null): bool
     {
-        $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-        $key = self::$keyPrefix . $loginType . ':safe-token:' . $scene . ':' . md5($loginIdStr) . ':' . substr($token, 0, 16);
+        $loginIdStr = self::normalizeLoginId($loginId);
+        $key = self::getSafeTokenKey($scene, $loginIdStr, $loginType, $token, $tokenBinding);
         $dao = SaToken::getDao();
         $data = $dao->get($key);
 
@@ -228,33 +602,65 @@ class SaSensitiveVerify
             return false;
         }
 
-        $info = @json_decode($data, true);
+        $info = self::decodeSensitiveState($data, $key);
         if (!is_array($info)) {
             return false;
         }
 
-        $expiresAt = $info['expiresAt'] ?? 0;
-        if ($expiresAt > 0 && $expiresAt < time()) {
-            $dao->delete($key);
+        if (($info['scene'] ?? null) !== $scene
+            || ($info['loginId'] ?? null) !== $loginIdStr
+            || ($info['loginType'] ?? null) !== $loginType) {
+            return false;
+        }
+        $expectedTokenBindingHash = $tokenBinding !== null ? hash('sha256', $tokenBinding) : null;
+        if (($info['tokenBindingHash'] ?? null) !== $expectedTokenBindingHash) {
             return false;
         }
 
-        // 存储键只含 token 前 16 个 hex 字符，必须用完整 token 哈希校验，
-        // 否则有效熵从 256 bit 缩水到 64 bit
-        $tokenHash = $info['tokenHash'] ?? null;
-        if (is_string($tokenHash)) {
-            if (!hash_equals($tokenHash, hash('sha256', $token))) {
-                return false;
-            }
+        $expiresAt = $info['expiresAt'] ?? null;
+        if (!is_int($expiresAt) || $expiresAt <= time()) {
+            return false;
         }
 
-        $dao->delete($key);
-        return true;
+        // 存储键不暴露 bearer 前缀；载荷仍用完整哈希校验令牌身份。
+        // 缺少哈希的旧记录 fail closed，避免退回到不完整的令牌校验。
+        $tokenHash = $info['tokenHash'] ?? null;
+        if (!is_string($tokenHash) || !hash_equals($tokenHash, hash('sha256', $token))) {
+            return false;
+        }
+
+        // 读取和删除必须作为一次原子消费；消费后再核对载荷，防止同一前缀下
+        // 并发重发或新令牌覆盖时，两个请求都拿到成功结果。
+        $consumed = $dao->getAndDelete($key);
+        if ($consumed === null) {
+            return false;
+        }
+        $consumedInfo = self::decodeSensitiveState($consumed, $key);
+        if (!is_array($consumedInfo)
+            || ($consumedInfo['scene'] ?? null) !== $scene
+            || ($consumedInfo['loginId'] ?? null) !== $loginIdStr
+            || ($consumedInfo['loginType'] ?? null) !== $loginType
+            || ($consumedInfo['tokenBindingHash'] ?? null) !== $expectedTokenBindingHash
+            || !is_int($consumedInfo['expiresAt'] ?? null)
+            || $consumedInfo['expiresAt'] <= time()) {
+            return false;
+        }
+        $consumedHash = $consumedInfo['tokenHash'] ?? null;
+        return is_string($consumedHash) && hash_equals($consumedHash, hash('sha256', $token));
     }
 
-    public static function verifySafeTokenAndThrow(string $scene, string $token, mixed $loginId, string $loginType = 'login'): void
+    protected static function getSafeTokenKey(string $scene, string $loginId, string $loginType, string $token, ?string $tokenBinding): string
     {
-        if (!self::verifySafeToken($scene, $token, $loginId, $loginType)) {
+        $key = self::$keyPrefix . \SaToken\TokenManager::encodeKeyComponent($loginType)
+            . ':safe-token:' . \SaToken\TokenManager::encodeKeyComponent($scene)
+            . ':' . hash('sha256', $loginId) . ':' . hash('sha256', $token);
+
+        return $tokenBinding !== null ? $key . ':binding:' . hash('sha256', $tokenBinding) : $key;
+    }
+
+    public static function verifySafeTokenAndThrow(string $scene, string $token, mixed $loginId, string $loginType = 'login', ?string $tokenBinding = null): void
+    {
+        if (!self::verifySafeToken($scene, $token, $loginId, $loginType, $tokenBinding)) {
             throw new NotSafeException('安全验证令牌无效或已过期');
         }
     }

@@ -53,9 +53,9 @@ class SsoModeCrossDomain
     /**
      * @return array{loginId: mixed, redirect: ?string}
      */
-    public function doLoginCallbackWithRedirect(string $ticket): array
+    public function doLoginCallbackWithRedirect(string $ticket, ?string $state = null): array
     {
-        $loginId = $this->handle->doLoginCallback($ticket);
+        $loginId = $this->handle->doLoginCallback($ticket, null, $state);
         $redirect = $this->handle->restorePreLoginUrl();
 
         return [

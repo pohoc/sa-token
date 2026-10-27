@@ -42,7 +42,9 @@ interface SaTokenActionInterface
     /**
      * 自定义生成 Token 值
      *
-     * 返回 null 则使用默认风格生成，返回字符串则使用自定义值
+     * 返回 null 则使用默认风格生成，返回字符串则使用自定义值。
+     * TokenManager 会在需要时额外添加凭据类型前缀（例如 RefreshToken 的 srt_），
+     * 确保自定义生成器也不会让 AccessToken 与 RefreshToken 使用相同的 bearer 值。
      *
      * @param  mixed       $loginId   登录 ID
      * @param  string      $loginType 登录类型

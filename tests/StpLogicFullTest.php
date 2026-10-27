@@ -11,6 +11,7 @@ use SaToken\Dao\SaTokenDaoMemory;
 use SaToken\Exception\DisableServiceException;
 use SaToken\Exception\NotLoginException;
 use SaToken\Exception\NotSafeException;
+use SaToken\Exception\SaTokenException;
 use SaToken\Listener\SaTokenListenerInterface;
 use SaToken\SaLoginParameter;
 use SaToken\SaToken;
@@ -194,6 +195,44 @@ class StpLogicFullTest extends TestCase
 
         $this->expectException(DisableServiceException::class);
         $this->logic->login(10001);
+    }
+
+    public function testDisableSetAfterPrecheckStillPreventsLogin(): void
+    {
+        $logic = new class ('login') extends StpLogic {
+            private bool $disableAfterPrecheck = true;
+
+            protected function checkDisableForLogin(mixed $loginId): void
+            {
+                parent::checkDisableForLogin($loginId);
+                if ($this->disableAfterPrecheck) {
+                    $this->disableAfterPrecheck = false;
+                    $this->disable($loginId, 'login', 1, 3600);
+                }
+            }
+        };
+
+        $this->expectException(DisableServiceException::class);
+        $logic->login('disable-race-user');
+    }
+
+    public function testDisablePreventsTemporaryTokenIssuance(): void
+    {
+        $this->logic->disable('temp-token-disabled-user', 'login', 1, 3600);
+
+        $this->expectException(DisableServiceException::class);
+        $this->logic->createTempToken('temp-token-disabled-user', 60);
+    }
+
+    public function testDisablePreventsStatelessTokenIssuance(): void
+    {
+        SaToken::getConfig()
+            ->setJwtMode('stateless')
+            ->setJwtSecretKey('stateless-disable-test-secret-32-bytes');
+        $this->logic->disable('stateless-disabled-user', 'login', 1, 3600);
+
+        $this->expectException(DisableServiceException::class);
+        $this->logic->loginStateless('stateless-disabled-user');
     }
 
     public function testDisableDoesNotAffectOtherUser(): void
@@ -384,6 +423,39 @@ class StpLogicFullTest extends TestCase
         $this->assertTrue($listener::$flag);
     }
 
+    public function testLoginEventRunsAfterAccountLockIsReleased(): void
+    {
+        $loginId = 'listener-lock-check';
+        $lockKey = TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId);
+        $listener = $this->createMock(SaTokenListenerInterface::class);
+        $listener->expects($this->once())
+            ->method('onLogin')
+            ->willReturnCallback(function () use ($lockKey): void {
+                self::assertNull($this->dao->get($lockKey));
+            });
+        SaToken::addListener($listener);
+
+        $this->logic->login($loginId);
+    }
+
+    public function testReplacedEventRunsAfterAccountLockIsReleased(): void
+    {
+        $loginId = 'replacement-listener-lock-check';
+        $this->logic->login($loginId, (new SaLoginParameter())->setDeviceType('desktop'));
+        $lockKey = TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId);
+
+        SaToken::getConfig()->setMaxLoginCount(1);
+        $listener = $this->createMock(SaTokenListenerInterface::class);
+        $listener->expects($this->once())
+            ->method('onReplaced')
+            ->willReturnCallback(function () use ($lockKey): void {
+                self::assertNull($this->dao->get($lockKey));
+            });
+        SaToken::addListener($listener);
+
+        $this->logic->login($loginId, (new SaLoginParameter())->setDeviceType('mobile'));
+    }
+
     // ======== Token 格式化 ========
 
     public function testFormatTokenValueWithPrefix(): void
@@ -415,6 +487,13 @@ class StpLogicFullTest extends TestCase
         $this->assertNull($session);
     }
 
+    public function testGetSessionByLoginIdRejectsOversizedIdentityBeforeStorageAccess(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('loginId 长度无效');
+        $this->logic->getSessionByLoginId(str_repeat('s', TokenManager::MAX_LOGIN_ID_BYTES + 1));
+    }
+
     // ======== getTokenInfo ========
 
     public function testGetTokenInfo(): void
@@ -434,6 +513,119 @@ class StpLogicFullTest extends TestCase
 
         $loginId = $this->tokenManager->getLoginIdByToken($tempToken);
         $this->assertEquals('10001', $loginId);
+    }
+
+    public function testCreateTempTokenRespectsMaxLoginCount(): void
+    {
+        SaToken::getConfig()->setMaxLoginCount(1);
+        $oldToken = $this->loginAndGetToken('temp-limit-user');
+
+        $tempToken = $this->logic->createTempToken('temp-limit-user', 300);
+
+        $this->assertNotSame($oldToken, $tempToken);
+        $this->assertNull($this->tokenManager->getLoginIdByToken($oldToken));
+        $this->assertSame('temp-limit-user', $this->tokenManager->getLoginIdByToken($tempToken));
+        $tokens = $this->tokenManager->getTokenListByLoginId('temp-limit-user', 'login');
+        $this->assertCount(1, $tokens);
+        $this->assertSame($tempToken, $tokens[0]['tokenValue']);
+        $this->assertSame('temp', $tokens[0]['deviceType']);
+    }
+
+    public function testInvalidTempTokenTimeoutDoesNotRevokeExistingSession(): void
+    {
+        SaToken::getConfig()->setMaxLoginCount(1);
+        $oldToken = $this->loginAndGetToken('temp-invalid-timeout-user');
+
+        try {
+            $this->logic->createTempToken('temp-invalid-timeout-user', 0);
+            self::fail('Invalid temporary-token timeout must be rejected');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('有效期', $exception->getMessage());
+        }
+
+        self::assertTrue(
+            $this->tokenManager->isTokenValid($oldToken),
+            'Invalid input must be rejected before max-login-count handling removes an existing session'
+        );
+    }
+
+    public function testTempTokenReplacementEventRunsAfterAccountLockIsReleased(): void
+    {
+        $loginId = 'temp-replacement-listener-lock-check';
+        $this->logic->login($loginId);
+        SaToken::getConfig()->setMaxLoginCount(1);
+        $lockKey = TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId);
+        $listener = $this->createMock(SaTokenListenerInterface::class);
+        $listener->expects($this->once())
+            ->method('onReplaced')
+            ->willReturnCallback(function () use ($lockKey): void {
+                self::assertNull($this->dao->get($lockKey));
+            });
+        SaToken::addListener($listener);
+
+        $this->logic->createTempToken($loginId, 300);
+    }
+
+    public function testCreateTempTokenUsesAccountLock(): void
+    {
+        $loginId = '10001';
+        $lockKey = TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId);
+        $this->dao->set($lockKey, 'logout-owner', 30);
+
+        try {
+            $this->logic->createTempToken((int) $loginId, 300);
+            $this->fail('账号注销持锁期间不能签发临时 Token');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('正在处理中', $e->getMessage());
+        }
+
+        $this->assertSame([], $this->tokenManager->getTokenListByLoginId($loginId, 'login'));
+        $this->assertSame('logout-owner', $this->dao->get($lockKey));
+    }
+
+    public function testCreateTempTokenRejectsInvalidLoginIds(): void
+    {
+        foreach ([null, '', false, [], new \stdClass()] as $invalidLoginId) {
+            try {
+                $this->logic->createTempToken($invalidLoginId, 300);
+                $this->fail('临时 Token 不能绑定空或非标量登录 ID');
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('loginId 不能为空', $e->getMessage());
+            }
+        }
+    }
+
+    public function testCreateTempTokenRejectsOversizedLoginIdBeforeTakingAccountLock(): void
+    {
+        $loginId = str_repeat('a', TokenManager::MAX_LOGIN_ID_BYTES + 1);
+        $lockKey = TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId);
+
+        try {
+            $this->logic->createTempToken($loginId, 300);
+            self::fail('临时 Token 入口必须在任何账号状态变更前拒绝超长 loginId');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('loginId 长度无效', $exception->getMessage());
+        }
+
+        self::assertNull($this->dao->get($lockKey));
+        self::assertSame([], $this->tokenManager->getTokenListByLoginId($loginId, 'login'));
+    }
+
+    public function testLoginRejectsOversizedLoginIdsBeforePersistence(): void
+    {
+        $loginId = str_repeat('a', TokenManager::MAX_LOGIN_ID_BYTES + 1);
+
+        foreach ([
+            fn () => $this->logic->login($loginId),
+            fn () => $this->logic->loginStateless($loginId),
+        ] as $login) {
+            try {
+                $login();
+                $this->fail('登录入口必须拒绝超长 loginId');
+            } catch (SaTokenException $exception) {
+                $this->assertStringContainsString('loginId 长度无效', $exception->getMessage());
+            }
+        }
     }
 
     // ======== kickoutByTokenValue ========

@@ -7,7 +7,9 @@ namespace SaToken\Tests;
 use PHPUnit\Framework\TestCase;
 use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoMemory;
+use SaToken\Exception\DisableServiceException;
 use SaToken\Exception\NotLoginException;
+use SaToken\Exception\NotSafeException;
 use SaToken\Exception\SaTokenException;
 use SaToken\OAuth2\Data\SaOAuth2Client;
 use SaToken\OAuth2\SaOAuth2Config;
@@ -15,7 +17,11 @@ use SaToken\OAuth2\SaOAuth2Handle;
 use SaToken\SaToken;
 use SaToken\Sso\SaSsoConfig;
 use SaToken\Sso\SaSsoHandle;
+use SaToken\Sso\SaSsoManager;
+use SaToken\Sso\SaSsoTemplate;
+use SaToken\StpLogic;
 use SaToken\StpUtil;
+use SaToken\TokenManager;
 use SaToken\Util\SaTokenContext;
 
 /**
@@ -39,8 +45,10 @@ class SecurityRegressionTest extends TestCase
             'isWriteCookie'   => false,
             'isWriteHeader'   => false,
             'jwtSecretKey'    => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'signKey'         => 'sensitive-verify-test-sign-key-32-bytes',
         ]));
         SaToken::setDao(new SaTokenDaoMemory());
+        SaTokenContext::setRequest($this->makeRequestStub([]));
     }
 
     protected function tearDown(): void
@@ -84,7 +92,23 @@ class SecurityRegressionTest extends TestCase
             {
                 return 'GET';
             }
+
+            public function getClientIp(): string
+            {
+                return '192.0.2.102';
+            }
         };
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function createSignedToken(string $secretKey, array $payload): string
+    {
+        $encode = static fn (string $value): string => rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
+        $header = $encode(json_encode(['typ' => 'JWT', 'alg' => 'HS256'], JSON_THROW_ON_ERROR));
+        $body = $encode(json_encode($payload, JSON_THROW_ON_ERROR));
+        $signingInput = $header . '.' . $body;
+
+        return $signingInput . '.' . $encode(hash_hmac('sha256', $signingInput, $secretKey, true));
     }
 
     /**
@@ -115,6 +139,599 @@ class SecurityRegressionTest extends TestCase
                 return null;
             }
         });
+    }
+
+    public function testTokenInfoDoesNotExposeIdentityFromAnotherLoginType(): void
+    {
+        $adminLogic = new \SaToken\StpLogic('admin');
+        $token = $adminLogic->login('sensitive-admin-id')->getAccessToken();
+        $userLogic = new \SaToken\StpLogic('user');
+        $this->actAsToken($token);
+
+        $this->assertNull($userLogic->getLoginIdByToken($token));
+        $this->assertNull($userLogic->getTokenInfo()->getLoginId());
+        $this->assertSame('sensitive-admin-id', $adminLogic->getTokenInfo()->getLoginId());
+    }
+
+    public function testWrongLoginTypeCannotRevokeAnotherTypesToken(): void
+    {
+        $adminLogic = new \SaToken\StpLogic('admin');
+        $userLogic = new \SaToken\StpLogic('user');
+
+        $logoutToken = $adminLogic->login('admin-logout-user')->getAccessToken();
+        $this->actAsToken($logoutToken);
+        $userLogic->logout();
+        $this->assertSame('admin-logout-user', $adminLogic->getLoginIdByToken($logoutToken));
+
+        $kickoutToken = $adminLogic->login('admin-kickout-user')->getAccessToken();
+        $userLogic->kickoutByTokenValue($kickoutToken);
+        $this->assertSame('admin-kickout-user', $adminLogic->getLoginIdByToken($kickoutToken));
+
+        $revokeToken = $adminLogic->login('admin-revoke-user')->getAccessToken();
+        $this->assertFalse($userLogic->revokeToken($revokeToken));
+        $this->assertSame('admin-revoke-user', $adminLogic->getLoginIdByToken($revokeToken));
+    }
+
+    public function testTokenSessionRequiresTokenOwnedByCurrentLoginType(): void
+    {
+        $adminLogic = new \SaToken\StpLogic('admin');
+        $userLogic = new \SaToken\StpLogic('user');
+        $token = $adminLogic->login('admin-session-user')->getAccessToken();
+        $this->actAsToken($token);
+
+        $adminSession = $adminLogic->getTokenSession();
+        $this->assertNotNull($adminSession);
+        $adminSession->set('private-data', 'admin-only');
+
+        $this->assertNull($userLogic->getTokenSession(false));
+
+        $unrecognizedToken = 'unrecognized-token-from-request';
+        $this->actAsToken($unrecognizedToken);
+        $this->assertNull($userLogic->getTokenSession());
+        $this->assertNull(SaToken::getDao()->get(TokenManager::TOKEN_SESSION_PREFIX . $unrecognizedToken));
+    }
+
+    public function testWrongLoginTypeCannotSwitchAnotherTypesToken(): void
+    {
+        $adminLogic = new \SaToken\StpLogic('admin');
+        $userLogic = new \SaToken\StpLogic('user');
+        $token = $adminLogic->login('admin-switch-user')->getAccessToken();
+        $this->actAsToken($token);
+
+        try {
+            $userLogic->switchTo('attacker-controlled-user');
+            $this->fail('其他 loginType 不应能对该 Token 写入身份切换');
+        } catch (NotLoginException) {
+            $this->assertFalse($userLogic->isSwitch());
+        }
+
+        $this->assertSame('admin-switch-user', $adminLogic->getLoginIdByToken($token));
+    }
+
+    public function testWrongLoginTypeCannotRenewAnotherTypesToken(): void
+    {
+        $adminLogic = new \SaToken\StpLogic('admin');
+        $userLogic = new \SaToken\StpLogic('user');
+        $token = $adminLogic->login('admin-renew-user')->getAccessToken();
+        $this->actAsToken($token);
+        $originalTimeout = $adminLogic->getTokenTimeout();
+
+        $userLogic->renewTimeout(172800);
+
+        $this->assertLessThanOrEqual($originalTimeout, $adminLogic->getTokenTimeout());
+    }
+
+    public function testStaleRenewalCannotReviveRevokedTokenValue(): void
+    {
+        $token = 'reusable-renewal-token-value';
+        $manager = new TokenManager();
+        $manager->saveToken($token, 'old-owner', 'login', 'PC', 300);
+
+        $logic = new class ('login', $manager) extends StpLogic {
+            public bool $pauseAfterIdentityLookup = true;
+
+            public function getLoginIdByToken(string $tokenValue): ?string
+            {
+                $loginId = parent::getLoginIdByToken($tokenValue);
+                if ($this->pauseAfterIdentityLookup && $loginId !== null) {
+                    $this->pauseAfterIdentityLookup = false;
+                    \Fiber::suspend();
+                }
+                return $loginId;
+            }
+        };
+
+        $fiber = new \Fiber(function () use ($logic, $token): void {
+            SaTokenContext::setTokenOverride('login', $token);
+            try {
+                $logic->renewTimeout(7200);
+            } finally {
+                SaTokenContext::setTokenOverride('login', null);
+            }
+        });
+
+        $fiber->start();
+        $this->assertTrue($fiber->isSuspended());
+
+        $manager->deleteToken($token, 'old-owner', 'login');
+        $replacementToken = $manager->saveToken($token, 'new-owner', 'login', 'PC', 300);
+        $this->assertNotSame($token, $replacementToken, '已吊销的 bearer 值不得重新签发');
+
+        $fiber->resume();
+
+        $this->assertTrue($fiber->isTerminated());
+        $this->assertNull($manager->getLoginIdByToken($token));
+        $this->assertSame(-2, $manager->getTokenTimeout($token));
+    }
+
+    public function testLogoutAfterRefreshLockLeaseExpiresCannotReturnNewSession(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'refreshToken'         => true,
+            'refreshTokenRotation' => true,
+        ])));
+
+        $manager = new class () extends TokenManager {
+            public bool $pauseAfterGeneratingRefreshAccessToken = false;
+
+            public function createTokenValue(mixed $loginId, string $loginType, string $prefix = ''): string
+            {
+                $token = parent::createTokenValue($loginId, $loginType, $prefix);
+                if ($this->pauseAfterGeneratingRefreshAccessToken && $prefix === '') {
+                    $this->pauseAfterGeneratingRefreshAccessToken = false;
+                    \Fiber::suspend();
+                }
+
+                return $token;
+            }
+        };
+        $logic = new StpLogic('login', $manager);
+        $login = $logic->login('refresh-logout-race');
+        $oldAccessToken = $login->getAccessToken();
+        $refreshToken = (string) $login->getRefreshToken();
+        $manager->pauseAfterGeneratingRefreshAccessToken = true;
+        $refreshResult = null;
+        $refreshError = null;
+
+        $fiber = new \Fiber(function () use ($logic, $refreshToken, &$refreshResult, &$refreshError): void {
+            try {
+                $refreshResult = $logic->refreshToken($refreshToken);
+            } catch (\Throwable $exception) {
+                $refreshError = $exception;
+            }
+        });
+
+        $fiber->start();
+        self::assertTrue($fiber->isSuspended());
+
+        // Model an expired distributed lock lease after refresh minted a
+        // candidate token but before it can save that token as a session.
+        $accountLockKey = TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', 'refresh-logout-race');
+        SaToken::getDao()->delete($accountLockKey);
+        $logic->logoutByLoginId('refresh-logout-race');
+        $fiber->resume();
+
+        self::assertTrue($fiber->isTerminated());
+        self::assertNull($refreshResult, '刷新不能在账号登出完成后返回新的会话凭据');
+        self::assertInstanceOf(SaTokenException::class, $refreshError);
+        self::assertNull($logic->getLoginIdByToken($oldAccessToken));
+        self::assertFalse($logic->isRefreshTokenValid($refreshToken));
+        self::assertSame([], $manager->getTokenListByLoginId('refresh-logout-race', 'login'));
+    }
+
+    public function testRenewalExtendsLoginIdIndexWithTokenTimeout(): void
+    {
+        $manager = new TokenManager();
+        $token = $manager->createTokenValue('renew-index-owner', 'login');
+        $manager->saveToken($token, 'renew-index-owner', 'login', 'PC', 300);
+        $this->actAsToken($token);
+
+        (new StpLogic('login', $manager))->renewTimeout(7200);
+
+        $this->assertGreaterThanOrEqual(
+            $manager->getTokenTimeout($token),
+            SaToken::getDao()->getTimeout(TokenManager::buildLoginIdKey('login', 'renew-index-owner'))
+        );
+    }
+
+    public function testStatelessLoginCannotIssueJwtAfterAccountLogoutWinsExpiredLock(): void
+    {
+        $loginId = 'stateless-lock-expiry-user';
+        SaToken::setConfig(SaToken::getConfig()
+            ->setJwtStateless(true)
+            ->setJwtSecretKey('test-jwt-secret-key-32-bytes-long-ok!'));
+
+        $logic = new class ('login') extends StpLogic {
+            public ?\Closure $afterDisableCheck = null;
+
+            protected function checkDisableForLogin(mixed $loginId): void
+            {
+                parent::checkDisableForLogin($loginId);
+                if ($this->afterDisableCheck !== null) {
+                    $callback = $this->afterDisableCheck;
+                    $this->afterDisableCheck = null;
+                    $callback($loginId);
+                }
+            }
+        };
+        $logic->afterDisableCheck = function (mixed $checkedLoginId) use ($loginId): void {
+            self::assertSame($loginId, $checkedLoginId);
+            // Simulate the 30-second account-lock lease expiring while the old
+            // login request is paused; another worker completes logout first.
+            SaToken::getDao()->delete(
+                TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId)
+            );
+            (new StpLogic('login', new TokenManager()))->logoutByLoginId($loginId);
+        };
+
+        try {
+            $token = $logic->loginStateless($loginId);
+            self::assertNull(
+                $logic->getLoginIdByToken($token),
+                '全账号注销完成后，暂停中的旧登录请求不能返回仍可用的 JWT'
+            );
+        } catch (SaTokenException $exception) {
+            self::assertContains($exception->getMessage(), [
+                '账号会话已撤销，拒绝签发无效登录凭证',
+                '账号会话锁已失效，拒绝签发无状态登录凭证',
+            ]);
+        }
+    }
+
+    public function testStatelessRefreshCannotReturnJwtAfterAccountLogoutWinsExpiredLock(): void
+    {
+        $loginId = 'stateless-refresh-lock-expiry-user';
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'jwtStateless'         => true,
+            'jwtSecretKey'         => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'refreshToken'         => true,
+            'refreshTokenRotation' => true,
+            'refreshTokenTimeout'  => 3600,
+        ])));
+
+        $dao = new class () extends SaTokenDaoMemory {
+            public bool $pauseOnGenerationRead = false;
+
+            public function get(string $key): ?string
+            {
+                $value = parent::get($key);
+                if ($this->pauseOnGenerationRead
+                    && str_starts_with($key, TokenManager::JWT_GENERATION_PREFIX)) {
+                    $this->pauseOnGenerationRead = false;
+                    \Fiber::suspend();
+                }
+
+                return $value;
+            }
+        };
+        SaToken::setDao($dao);
+        $logic = new StpLogic('login');
+        $accessToken = $logic->loginStateless($loginId);
+        $refreshToken = $logic->createRefreshToken($accessToken);
+        $dao->pauseOnGenerationRead = true;
+        $refreshResult = null;
+        $refreshError = null;
+
+        $fiber = new \Fiber(function () use ($logic, $refreshToken, &$refreshResult, &$refreshError): void {
+            try {
+                $refreshResult = $logic->refreshToken($refreshToken);
+            } catch (\Throwable $exception) {
+                $refreshError = $exception;
+            }
+        });
+
+        $fiber->start();
+        self::assertTrue($fiber->isSuspended());
+
+        // The refresh worker has read generation 0 but has not signed its JWT.
+        // Let a second worker take over an expired lease and complete logout.
+        $lockKey = TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId);
+        SaToken::getDao()->delete($lockKey);
+        $logic->logoutByLoginId($loginId);
+        $fiber->resume();
+
+        self::assertTrue($fiber->isTerminated());
+        self::assertNull($refreshResult, '账号登出完成后，刷新不能返回新的无状态凭据');
+        self::assertInstanceOf(SaTokenException::class, $refreshError);
+        self::assertNull($logic->getLoginIdByToken($accessToken));
+        self::assertFalse($logic->isRefreshTokenValid($refreshToken));
+    }
+
+    public function testStatelessLoginHonorsDisabledResponseCredentialWriting(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'isWriteHeader' => true,
+        ])));
+        $logic = new StpLogic('login');
+
+        $privateToken = $logic->loginStateless(
+            'private-stateless-login',
+            (new \SaToken\SaLoginParameter())->setWriteResponseCredentials(false)
+        );
+        self::assertSame('private-stateless-login', $logic->getLoginIdByToken($privateToken));
+
+        $pendingHeaders = new \ReflectionProperty(SaTokenContext::class, 'pendingHeadersMap');
+        $headersByContext = $pendingHeaders->getValue();
+        if (!is_array($headersByContext)) {
+            self::fail('待写响应头状态必须是数组');
+        }
+        $contextHeaders = $headersByContext[SaTokenContext::getContextId()] ?? [];
+        if (!is_array($contextHeaders)) {
+            self::fail('当前请求上下文的响应头状态必须是数组');
+        }
+        foreach ($contextHeaders as $header) {
+            if (is_array($header) && is_string($header['name'] ?? null)) {
+                self::assertNotSame('satoken', strtolower($header['name']));
+            }
+        }
+
+        $defaultToken = $logic->loginStateless('default-stateless-login');
+        $headersByContext = $pendingHeaders->getValue();
+        if (!is_array($headersByContext)) {
+            self::fail('待写响应头状态必须是数组');
+        }
+        $contextHeaders = $headersByContext[SaTokenContext::getContextId()] ?? [];
+        if (!is_array($contextHeaders)) {
+            self::fail('当前请求上下文的响应头状态必须是数组');
+        }
+        self::assertContains(
+            ['name' => 'satoken', 'value' => $defaultToken],
+            $contextHeaders,
+            '默认登录仍按配置向响应写入 JWT'
+        );
+    }
+
+    public function testStatelessLoginCannotFinishAfterDisableTakesOverExpiredAccountLock(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ])));
+
+        $dao = new class () extends SaTokenDaoMemory {
+            public ?\Closure $afterDisableRead = null;
+
+            public function get(string $key): ?string
+            {
+                $value = parent::get($key);
+                if ($this->afterDisableRead !== null && str_starts_with($key, 'satoken:disable:')) {
+                    $callback = $this->afterDisableRead;
+                    $this->afterDisableRead = null;
+                    $callback();
+                }
+
+                return $value;
+            }
+        };
+        SaToken::setDao($dao);
+        $logic = new StpLogic('login');
+        $loginId = 'stateless-disable-lock-expiry';
+        $dao->afterDisableRead = function () use ($dao, $loginId): void {
+            // Simulate a paused login resuming after its account-lock lease
+            // expired and an administrator completed a disable operation.
+            $dao->delete(TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId));
+            (new StpLogic('login', new TokenManager()))->disable($loginId, 'login', 1, 3600);
+        };
+
+        try {
+            $logic->loginStateless($loginId);
+            self::fail('账号封禁完成后，丢失账号锁的无状态登录不能签发 Token');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('锁', $exception->getMessage());
+        }
+
+        self::assertTrue($logic->isDisable($loginId, 'login'));
+    }
+
+    public function testStatefulLoginCannotFinishAfterDisableTakesOverExpiredAccountLock(): void
+    {
+        $loginId = 'stateful-disable-lock-expiry';
+        $logic = new class ('login') extends StpLogic {
+            public int $disableChecks = 0;
+
+            public string $raceLoginId = '';
+
+            protected function checkDisableForLogin(mixed $loginId): void
+            {
+                parent::checkDisableForLogin($loginId);
+                ++$this->disableChecks;
+                if ($this->disableChecks === 3) {
+                    // Simulate the account-lock lease expiring while the
+                    // request is paused, then let an administrator finish.
+                    SaToken::getDao()->delete(
+                        TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $this->raceLoginId)
+                    );
+                    SaTokenContext::setContextId('disable-admin');
+                    try {
+                        (new StpLogic('login', new TokenManager()))->disable($loginId, 'login', 1, 3600);
+                    } finally {
+                        SaTokenContext::setContextId('default');
+                    }
+                }
+            }
+        };
+        $logic->raceLoginId = $loginId;
+
+        try {
+            $logic->login($loginId);
+            self::fail('账号封禁完成后，丢失账号锁的有状态登录不能签发 Token');
+        } catch (SaTokenException $exception) {
+            self::assertNotSame('', $exception->getMessage());
+        }
+
+        self::assertTrue($logic->isDisable($loginId, 'login'));
+        self::assertSame([], (new TokenManager())->getTokenListByLoginId($loginId, 'login'));
+    }
+
+    public function testTemporaryTokenCannotBeIssuedAfterDisableTakesOverExpiredAccountLock(): void
+    {
+        $loginId = 'temp-token-disable-lock-expiry';
+        $tokenManager = new class () extends TokenManager {
+            public ?\Closure $afterTokenSaved = null;
+
+            public string $issuedToken = '';
+
+            public function saveToken(
+                string $tokenValue,
+                mixed $loginId,
+                string $loginType,
+                string $deviceType = '',
+                ?int $timeout = null,
+                ?string $sessionId = null
+            ): string {
+                $savedToken = parent::saveToken($tokenValue, $loginId, $loginType, $deviceType, $timeout, $sessionId);
+                $this->issuedToken = $savedToken;
+                if ($this->afterTokenSaved !== null) {
+                    $callback = $this->afterTokenSaved;
+                    $this->afterTokenSaved = null;
+                    $callback();
+                }
+
+                return $savedToken;
+            }
+        };
+        $logic = new StpLogic('login', $tokenManager);
+        $tokenManager->afterTokenSaved = function () use ($loginId): void {
+            // Pause immediately after persistence, then let a different
+            // request take over the expired account lease and disable login.
+            SaToken::getDao()->delete(
+                TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId)
+            );
+            SaTokenContext::setContextId('disable-admin');
+            try {
+                (new StpLogic('login', new TokenManager()))->disable($loginId, 'login', 1, 3600);
+            } finally {
+                SaTokenContext::setContextId('default');
+            }
+        };
+
+        try {
+            $logic->createTempToken($loginId, 600);
+            self::fail('账号封禁完成后，临时登录不能签发 Token');
+        } catch (DisableServiceException) {
+            self::assertTrue($logic->isDisable($loginId, 'login'));
+        }
+
+        self::assertFalse($tokenManager->isTokenValid($tokenManager->issuedToken));
+        self::assertSame([], $tokenManager->getTokenListByLoginId($loginId, 'login'));
+    }
+
+    public function testRefreshCannotReturnNewTokenAfterDisableTakesOverExpiredAccountLock(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'refreshToken'         => true,
+            'refreshTokenRotation' => true,
+        ])));
+        $loginId = 'refresh-disable-lock-expiry';
+        $tokenManager = new class () extends TokenManager {
+            public ?\Closure $afterRefreshTokenSaved = null;
+
+            public string $refreshedAccessToken = '';
+
+            public function saveRefreshToken(
+                string $refreshToken,
+                string $accessToken,
+                mixed $loginId,
+                string $loginType,
+                int $timeout
+            ): void {
+                parent::saveRefreshToken($refreshToken, $accessToken, $loginId, $loginType, $timeout);
+                $this->refreshedAccessToken = $accessToken;
+                if ($this->afterRefreshTokenSaved !== null) {
+                    $callback = $this->afterRefreshTokenSaved;
+                    $this->afterRefreshTokenSaved = null;
+                    $callback($loginId);
+                }
+            }
+        };
+        $logic = new StpLogic('login', $tokenManager);
+        $login = $logic->login($loginId);
+        $tokenManager->afterRefreshTokenSaved = function () use ($loginId): void {
+            SaToken::getDao()->delete(
+                TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId)
+            );
+            SaTokenContext::setContextId('disable-admin');
+            try {
+                (new StpLogic('login', new TokenManager()))->disable($loginId, 'login', 1, 3600);
+            } finally {
+                SaTokenContext::setContextId('default');
+            }
+        };
+
+        try {
+            $logic->refreshToken($login->getRefreshToken());
+            self::fail('账号封禁完成后，刷新流程不能返回新的 AccessToken');
+        } catch (DisableServiceException) {
+            self::assertTrue($logic->isDisable($loginId, 'login'));
+        }
+
+        self::assertFalse($tokenManager->isTokenValid($tokenManager->refreshedAccessToken));
+        self::assertSame([], $tokenManager->getTokenListByLoginId($loginId, 'login'));
+    }
+
+    public function testDisabledAccountCannotCreateRefreshToken(): void
+    {
+        $loginId = 'disabled-refresh-token-creation';
+        $logic = new StpLogic('login');
+        $accessToken = $logic->login($loginId)->getAccessToken();
+        $logic->disable($loginId, 'login', 1, 3600);
+
+        try {
+            $logic->createRefreshToken($accessToken);
+            self::fail('封禁账号不能创建新的 RefreshToken');
+        } catch (DisableServiceException) {
+            self::assertTrue($logic->isDisable($loginId, 'login'));
+        }
+    }
+
+    public function testRefreshTokenCreationCannotFinishAfterDisableTakesOverExpiredAccountLock(): void
+    {
+        $loginId = 'refresh-create-disable-lock-expiry';
+        $tokenManager = new class () extends TokenManager {
+            public ?\Closure $afterRefreshTokenSaved = null;
+
+            public string $issuedRefreshToken = '';
+
+            public function saveRefreshToken(
+                string $refreshToken,
+                string $accessToken,
+                mixed $loginId,
+                string $loginType,
+                int $timeout
+            ): void {
+                parent::saveRefreshToken($refreshToken, $accessToken, $loginId, $loginType, $timeout);
+                $this->issuedRefreshToken = $refreshToken;
+                if ($this->afterRefreshTokenSaved !== null) {
+                    $callback = $this->afterRefreshTokenSaved;
+                    $this->afterRefreshTokenSaved = null;
+                    $callback();
+                }
+            }
+        };
+        $logic = new StpLogic('login', $tokenManager);
+        $accessToken = $logic->login($loginId)->getAccessToken();
+        $tokenManager->afterRefreshTokenSaved = function () use ($loginId): void {
+            SaToken::getDao()->delete(
+                TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId)
+            );
+            SaTokenContext::setContextId('disable-admin');
+            try {
+                (new StpLogic('login', new TokenManager()))->disable($loginId, 'login', 1, 3600);
+            } finally {
+                SaTokenContext::setContextId('default');
+            }
+        };
+
+        try {
+            $logic->createRefreshToken($accessToken);
+            self::fail('封禁完成后，RefreshToken 创建请求不能返回新凭证');
+        } catch (DisableServiceException) {
+            self::assertTrue($logic->isDisable($loginId, 'login'));
+        }
+
+        self::assertFalse($tokenManager->isRefreshTokenValid($tokenManager->issuedRefreshToken));
     }
 
     // ======== C1: mixed JWT 模式下会话必须可终止 ========
@@ -154,6 +771,49 @@ class SecurityRegressionTest extends TestCase
         $this->assertFalse(StpUtil::getStpLogic()->isLogin());
     }
 
+    public function testMixedJwtAccountLogoutRemainsRevokedAfterSwitchToStatelessMode(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtMode'      => 'mixed',
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'isReadHeader' => true,
+        ]));
+        $logic = StpUtil::getStpLogic();
+        $loginId = 'mixed-to-stateless-account-logout';
+        $token = $logic->login($loginId)->getAccessToken();
+
+        $logic->logoutByLoginId($loginId);
+        self::assertNull($logic->getLoginIdByToken($token));
+
+        SaToken::getConfig()->setJwtStateless(true);
+        self::assertNull(
+            $logic->getLoginIdByToken($token),
+            '账号注销后的 mixed JWT 不得通过无状态遗留令牌兼容路径复活'
+        );
+    }
+
+    public function testMixedJwtSingleLogoutRemainsRevokedAfterSwitchToStatelessMode(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtMode'      => 'mixed',
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'isReadHeader' => true,
+        ]));
+        $logic = StpUtil::getStpLogic();
+        $loginId = 'mixed-to-stateless-single-logout';
+        $token = $logic->login($loginId)->getAccessToken();
+        $this->actAsToken($token);
+
+        $logic->logout();
+        self::assertNull($logic->getLoginIdByToken($token));
+
+        SaToken::getConfig()->setJwtStateless(true);
+        self::assertNull(
+            $logic->getLoginIdByToken($token),
+            '单 token 注销后的 mixed JWT 不得通过无状态遗留令牌兼容路径复活'
+        );
+    }
+
     public function testMixedJwtModeForgedJwtWithoutDaoRecordIsRejected(): void
     {
         SaToken::setConfig(new SaTokenConfig([
@@ -168,6 +828,358 @@ class SecurityRegressionTest extends TestCase
         ]))->createStatelessToken(29999, 'login', 3600);
         $this->actAsToken($jwt);
         $this->assertFalse(StpUtil::getStpLogic()->isLogin());
+    }
+
+    public function testMixedJwtModeExpiredTokenCannotRevealItsRefreshToken(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtMode'       => 'mixed',
+            'timeout'       => 1,
+            'jwtSecretKey'  => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'isReadHeader'  => true,
+        ]));
+
+        $token = StpUtil::login(20003)->getAccessToken();
+        $refreshToken = StpUtil::createRefreshToken($token, 60);
+        $this->actAsToken($token);
+
+        // DAO 续期不能把不可变的 JWT exp 延长。
+        StpUtil::renewTimeout(60);
+        sleep(2);
+
+        $this->assertTrue(StpUtil::isRefreshTokenValid($refreshToken));
+        $this->assertNull(StpUtil::getStpLogic()->getTokenManager()->getLoginIdByToken($token));
+        $this->assertNull(StpUtil::getRefreshTokenByAccessToken($token));
+    }
+
+    public function testStatelessJwtRejectsTokenFromAnotherLoginType(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'isReadHeader' => true,
+        ]));
+
+        $jwt = (new \SaToken\Plugin\SaTokenJwt([
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]))->createStatelessToken(29999, 'admin', 3600);
+        $this->actAsToken($jwt);
+
+        $this->assertFalse(StpUtil::getStpLogic()->isLogin());
+        $this->assertNull(StpUtil::getLoginId());
+        $this->assertNull(StpUtil::getStpLogic()->getLoginIdByToken($jwt));
+    }
+
+    public function testStatelessJwtProvidesIdentityOnlyForMatchingLoginType(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'isReadHeader' => true,
+        ]));
+
+        $jwt = (new \SaToken\Plugin\SaTokenJwt([
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]))->createStatelessToken(29999, 'login', 3600);
+        $this->actAsToken($jwt);
+
+        $this->assertTrue(StpUtil::getStpLogic()->isLogin());
+        $this->assertSame('29999', StpUtil::getLoginId());
+        $this->assertSame('29999', StpUtil::getStpLogic()->getLoginIdByToken($jwt));
+    }
+
+    public function testStatelessJwtDoesNotInheritAnotherLoginTypesSessionClaims(): void
+    {
+        $userLogic = SaToken::getStpLogic('user');
+        $session = $userLogic->getSessionByLoginId('admin:42');
+        self::assertNotNull($session);
+        $session->set('role', 'administrator');
+
+        $jwt = (new \SaToken\Plugin\SaTokenJwt([
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]))->createStatelessToken('42', 'user:admin', 3600);
+
+        $payload = (new \SaToken\Plugin\SaTokenJwt([
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]))->parseToken($jwt);
+        $this->assertArrayNotHasKey('role', $payload);
+    }
+
+    public function testLogoutRevokesStatelessJwt(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'isReadHeader' => true,
+        ]));
+        $jwt = (new \SaToken\Plugin\SaTokenJwt([
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]))->createStatelessToken(29998, 'login', 3600);
+        $this->actAsToken($jwt);
+
+        $this->assertTrue(StpUtil::isLogin());
+        StpUtil::logout();
+
+        $this->assertTrue(StpUtil::isTokenRevoked($jwt));
+        $this->assertFalse(StpUtil::isLogin());
+    }
+
+    public function testStatelessTokenRevocationWaitsForRefreshAccountLockAndDeletesRefreshToken(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'jwtStateless'         => true,
+            'jwtSecretKey'         => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'refreshToken'         => true,
+            'refreshTokenRotation' => true,
+            'refreshTokenTimeout'  => 3600,
+        ])));
+        $logic = new StpLogic('login');
+        $loginId = 'stateless-single-logout-refresh-race';
+        $accessToken = $logic->loginStateless($loginId);
+        $refreshToken = $logic->createRefreshToken($accessToken, 3600);
+        $lockKey = 'login:login:' . hash('sha256', $loginId);
+        $this->actAsToken($accessToken);
+
+        SaTokenContext::setContextId('refresh-owner');
+        $refreshOwner = new TokenManager();
+        self::assertTrue($refreshOwner->acquireLock($lockKey, 30));
+        SaTokenContext::setContextId('default');
+
+        try {
+            try {
+                $logic->logout();
+                self::fail('单 Token 撤销必须与账号刷新共用账号锁');
+            } catch (SaTokenException $exception) {
+                self::assertStringContainsString('正在处理', $exception->getMessage());
+            }
+            self::assertFalse($logic->isTokenRevoked($accessToken));
+            self::assertTrue($logic->isRefreshTokenValid($refreshToken));
+        } finally {
+            SaTokenContext::setContextId('refresh-owner');
+            $refreshOwner->releaseLock($lockKey);
+            SaTokenContext::setContextId('default');
+        }
+
+        $logic->logout();
+        self::assertTrue($logic->isTokenRevoked($accessToken));
+        self::assertFalse($logic->isRefreshTokenValid($refreshToken));
+    }
+
+    public function testRevokedStatelessJwtCannotBeReissuedThroughSignatureEncodingAlias(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'isReadHeader' => true,
+        ]));
+
+        $logic = SaToken::getStpLogic('login');
+        $token = $logic->loginStateless('alias-user');
+        [$header, $payload, $signature] = explode('.', $token);
+        $alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+        $lastIndex = strpos($alphabet, substr($signature, -1));
+        self::assertIsInt($lastIndex);
+        $alias = $header . '.' . $payload . '.'
+            . substr($signature, 0, -1) . $alphabet[$lastIndex ^ 1];
+
+        self::assertNotSame($token, $alias);
+        self::assertTrue($logic->revokeToken($token));
+        self::assertNull($logic->getLoginIdByToken($alias), '撤销 Token 后，等价签名编码不得继续认证');
+    }
+
+    public function testKickoutByTokenRevokesStatelessJwt(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'isReadHeader' => true,
+        ]));
+        $jwt = (new \SaToken\Plugin\SaTokenJwt([
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]))->createStatelessToken(29997, 'login', 3600);
+        $this->actAsToken($jwt);
+
+        $this->assertTrue(StpUtil::isLogin());
+        StpUtil::kickoutByTokenValue($jwt);
+
+        $this->assertTrue(StpUtil::isTokenRevoked($jwt));
+        $this->assertFalse(StpUtil::isLogin());
+    }
+
+    public function testLogoutByLoginIdRevokesAllStatelessJwts(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'isReadHeader' => true,
+        ]));
+        $jwt1 = (new \SaToken\Plugin\SaTokenJwt([
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]))->createStatelessToken(29996, 'login', 3600);
+        $jwt2 = (new \SaToken\Plugin\SaTokenJwt([
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]))->createStatelessToken(29996, 'login', 3600);
+
+        StpUtil::logoutByLoginId(29996);
+
+        foreach ([$jwt1, $jwt2] as $jwt) {
+            $this->actAsToken($jwt);
+            $this->assertFalse(StpUtil::isLogin());
+        }
+    }
+
+    public function testEncryptedStatelessJwtGenerationCannotBeResetToReviveLoggedOutTokens(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'tokenEncrypt' => true,
+            'tokenEncryptKey' => str_repeat('g', 32),
+            'aesKey' => str_repeat('g', 32),
+            'isReadHeader' => true,
+        ]));
+        $jwt = new \SaToken\Plugin\SaTokenJwt([
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]);
+        $token = $jwt->createStatelessToken('generation-owner', 'login', 3600);
+        $generationKey = TokenManager::buildStatelessTokenGenerationKey('generation-owner', 'login');
+
+        StpUtil::logoutByLoginId('generation-owner');
+        $this->assertNotSame('1', SaToken::getDao()->get($generationKey));
+        SaToken::getDao()->set($generationKey, '0');
+        $this->actAsToken($token);
+
+        $this->assertFalse(StpUtil::isLogin(), '无法认证的撤销版本记录必须按已撤销处理');
+    }
+
+    public function testMissingStatelessJwtGenerationCannotBypassPersistentRevocationWatermark(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'isReadHeader' => true,
+        ]));
+        $jwt = new \SaToken\Plugin\SaTokenJwt([
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]);
+        $loginId = 'generation-eviction-user';
+        $token = $jwt->createStatelessToken($loginId, 'login', 3600);
+        $generationKey = TokenManager::buildStatelessTokenGenerationKey($loginId, 'login');
+        $watermarkKey = 'satoken:jwt:revoked-before:login:' . hash('sha256', $loginId);
+
+        StpUtil::logoutByLoginId($loginId);
+        self::assertNotNull(SaToken::getDao()->get($watermarkKey));
+        SaToken::getDao()->delete($generationKey);
+
+        $this->actAsToken($token);
+        self::assertNull(
+            StpUtil::getStpLogic()->getLoginIdByToken($token),
+            '代际键丢失时必须回退到仍存在的永久撤销水位，不能令旧 JWT 复活'
+        );
+
+        $newToken = StpUtil::getStpLogic()->loginStateless($loginId);
+        self::assertSame($loginId, StpUtil::getStpLogic()->getLoginIdByToken($newToken));
+    }
+
+    public function testEncryptedStatelessJwtGenerationRecoversAfterGenerationKeyLoss(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'tokenEncrypt' => true,
+            'tokenEncryptKey' => str_repeat('e', 32),
+            'aesKey' => str_repeat('e', 32),
+            'isReadHeader' => true,
+        ]));
+        $loginId = 'encrypted-generation-eviction-user';
+        $logic = StpUtil::getStpLogic();
+        $token = $logic->loginStateless($loginId);
+        $generationKey = TokenManager::buildStatelessTokenGenerationKey($loginId, 'login');
+
+        $logic->logoutByLoginId($loginId);
+        SaToken::getDao()->delete($generationKey);
+        $this->actAsToken($token);
+        self::assertNull($logic->getLoginIdByToken($token));
+
+        $newToken = $logic->loginStateless($loginId);
+        self::assertSame($loginId, $logic->getLoginIdByToken($newToken));
+    }
+
+    public function testStatelessJwtAtExactAccountRevocationWatermarkIsRevoked(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'isReadHeader' => true,
+        ]));
+
+        $logic = SaToken::getStpLogic('login');
+        $token = (new \SaToken\Plugin\SaTokenJwt([
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]))->createToken('watermark-equality-user', 'login', 3600);
+        $claims = (new \SaToken\Plugin\SaTokenJwt([
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]))->parseToken($token);
+        if (!is_int($claims['iat'] ?? null) && !is_float($claims['iat'] ?? null)) {
+            self::fail('JWT iat 必须是数值时间戳');
+        }
+        self::assertSame('watermark-equality-user', $logic->getLoginIdByToken($token));
+
+        $watermarkKey = 'satoken:jwt:revoked-before:login:' . hash('sha256', 'watermark-equality-user');
+        SaToken::getDao()->set($watermarkKey, sprintf('%.6F', (float) $claims['iat']));
+
+        self::assertNull($logic->getLoginIdByToken($token), 'iat 与撤销水位相等时必须按已撤销处理');
+    }
+
+    public function testStatelessJwtMintedBeforeLogoutByClockAheadNodeIsRevoked(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'isReadHeader' => true,
+        ]));
+        StpUtil::logoutByLoginId('clock-skew-user');
+
+        // Simulate a token minted before logout on another node whose clock is
+        // ahead. Its future iat must not let it survive the account revocation.
+        $token = $this->createSignedToken('test-jwt-secret-key-32-bytes-long-ok!', [
+            'sub' => 'clock-skew-user',
+            'type' => 'login',
+            'iat' => microtime(true) + 60,
+            'jti' => bin2hex(random_bytes(16)),
+            'exp' => time() + 3600,
+            'satoken_gen' => 0,
+        ]);
+
+        $this->actAsToken($token);
+        $this->assertNull(StpUtil::getStpLogic()->getLoginIdByToken($token));
+    }
+
+    public function testStatelessJwtIssuedAfterAccountLogoutRemainsValid(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'isReadHeader' => true,
+        ]));
+        $jwt = (new \SaToken\Plugin\SaTokenJwt([
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]))->createStatelessToken(29995, 'login', 3600);
+
+        // Start at a fresh wall-clock second so the post-logout token is
+        // guaranteed to be issued in the same integer second as the cutoff.
+        $nextSecond = ceil(microtime(true));
+        while (microtime(true) < $nextSecond) {
+            usleep(1000);
+        }
+        StpUtil::logoutByLoginId(29995);
+        $newJwt = (new \SaToken\Plugin\SaTokenJwt([
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]))->createStatelessToken(29995, 'login', 3600);
+        $this->actAsToken($newJwt);
+
+        $this->assertTrue(StpUtil::isLogin());
+        $this->assertFalse(StpUtil::isTokenRevoked($newJwt));
     }
 
     // ======== C2: 吊销黑名单必须覆盖权限校验层 ========
@@ -189,6 +1201,259 @@ class SecurityRegressionTest extends TestCase
         $this->assertFalse(StpUtil::hasPermission('admin'));
     }
 
+    public function testRevokedTokenCannotPassSafeCheck(): void
+    {
+        $token = StpUtil::login(20005)->getAccessToken();
+        $this->actAsToken($token);
+        StpUtil::openSafe(300, 'payment');
+        $this->assertTrue(StpUtil::isSafe('payment'));
+
+        StpUtil::revokeToken($token);
+
+        $this->assertFalse(StpUtil::isSafe('payment'));
+        $this->expectException(NotSafeException::class);
+        StpUtil::checkSafe('payment');
+    }
+
+    public function testRevokedTokenValueCannotBeReissuedToAnotherAccount(): void
+    {
+        SaToken::setAction(new class () implements \SaToken\Action\SaTokenActionInterface {
+            public function getPermissionList(mixed $loginId, string $loginType): array
+            {
+                return [];
+            }
+
+            public function getRoleList(mixed $loginId, string $loginType): array
+            {
+                return [];
+            }
+
+            public function generateTokenValue(mixed $loginId, string $loginType): string
+            {
+                return 'fixed-reusable-token-value';
+            }
+        });
+
+        $oldToken = StpUtil::login(20006)->getAccessToken();
+        $this->actAsToken($oldToken);
+        StpUtil::getStpLogic()->switchTo(90001);
+        StpUtil::openSafe(300, 'payment');
+        StpUtil::logout();
+
+        try {
+            StpUtil::login(20007);
+            $this->fail('已注销的 bearer 值不得重新签发给另一账号');
+        } catch (SaTokenException $exception) {
+            $this->assertStringContainsString('Token 值冲突', $exception->getMessage());
+        }
+        $this->assertNull(StpUtil::getStpLogic()->getLoginIdByToken($oldToken));
+    }
+
+    public function testSwitchedIdentityCannotBypassActivityTimeoutInPermissionChecks(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'activityTimeout' => 60,
+        ])));
+        $this->permissionProvider(['danger']);
+
+        $token = StpUtil::login(20010)->getAccessToken();
+        $this->actAsToken($token);
+        StpUtil::getStpLogic()->switchTo(90002);
+        SaToken::getDao()->set(TokenManager::LAST_ACTIVE_PREFIX . $token, (string) (time() - 120), 300);
+
+        $this->expectException(NotLoginException::class);
+        StpUtil::checkPermission('danger');
+    }
+
+    public function testExpiredActivityMarkerCannotReviveAnIdleToken(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'activityTimeout' => 1,
+        ])));
+
+        $token = StpUtil::login(20012)->getAccessToken();
+        $this->assertNotNull(SaToken::getDao()->get(TokenManager::LAST_ACTIVE_PREFIX . $token));
+        $this->actAsToken($token);
+        $this->assertTrue(StpUtil::isLogin());
+
+        sleep(2);
+
+        $this->assertFalse(StpUtil::isLogin(), '活动时间标记过期后，Token 不得因缺少标记而恢复有效');
+    }
+
+    public function testStatelessJwtEnforcesConfiguredActivityTimeout(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'activityTimeout' => 60,
+            'jwtStateless'    => true,
+            'jwtSecretKey'    => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ])));
+
+        $logic = SaToken::getStpLogic('login');
+        $token = $logic->loginStateless(20013);
+        $this->assertNotNull(SaToken::getDao()->get(TokenManager::LAST_ACTIVE_PREFIX . $token));
+        $this->actAsToken($token);
+        $this->assertTrue(StpUtil::isLogin());
+
+        SaToken::getDao()->set(TokenManager::LAST_ACTIVE_PREFIX . $token, (string) (time() - 120), 300);
+
+        $this->assertFalse(StpUtil::isLogin(), '无状态 JWT 也必须遵守启用的活动超时配置');
+    }
+
+    public function testStatelessJwtEnforcesConfiguredFingerprintBinding(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'jwtStateless'     => true,
+            'jwtSecretKey'     => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'tokenFingerprint' => true,
+        ])));
+
+        SaTokenContext::setRequest($this->makeRequestStub(['User-Agent' => 'Trusted-Agent/1.0']));
+        $logic = SaToken::getStpLogic('login');
+        $token = $logic->loginStateless(20014);
+        $this->assertNotNull(SaToken::getDao()->get(TokenManager::FINGERPRINT_PREFIX . $token));
+
+        SaTokenContext::setRequest($this->makeRequestStub([
+            'satoken'    => $token,
+            'User-Agent' => 'Different-Agent/1.0',
+        ]));
+
+        $this->assertFalse(StpUtil::isLogin(), '无状态 JWT 必须遵守启用的指纹绑定配置');
+    }
+
+    public function testRefreshTokenCannotBeUsedFromDifferentFingerprint(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'refreshToken'     => true,
+            'tokenFingerprint' => true,
+        ])));
+        SaTokenContext::setRequest($this->makeRequestStub(['User-Agent' => 'Trusted-Refresh-Client/1.0']));
+
+        $loginResult = StpUtil::login(20015);
+        $refreshToken = $loginResult->getRefreshToken();
+        $this->assertNotSame('', $refreshToken);
+
+        SaTokenContext::setRequest($this->makeRequestStub(['User-Agent' => 'Untrusted-Refresh-Client/1.0']));
+        try {
+            StpUtil::refreshToken($refreshToken);
+            self::fail('RefreshToken 不得绕过已启用的客户端指纹绑定');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('指纹', $exception->getMessage());
+        }
+
+        self::assertTrue(StpUtil::isRefreshTokenValid($refreshToken));
+    }
+
+    public function testFingerprintBoundStatelessRefreshSurvivesAccessTokenExpiry(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'timeout'          => 1,
+            'jwtStateless'     => true,
+            'jwtSecretKey'     => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'tokenFingerprint' => true,
+        ])));
+        SaTokenContext::setRequest($this->makeRequestStub(['User-Agent' => 'Trusted-Refresh-Client/1.0']));
+        $logic = SaToken::getStpLogic('login');
+
+        $accessToken = $logic->loginStateless(20016);
+        $refreshToken = $logic->createRefreshToken($accessToken, 60);
+        sleep(2);
+
+        self::assertNull($logic->getLoginIdByToken($accessToken));
+        $result = $logic->refreshToken($refreshToken);
+        self::assertSame('20016', $logic->getLoginIdByToken($result->getAccessToken()));
+    }
+
+    public function testSwitchedIdentityCannotBypassFingerprintInPermissionChecks(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'tokenFingerprint' => true,
+        ])));
+        $this->permissionProvider(['danger']);
+
+        $token = StpUtil::login(20011)->getAccessToken();
+        $this->actAsToken($token);
+        StpUtil::getStpLogic()->switchTo(90003);
+        StpUtil::getStpLogic()->getTokenManager()->saveFingerprint($token, hash('sha256', 'different-device'), 300);
+
+        $this->expectException(NotLoginException::class);
+        StpUtil::checkPermission('danger');
+    }
+
+    public function testRevokedTokenValueCannotBeReissuedWhileBlacklisted(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), ['maxTryTimes' => 2])));
+        SaToken::setAction(new class () implements \SaToken\Action\SaTokenActionInterface {
+            public function getPermissionList(mixed $loginId, string $loginType): array
+            {
+                return [];
+            }
+
+            public function getRoleList(mixed $loginId, string $loginType): array
+            {
+                return [];
+            }
+
+            public function generateTokenValue(mixed $loginId, string $loginType): string
+            {
+                return 'fixed-revoked-token-value';
+            }
+        });
+
+        $token = StpUtil::login(20008)->getAccessToken();
+        $this->actAsToken($token);
+        StpUtil::revokeToken($token);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('Token 值冲突');
+        StpUtil::login(20009);
+    }
+
+    public function testCustomTokenGeneratorKeepsAccessAndRefreshCredentialsDistinct(): void
+    {
+        SaToken::setConfig(SaToken::getConfig()
+            ->setRefreshToken(true)
+            ->setRefreshTokenTimeout(3600));
+        SaToken::setAction(new class () implements \SaToken\Action\SaTokenActionInterface {
+            public function getPermissionList(mixed $loginId, string $loginType): array
+            {
+                return [];
+            }
+
+            public function getRoleList(mixed $loginId, string $loginType): array
+            {
+                return [];
+            }
+
+            public function generateTokenValue(mixed $loginId, string $loginType): string
+            {
+                return 'custom-generated-credential-value';
+            }
+        });
+
+        $login = StpUtil::login('custom-refresh-user');
+        $accessToken = $login->getAccessToken();
+        $refreshToken = $login->getRefreshToken();
+
+        self::assertNotSame($accessToken, $refreshToken);
+        self::assertStringStartsWith('srt_', (string) $refreshToken);
+        try {
+            StpUtil::refreshToken((string) $accessToken);
+            self::fail('An access token must not also be accepted as a refresh token');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('RefreshToken 无效', $exception->getMessage());
+        }
+
+        try {
+            StpUtil::refreshToken((string) $refreshToken);
+            self::fail('A constant custom generator must not rotate a bearer credential');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('拒绝复用旧凭据', $exception->getMessage());
+        }
+        self::assertTrue(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($accessToken));
+        self::assertTrue(StpUtil::isRefreshTokenValid((string) $refreshToken));
+    }
+
     public function testRevokeTokenWithPermanentTimeoutStaysRevoked(): void
     {
         $result = StpUtil::login(20004, (new \SaToken\SaLoginParameter())->setTimeout(-1));
@@ -200,6 +1465,83 @@ class SecurityRegressionTest extends TestCase
         // 永不过期 Token 的黑名单条目必须不过期（防止一天后复活）
         $blacklistKey = 'satoken:blacklist:' . $token;
         $this->assertSame(-1, SaToken::getDao()->getTimeout($blacklistKey));
+    }
+
+    public function testRevokingUnknownTokenDoesNotAllocateBlacklistEntry(): void
+    {
+        $token = 'attacker-controlled-random-token';
+
+        $this->assertFalse(StpUtil::revokeToken($token));
+        $this->assertSame(-2, SaToken::getDao()->getTimeout('satoken:blacklist:' . $token));
+    }
+
+    public function testFailedLoginDoesNotLeaveBearerWhenAccountIndexCasFails(): void
+    {
+        $dao = new class () extends SaTokenDaoMemory {
+            public bool $failLoginIndexWrite = true;
+
+            public function compareAndSet(string $key, ?string $expectedValue, ?string $newValue, ?int $timeout = null): bool
+            {
+                if ($this->failLoginIndexWrite && str_starts_with($key, TokenManager::LOGIN_ID_V2_PREFIX)) {
+                    $this->failLoginIndexWrite = false;
+                    return false;
+                }
+                return parent::compareAndSet($key, $expectedValue, $newValue, $timeout);
+            }
+        };
+        SaToken::setDao($dao);
+
+        try {
+            StpUtil::login('failed-index-cas-user');
+            self::fail('账号会话索引 CAS 失败后登录必须失败');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('账号会话列表已并发变更', $exception->getMessage());
+        }
+        self::assertFalse($dao->failLoginIndexWrite, '故障注入必须命中账号会话索引写入');
+        self::assertSame([], $dao->searchKeys(TokenManager::TOKEN_PREFIX, '', 0, 100));
+    }
+
+    public function testEncryptedTokenRejectsPlaintextSubjectReplacement(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'tokenEncrypt' => true,
+            'tokenEncryptKey' => 'test-encryption-key-at-least-32-bytes',
+        ]));
+        $token = StpUtil::login(29994)->getAccessToken();
+        $tokenKey = TokenManager::TOKEN_PREFIX . $token;
+
+        SaToken::getDao()->set($tokenKey, 'attacker-selected-login-id', 3600);
+
+        $this->assertNull(StpUtil::getStpLogic()->getLoginIdByToken($token));
+        $this->assertFalse(StpUtil::isLogin());
+    }
+
+    public function testRevokingStatelessJwtWithoutExpiryKeepsItRevokedPermanently(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]));
+        $jwt = new \SaToken\Plugin\SaTokenJwt([
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]);
+        $token = $jwt->createStatelessToken(29999, 'login');
+
+        $this->assertTrue(StpUtil::revokeToken($token));
+        $this->assertSame(-1, SaToken::getDao()->getTimeout('satoken:blacklist:' . $token));
+        $this->assertNull(StpUtil::getStpLogic()->getLoginIdByToken($token));
+    }
+
+    public function testRevokingInvalidStatelessJwtDoesNotAllocateBlacklistEntry(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]));
+        $token = 'not-a-valid-jwt';
+
+        $this->assertFalse(StpUtil::revokeToken($token));
+        $this->assertSame(-2, SaToken::getDao()->getTimeout('satoken:blacklist:' . $token));
     }
 
     // ======== OAuth2 授权绑定 ========
@@ -256,16 +1598,8 @@ class SecurityRegressionTest extends TestCase
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('code_verifier', $e->getMessage());
         }
-        // 失败尝试烧掉授权码（防暴力猜解 verifier）
-        try {
-            $handle->exchangeTokenByCode($code->getCode(), 'pkce-public', '', 'https://app.example.com/cb', $verifier);
-            $this->fail('校验失败过的授权码应已被消费');
-        } catch (SaTokenException $e) {
-            $this->assertStringContainsString('无效的授权码', $e->getMessage());
-        }
-
-        $code2 = $handle->generateAuthorizationCode('pkce-public', 3, 'https://app.example.com/cb', '', $challenge, 'S256');
-        $at = $handle->exchangeTokenByCode($code2->getCode(), 'pkce-public', '', 'https://app.example.com/cb', $verifier);
+        // 缺少 verifier 的请求不能烧毁合法授权码
+        $at = $handle->exchangeTokenByCode($code->getCode(), 'pkce-public', '', 'https://app.example.com/cb', $verifier);
         $this->assertNotEmpty($at->getAccessToken());
     }
 
@@ -274,7 +1608,7 @@ class SecurityRegressionTest extends TestCase
         $handle = new SaOAuth2Handle(new SaOAuth2Config());
         $handle->registerClient(new SaOAuth2Client([
             'clientId'     => 'client-no-uris',
-            'clientSecret' => 'secret-with-proper-length',
+            'clientSecret' => 'oauth-test-secret-with-at-least-32-bytes',
         ]));
 
         $this->expectException(SaTokenException::class);
@@ -289,14 +1623,14 @@ class SecurityRegressionTest extends TestCase
         ]));
         $handle->registerClient(new SaOAuth2Client([
             'clientId'     => 'scoping',
-            'clientSecret' => 'secret-with-proper-length',
+            'clientSecret' => 'oauth-test-secret-with-at-least-32-bytes',
             'grantTypes'   => ['client_credentials'],
             'scopes'       => ['read'],
         ]));
 
         $this->expectException(SaTokenException::class);
         $this->expectExceptionMessage('未授予的 scope');
-        $handle->tokenByClientCredentials('scoping', 'secret-with-proper-length', 'admin');
+        $handle->tokenByClientCredentials('scoping', 'oauth-test-secret-with-at-least-32-bytes', 'admin');
     }
 
     public function testOAuth2GrantTypeNotAuthorizedForClientRejected(): void
@@ -306,13 +1640,13 @@ class SecurityRegressionTest extends TestCase
         ]));
         $handle->registerClient(new SaOAuth2Client([
             'clientId'     => 'code-only',
-            'clientSecret' => 'secret-with-proper-length',
+            'clientSecret' => 'oauth-test-secret-with-at-least-32-bytes',
             'grantTypes'   => ['authorization_code'],
         ]));
 
         $this->expectException(SaTokenException::class);
         $this->expectExceptionMessage('授权模式');
-        $handle->tokenByClientCredentials('code-only', 'secret-with-proper-length');
+        $handle->tokenByClientCredentials('code-only', 'oauth-test-secret-with-at-least-32-bytes');
     }
 
     public function testOAuth2RefreshTokenReuseRevokesFamily(): void
@@ -323,22 +1657,22 @@ class SecurityRegressionTest extends TestCase
         ]));
         $handle->registerClient(new SaOAuth2Client([
             'clientId'     => 'rt-client',
-            'clientSecret' => 'secret-with-proper-length',
+            'clientSecret' => 'oauth-test-secret-with-at-least-32-bytes',
             'grantTypes'   => ['authorization_code', 'refresh_token'],
             'redirectUris' => ['https://app.example.com/cb'],
         ]));
 
         $code = $handle->generateAuthorizationCode('rt-client', 30001, 'https://app.example.com/cb');
-        $at = $handle->exchangeTokenByCode($code->getCode(), 'rt-client', 'secret-with-proper-length', 'https://app.example.com/cb');
+        $at = $handle->exchangeTokenByCode($code->getCode(), 'rt-client', 'oauth-test-secret-with-at-least-32-bytes', 'https://app.example.com/cb');
         $rt = $at->getRefreshToken();
         $this->assertNotNull($rt);
 
         // 正常刷新一次
-        $at2 = $handle->refreshToken($rt, 'rt-client', 'secret-with-proper-length');
+        $at2 = $handle->refreshToken($rt, 'rt-client', 'oauth-test-secret-with-at-least-32-bytes');
 
         // 重用已消费的 RT：必须拒绝，且家族令牌被撤销
         try {
-            $handle->refreshToken($rt, 'rt-client', 'secret-with-proper-length');
+            $handle->refreshToken($rt, 'rt-client', 'oauth-test-secret-with-at-least-32-bytes');
             $this->fail('RT 重用应被检测并拒绝');
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('撤销', $e->getMessage());
@@ -348,6 +1682,50 @@ class SecurityRegressionTest extends TestCase
         $this->assertNull($handle->validateAccessToken($at2->getAccessToken()));
     }
 
+    public function testOAuth2RefreshTokenReplayFromAnotherClientCannotRevokeFamily(): void
+    {
+        $handle = new SaOAuth2Handle(new SaOAuth2Config([
+            'grantTypes'          => ['authorization_code', 'refresh_token'],
+            'refreshTokenTimeout' => 86400,
+        ]));
+        $clientSecret = 'oauth-test-secret-with-at-least-32-bytes';
+        $handle->registerClient(new SaOAuth2Client([
+            'clientId'     => 'owner-client',
+            'clientSecret' => $clientSecret,
+            'grantTypes'   => ['authorization_code', 'refresh_token'],
+            'redirectUris' => ['https://owner.example.com/cb'],
+        ]));
+        $handle->registerClient(new SaOAuth2Client([
+            'clientId'     => 'other-client',
+            'clientSecret' => 'another-oauth-secret-with-at-least-32-bytes',
+            'grantTypes'   => ['authorization_code', 'refresh_token'],
+            'redirectUris' => ['https://other.example.com/cb'],
+        ]));
+
+        $code = $handle->generateAuthorizationCode('owner-client', 30002, 'https://owner.example.com/cb');
+        $at = $handle->exchangeTokenByCode($code->getCode(), 'owner-client', $clientSecret, 'https://owner.example.com/cb');
+        $refreshToken = $at->getRefreshToken();
+        self::assertNotNull($refreshToken);
+        $rotated = $handle->refreshToken($refreshToken, 'owner-client', $clientSecret);
+
+        try {
+            $handle->refreshToken($refreshToken, 'other-client', 'another-oauth-secret-with-at-least-32-bytes');
+            self::fail('其他客户端不能通过重放令牌撤销令牌家族');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('客户端 ID 不匹配', $exception->getMessage());
+        }
+
+        self::assertNotNull($handle->validateAccessToken($rotated->getAccessToken()));
+
+        try {
+            $handle->refreshToken($refreshToken, 'owner-client', $clientSecret);
+            self::fail('令牌所属客户端的重放仍应撤销令牌家族');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('撤销', $exception->getMessage());
+        }
+        self::assertNull($handle->validateAccessToken($rotated->getAccessToken()));
+    }
+
     public function testOAuth2PkceRoundTrip(): void
     {
         $handle = new SaOAuth2Handle(new SaOAuth2Config([
@@ -355,7 +1733,7 @@ class SecurityRegressionTest extends TestCase
         ]));
         $handle->registerClient(new SaOAuth2Client([
             'clientId'     => 'pkce-client',
-            'clientSecret' => 'secret-with-proper-length',
+            'clientSecret' => 'oauth-test-secret-with-at-least-32-bytes',
             'grantTypes'   => ['authorization_code'],
             'redirectUris' => ['https://app.example.com/cb'],
         ]));
@@ -363,32 +1741,30 @@ class SecurityRegressionTest extends TestCase
         $verifier = str_repeat('pkce-verifier-', 4); // 56 chars, 43..128
         $challenge = rtrim(strtr(base64_encode(hash('sha256', $verifier, true)), '+/', '-_'), '=');
 
-        // 防止暴力猜解 verifier：任何校验失败都会烧掉该授权码
+        // 错误绑定请求必须拒绝，但不能烧毁合法授权码
         $codeMissing = $handle->generateAuthorizationCode('pkce-client', 30002, 'https://app.example.com/cb', '', $challenge, 'S256');
         try {
-            $handle->exchangeTokenByCode($codeMissing->getCode(), 'pkce-client', 'secret-with-proper-length', 'https://app.example.com/cb');
+            $handle->exchangeTokenByCode($codeMissing->getCode(), 'pkce-client', 'oauth-test-secret-with-at-least-32-bytes', 'https://app.example.com/cb');
             $this->fail('绑定 PKCE 的授权码必须要求 code_verifier');
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('code_verifier', $e->getMessage());
         }
-        try {
-            $handle->exchangeTokenByCode($codeMissing->getCode(), 'pkce-client', 'secret-with-proper-length', 'https://app.example.com/cb', $verifier);
-            $this->fail('校验失败过的授权码应已被消费');
-        } catch (SaTokenException $e) {
-            $this->assertStringContainsString('无效的授权码', $e->getMessage());
-        }
+        $atMissing = $handle->exchangeTokenByCode($codeMissing->getCode(), 'pkce-client', 'oauth-test-secret-with-at-least-32-bytes', 'https://app.example.com/cb', $verifier);
+        $this->assertNotEmpty($atMissing->getAccessToken(), '缺少 verifier 的尝试不得烧毁合法授权码');
 
         $codeWrong = $handle->generateAuthorizationCode('pkce-client', 30003, 'https://app.example.com/cb', '', $challenge, 'S256');
         try {
-            $handle->exchangeTokenByCode($codeWrong->getCode(), 'pkce-client', 'secret-with-proper-length', 'https://app.example.com/cb', str_repeat('w', 56));
+            $handle->exchangeTokenByCode($codeWrong->getCode(), 'pkce-client', 'oauth-test-secret-with-at-least-32-bytes', 'https://app.example.com/cb', str_repeat('w', 56));
             $this->fail('错误的 code_verifier 必须被拒绝');
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('code_verifier', $e->getMessage());
         }
+        $atWrong = $handle->exchangeTokenByCode($codeWrong->getCode(), 'pkce-client', 'oauth-test-secret-with-at-least-32-bytes', 'https://app.example.com/cb', $verifier);
+        $this->assertNotEmpty($atWrong->getAccessToken(), '错误 verifier 的尝试不得烧毁合法授权码');
 
         // 正确 verifier 成功
         $code = $handle->generateAuthorizationCode('pkce-client', 30004, 'https://app.example.com/cb', '', $challenge, 'S256');
-        $at = $handle->exchangeTokenByCode($code->getCode(), 'pkce-client', 'secret-with-proper-length', 'https://app.example.com/cb', $verifier);
+        $at = $handle->exchangeTokenByCode($code->getCode(), 'pkce-client', 'oauth-test-secret-with-at-least-32-bytes', 'https://app.example.com/cb', $verifier);
         $this->assertNotEmpty($at->getAccessToken());
     }
 
@@ -426,7 +1802,6 @@ class SecurityRegressionTest extends TestCase
         ]));
 
         $ref = new \ReflectionMethod(SaSsoHandle::class, 'validateDomain');
-        $ref->setAccessible(true);
 
         // javascript:// 伪协议 host 可以匹配白名单，但必须被 scheme 校验拒绝
         $this->assertFalse($ref->invoke($handle, 'javascript://app.example.com/%0aalert(1)'));
@@ -439,6 +1814,25 @@ class SecurityRegressionTest extends TestCase
         // 严格 host 匹配不受影响
         $this->assertFalse($ref->invoke($handle, 'https://evilexample.com'));
         $this->assertFalse($ref->invoke($handle, 'https://app.example.com.evil.com'));
+
+        // PHP treats the backslash as user-info while browsers normalize it to a path
+        // separator; accepting this string sends the eventual redirect to evil.example.com.
+        $this->assertFalse($ref->invoke($handle, 'https://evil.example.com\\@app.example.com/callback'));
+        $this->assertFalse($ref->invoke($handle, 'https://user@app.example.com/callback'));
+    }
+
+    public function testSsoWildcardDomainDoesNotIncludeApexDomain(): void
+    {
+        $handle = new SaSsoHandle(new SaSsoConfig([
+            'allowDomains' => ['*.example.com'],
+        ]));
+
+        $ref = new \ReflectionMethod(SaSsoHandle::class, 'validateDomain');
+
+        $this->assertTrue($ref->invoke($handle, 'https://app.example.com/callback'));
+        $this->assertTrue($ref->invoke($handle, 'https://deep.app.example.com/callback'));
+        $this->assertFalse($ref->invoke($handle, 'https://example.com/callback'));
+        $this->assertFalse($ref->invoke($handle, 'https://notexample.com/callback'));
     }
 
     // ======== SaSign 强制防重放 ========
@@ -535,7 +1929,7 @@ class SecurityRegressionTest extends TestCase
     public function testSloCallbackRequiresSignatureWhenSecretConfigured(): void
     {
         $handle = new SaSsoHandle(new SaSsoConfig([
-            'clientSecret' => 'slo-shared-secret',
+            'clientSecret' => 'slo-test-secret-with-at-least-32-bytes',
         ]));
 
         try {
@@ -557,6 +1951,300 @@ class SecurityRegressionTest extends TestCase
         $params = $handle->buildSloCallbackParams(40001);
         $handle->doSloCallback(40001, $params);
         $this->assertFalse(StpUtil::isLogin());
+    }
+
+    public function testSloCallbackRejectsWhenNoSharedSecretIsConfigured(): void
+    {
+        $handle = new SaSsoHandle(new SaSsoConfig());
+        $loginResult = StpUtil::login(40004);
+        $this->actAsToken($loginResult->getAccessToken());
+
+        try {
+            $handle->doSloCallback(40004);
+            $this->fail('未配置共享密钥时不得接受未经认证的注销回调');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('clientSecret', $e->getMessage());
+        }
+
+        $this->assertTrue(StpUtil::isLogin(), '拒绝未认证的 SLO 回调时必须保留现有会话');
+    }
+
+    public function testSloCallbackRequiresSignedLoginId(): void
+    {
+        $handle = new SaSsoHandle(new SaSsoConfig([
+            'clientSecret' => 'slo-test-secret-with-at-least-32-bytes',
+        ]));
+        $loginResult = StpUtil::login(40002);
+        $token = $loginResult->getAccessToken();
+        $params = (new \SaToken\Sso\SaSsoTemplate())->signParams([
+            'timestamp' => (string) time(),
+        ], 'slo-test-secret-with-at-least-32-bytes');
+
+        try {
+            $handle->doSloCallback(40002, $params);
+            $this->fail('SLO 回调必须在签名中绑定 loginId');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('loginId', $e->getMessage());
+        }
+
+        $this->assertTrue(
+            StpUtil::getStpLogic()->getTokenManager()->isTokenValid($token),
+            '缺少签名 loginId 时不得注销会话'
+        );
+    }
+
+    public function testSloCallbackRequiresSignedNonce(): void
+    {
+        $handle = new SaSsoHandle(new SaSsoConfig([
+            'clientSecret' => 'slo-test-secret-with-at-least-32-bytes',
+        ]));
+        $token = StpUtil::login(40006)->getAccessToken();
+        $params = (new SaSsoTemplate())->signParams([
+            'loginId' => '40006',
+            'timestamp' => (string) time(),
+        ], 'slo-test-secret-with-at-least-32-bytes');
+
+        try {
+            $handle->doSloCallback(40006, $params);
+            $this->fail('签名数据必须包含一次性 nonce');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('nonce', $e->getMessage());
+        }
+
+        $this->assertTrue(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($token));
+    }
+
+    public function testSloCallbackRejectsReplayAfterUserLogsInAgain(): void
+    {
+        $handle = new SaSsoHandle(new SaSsoConfig([
+            'clientSecret' => 'slo-test-secret-with-at-least-32-bytes',
+        ]));
+        $params = $handle->buildSloCallbackParams(40005);
+        $handle->doSloCallback(40005, $params);
+
+        $newToken = StpUtil::login(40005)->getAccessToken();
+        $this->actAsToken($newToken);
+
+        try {
+            $handle->doSloCallback(40005, $params);
+            $this->fail('重放的 SLO 回调不能再次注销用户后来建立的会话');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('nonce', $e->getMessage());
+        }
+
+        $this->assertSame('40005', StpUtil::getLoginId());
+        $this->assertTrue(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($newToken));
+    }
+
+    public function testSsoCheckTicketResponseRequiresTicketBinding(): void
+    {
+        $secret = 'sso-test-secret-with-at-least-32-bytes';
+        $template = new \SaToken\Sso\SaSsoTemplate();
+        $response = $template->signParams([
+            'loginId' => '40003',
+            'timestamp' => (string) time(),
+        ], $secret);
+
+        $httpTemplate = new class ($response) extends \SaToken\Sso\SaSsoTemplate {
+            /** @param array<string, string> $response */
+            public function __construct(private array $response)
+            {
+                parent::__construct();
+            }
+
+            public function post(string $url, array $data = []): string
+            {
+                return (string) json_encode($this->response);
+            }
+        };
+
+        $handle = new class (new SaSsoConfig([
+            'checkTicketUrl' => 'https://auth.example.com/check-ticket',
+            'clientSecret' => $secret,
+        ]), $httpTemplate) extends SaSsoHandle {
+            public function __construct(SaSsoConfig $config, \SaToken\Sso\SaSsoTemplate $template)
+            {
+                parent::__construct($config);
+                $this->template = $template;
+            }
+
+            public function check(string $ticket): ?string
+            {
+                return $this->checkTicket($ticket);
+            }
+        };
+
+        try {
+            $handle->check('ticket-40003');
+            $this->fail('已签名的 check-ticket 响应也必须绑定请求 ticket');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('ticket', $e->getMessage());
+        }
+    }
+
+    public function testCrossRedisSsoRequiresClientSecretBeforeSendingTicket(): void
+    {
+        $template = new class () extends SaSsoTemplate {
+            public bool $requested = false;
+
+            public function post(string $url, array $data = []): string
+            {
+                $this->requested = true;
+                return '{}';
+            }
+        };
+        $handle = new class (new SaSsoConfig([
+            'crossRedisCheckUrl' => 'https://auth.example.com/cross-check-ticket',
+        ]), $template) extends SaSsoHandle {
+            public function __construct(SaSsoConfig $config, SaSsoTemplate $template)
+            {
+                parent::__construct($config);
+                $this->template = $template;
+            }
+
+            public function checkRemote(string $ticket): ?string
+            {
+                return $this->checkTicketCrossRedis($ticket);
+            }
+        };
+
+        try {
+            $handle->checkRemote('ticket-without-shared-secret');
+            self::fail('跨 Redis SSO 必须在发出 ticket 前要求共享密钥');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('clientSecret', $exception->getMessage());
+        }
+
+        self::assertFalse($template->requested);
+    }
+
+    public function testCrossRedisSsoWithoutClientSecretCannotLogIn(): void
+    {
+        $manager = new SaSsoManager(new SaSsoConfig([
+            'crossRedis' => true,
+            'checkState' => false,
+        ]));
+
+        try {
+            $manager->doLoginCallback('ticket-without-shared-secret');
+            self::fail('无共享密钥的跨 Redis 响应不得建立登录会话');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('clientSecret', $exception->getMessage());
+        }
+
+        self::assertNull(StpUtil::getLoginId());
+    }
+
+    public function testSsoCheckTicketResponseCannotBeReplayedForTheSameTicket(): void
+    {
+        $secret = 'sso-test-secret-with-at-least-32-bytes';
+        foreach ([false, true] as $crossRedis) {
+            $template = new class ($secret) extends SaSsoTemplate {
+                private ?string $cachedResponse = null;
+
+                public function __construct(private string $secret)
+                {
+                    parent::__construct();
+                }
+
+                public function post(string $url, array $data = []): string
+                {
+                    if ($this->cachedResponse === null) {
+                        $response = $this->signParams([
+                            'loginId' => '40003',
+                            'ticket' => $data['ticket'],
+                            'request_nonce' => $data['nonce'],
+                            'timestamp' => (string) time(),
+                        ], $this->secret);
+                        $this->cachedResponse = (string) json_encode($response);
+                    }
+
+                    return $this->cachedResponse;
+                }
+            };
+            $handle = new class (new SaSsoConfig([
+                'checkTicketUrl' => 'https://auth.example.com/check-ticket',
+                'crossRedisCheckUrl' => 'https://auth.example.com/cross-check-ticket',
+                'clientSecret' => $secret,
+            ]), $template) extends SaSsoHandle {
+                public function __construct(SaSsoConfig $config, SaSsoTemplate $template)
+                {
+                    parent::__construct($config);
+                    $this->template = $template;
+                }
+
+                public function checkLocal(string $ticket): ?string
+                {
+                    return $this->checkTicket($ticket);
+                }
+
+                public function checkRemote(string $ticket): ?string
+                {
+                    return $this->checkTicketCrossRedis($ticket);
+                }
+            };
+
+            $this->assertSame(
+                '40003',
+                $crossRedis ? $handle->checkRemote('ticket-40003') : $handle->checkLocal('ticket-40003')
+            );
+            try {
+                $crossRedis ? $handle->checkRemote('ticket-40003') : $handle->checkLocal('ticket-40003');
+                $this->fail('已签名的 check-ticket 响应不能在另一个请求中重放');
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('nonce', $e->getMessage());
+            }
+        }
+    }
+
+    public function testSsoCheckTicketRejectsEmptyLoginIdInLocalAndCrossRedisResponses(): void
+    {
+        $secret = 'sso-test-secret-with-at-least-32-bytes';
+        foreach ([false, true] as $crossRedis) {
+            $template = new class ($secret) extends SaSsoTemplate {
+                public function __construct(private string $secret)
+                {
+                    parent::__construct();
+                }
+
+                public function post(string $url, array $data = []): string
+                {
+                    return (string) json_encode($this->signParams([
+                        'loginId' => '',
+                        'ticket' => $data['ticket'],
+                        'request_nonce' => $data['nonce'],
+                        'timestamp' => (string) time(),
+                    ], $this->secret));
+                }
+            };
+            $handle = new class (new SaSsoConfig([
+                'checkTicketUrl' => 'https://auth.example.com/check-ticket',
+                'crossRedisCheckUrl' => 'https://auth.example.com/cross-check-ticket',
+                'clientSecret' => $secret,
+            ]), $template) extends SaSsoHandle {
+                public function __construct(SaSsoConfig $config, SaSsoTemplate $template)
+                {
+                    parent::__construct($config);
+                    $this->template = $template;
+                }
+
+                public function checkLocal(string $ticket): ?string
+                {
+                    return $this->checkTicket($ticket);
+                }
+
+                public function checkRemote(string $ticket): ?string
+                {
+                    return $this->checkTicketCrossRedis($ticket);
+                }
+            };
+
+            $loginId = $crossRedis
+                ? $handle->checkRemote('ticket-empty-login-id')
+                : $handle->checkLocal('ticket-empty-login-id');
+
+            self::assertNull($loginId, 'An empty SSO subject must never count as a validated ticket identity');
+        }
     }
 
     // ======== 第二轮加固回归 ========
@@ -583,29 +2271,29 @@ class SecurityRegressionTest extends TestCase
         ]));
         $handle->registerClient(new SaOAuth2Client([
             'clientId'     => 'gen-client',
-            'clientSecret' => 'secret-with-proper-length',
+            'clientSecret' => 'oauth-test-secret-with-at-least-32-bytes',
             'grantTypes'   => ['authorization_code', 'refresh_token'],
             'redirectUris' => ['https://app.example.com/cb'],
         ]));
 
         $code = $handle->generateAuthorizationCode('gen-client', 60001, 'https://app.example.com/cb');
-        $at1 = $handle->exchangeTokenByCode($code->getCode(), 'gen-client', 'secret-with-proper-length', 'https://app.example.com/cb');
+        $at1 = $handle->exchangeTokenByCode($code->getCode(), 'gen-client', 'oauth-test-secret-with-at-least-32-bytes', 'https://app.example.com/cb');
         $rt1 = $at1->getRefreshToken();
         $this->assertNotNull($rt1);
 
         // 第二代
-        $at2 = $handle->refreshToken($rt1, 'gen-client', 'secret-with-proper-length');
+        $at2 = $handle->refreshToken($rt1, 'gen-client', 'oauth-test-secret-with-at-least-32-bytes');
         $rt2 = $at2->getRefreshToken();
         $this->assertNotNull($rt2);
 
         // 第三代
-        $at3 = $handle->refreshToken($rt2, 'gen-client', 'secret-with-proper-length');
+        $at3 = $handle->refreshToken($rt2, 'gen-client', 'oauth-test-secret-with-at-least-32-bytes');
         $rt3 = $at3->getRefreshToken();
         $this->assertNotNull($rt3);
 
         // 重放第一代 RT：跨代撤销整条链
         try {
-            $handle->refreshToken($rt1, 'gen-client', 'secret-with-proper-length');
+            $handle->refreshToken($rt1, 'gen-client', 'oauth-test-secret-with-at-least-32-bytes');
             $this->fail('第一代 RT 重放应被检测');
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('撤销', $e->getMessage());
@@ -615,7 +2303,7 @@ class SecurityRegressionTest extends TestCase
         $this->assertNull($handle->validateAccessToken($at3->getAccessToken()));
         $this->assertNull($handle->validateAccessToken($at2->getAccessToken()));
         try {
-            $handle->refreshToken($rt3, 'gen-client', 'secret-with-proper-length');
+            $handle->refreshToken($rt3, 'gen-client', 'oauth-test-secret-with-at-least-32-bytes');
             $this->fail('家族撤销后第三代 RT 也应失效');
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('无效的刷新令牌', $e->getMessage());
@@ -625,7 +2313,7 @@ class SecurityRegressionTest extends TestCase
     public function testSsoCheckTicketResponseFreshnessAndBinding(): void
     {
         $template = new \SaToken\Sso\SaSsoTemplate();
-        $secret = 'sso-shared-secret';
+        $secret = 'sso-test-secret-with-at-least-32-bytes';
 
         // 时效内通过
         $fresh = $template->signParams(['loginId' => '1', 'ticket' => 't1', 'timestamp' => (string) time()], $secret);
@@ -634,6 +2322,12 @@ class SecurityRegressionTest extends TestCase
         // 过期（把 timestamp 改为 10 分钟前并重签 -> 模拟旧响应直接改时间戳不重签则签名失败；此处直接构造过期签名）
         $stale = $template->signParams(['loginId' => '1', 'ticket' => 't1', 'timestamp' => (string) (time() - 3600)], $secret);
         $this->assertFalse($template->verifySign($stale, $secret, 300));
+
+        $missingTimestamp = $template->signParams(['loginId' => '1', 'ticket' => 't1'], $secret);
+        $this->assertFalse($template->verifySign($missingTimestamp, $secret, 300));
+
+        $invalidTimestamp = $template->signParams(['loginId' => '1', 'ticket' => 't1', 'timestamp' => 'now'], $secret);
+        $this->assertFalse($template->verifySign($invalidTimestamp, $secret, 300));
     }
 
     public function testSaSessionKeepsOriginalTtlOnUpdate(): void
@@ -713,6 +2407,27 @@ class SecurityRegressionTest extends TestCase
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('loginId', $e->getMessage());
         }
+
+        foreach ([false, true] as $booleanLoginId) {
+            try {
+                StpUtil::login($booleanLoginId);
+                $this->fail('布尔 loginId 应被拒绝');
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('loginId', $e->getMessage());
+            }
+        }
+
+        // 数字 0 是合法标量 ID，不得与 false 混为同一身份。
+        $this->assertNotEmpty(StpUtil::login(0)->getAccessToken());
+
+        foreach ([false, true, [], new \stdClass()] as $invalidStatelessLoginId) {
+            try {
+                SaToken::getStpLogic('login')->loginStateless($invalidStatelessLoginId);
+                $this->fail('无状态登录必须拒绝无效 loginId');
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('loginId', $e->getMessage());
+            }
+        }
     }
 
     public function testAnnotationInheritsClassLevelAttributes(): void
@@ -720,7 +2435,6 @@ class SecurityRegressionTest extends TestCase
         // 父类标注 #[SaCheckLogin]，子类未标注——继承式鉴权必须生效；
         // 未登录上下文调用子类方法应抛 NotLoginException
         $ref = new \ReflectionMethod(\SaToken\Annotation\SaAnnotationProcessor::class, 'process');
-        $ref->setAccessible(true);
 
         $child = new class () extends AnnotatedBaseController {
         };
@@ -975,11 +2689,14 @@ class SecurityRegressionTest extends TestCase
             }
         };
 
-        // A) 共享 Cookie 有效：isLogin 短路直接返回（同域模式主路径）
+        // A) 即使共享 Cookie 有效，也不能因普通认证已识别 Token 而跳过 CSRF。
         \SaToken\Util\SaTokenContext::setRequest($makeRequest($validToken));
-        $shortCircuitLoginId = $mode->doLogin();
-        $this->assertTrue(is_scalar($shortCircuitLoginId));
-        $this->assertSame('61001', (string) $shortCircuitLoginId);
+        try {
+            $mode->doLogin();
+            $this->fail('有效共享 Cookie 也必须先通过 CSRF 校验');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('需要 CSRF 验证', $e->getMessage());
+        }
         \SaToken\Util\SaTokenContext::clear();
 
         // B) Cookie 中 Token 已失效 + 无 CSRF 头：要求 CSRF
@@ -1031,14 +2748,14 @@ class SecurityRegressionTest extends TestCase
         ]));
         $handle->registerClient(new SaOAuth2Client([
             'clientId'     => 'pwd-client',
-            'clientSecret' => 'secret-with-proper-length',
+            'clientSecret' => 'oauth-test-secret-with-at-least-32-bytes',
             'grantTypes'   => ['password'],
         ]));
         $handle->setUserCredentialsValidator(fn (string $u, string $p): ?int => null);
 
         for ($i = 0; $i < 5; $i++) {
             try {
-                $handle->tokenByPassword('pwd-client', 'secret-with-proper-length', 'victim', 'wrong');
+                $handle->tokenByPassword('pwd-client', 'oauth-test-secret-with-at-least-32-bytes', 'victim', 'wrong');
                 $this->fail('错误凭据应被拒绝');
             } catch (SaTokenException $e) {
                 $this->assertStringContainsString('用户名或密码错误', $e->getMessage());
@@ -1048,7 +2765,7 @@ class SecurityRegressionTest extends TestCase
         // 达到锁定阈值后，即使密码正确也被锁定拦截（不再暴露验证端点给爆破）
         $handle->setUserCredentialsValidator(fn (string $u, string $p): int => 70001);
         try {
-            $handle->tokenByPassword('pwd-client', 'secret-with-proper-length', 'victim', 'right-password');
+            $handle->tokenByPassword('pwd-client', 'oauth-test-secret-with-at-least-32-bytes', 'victim', 'right-password');
             $this->fail('爆破达到阈值后应锁定该用户名');
         } catch (SaTokenException $e) {
             $this->assertStringContainsString('锁定', $e->getMessage());
@@ -1095,7 +2812,6 @@ class SecurityRegressionTest extends TestCase
         } else {
             // 非 PSR-7 环境：pending 值已被净化（无公开读取器，用反射断言）
             $ref = new \ReflectionProperty(\SaToken\Util\SaTokenContext::class, 'pendingHeadersMap');
-            $ref->setAccessible(true);
             /** @var array<string, array<int, array{name: string, value: string}>> $pending */
             $pending = $ref->getValue();
             $ctx = \SaToken\Util\SaTokenContext::getContextId();
@@ -1114,13 +2830,14 @@ class SecurityRegressionTest extends TestCase
     {
         $sent = [];
         SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
+            'signKey' => 'sensitive-verify-test-sign-key-32-bytes',
             'sensitiveVerifyCallback' => function (string $scene, string $code, mixed $loginId) use (&$sent): void {
                 $sent[] = $code;
             },
         ])));
 
         \SaToken\Security\SaSensitiveVerify::setSendInterval(60);
-        $code1 = \SaToken\Security\SaSensitiveVerify::sendCode('sms-bomb', 62001);
+        \SaToken\Security\SaSensitiveVerify::sendCode('sms-bomb', 62001);
         $this->assertCount(1, $sent);
 
         try {
@@ -1137,30 +2854,56 @@ class SecurityRegressionTest extends TestCase
 
         // 频控窗口清零后可再发
         SaToken::getDao()->delete(\SaToken\Security\SaSensitiveVerify::getKey('sms-bomb', 62001) . ':sent');
+        SaToken::getDao()->delete('satoken:sensitive:sent:login:' . hash('sha256', '62001'));
         \SaToken\Security\SaSensitiveVerify::sendCode('sms-bomb', 62001);
         $this->assertCount(3, $sent);
     }
 
+    public function testStpLogicOtpSendDoesNotExposeCodeToCaller(): void
+    {
+        $sent = null;
+        SaToken::getConfig()->setSensitiveVerifyCallback(
+            static function (string $scene, string $code, mixed $loginId) use (&$sent): void {
+                $sent = $code;
+            }
+        );
+        $token = StpUtil::login(62003)->getAccessToken();
+        $this->actAsToken($token);
+
+        StpUtil::getStpLogic()->sendOtpCode('profile-update');
+
+        self::assertSame('void', (string) (new \ReflectionMethod(\SaToken\StpLogic::class, 'sendOtpCode'))->getReturnType());
+        self::assertIsString($sent);
+        self::assertMatchesRegularExpression('/^\d{6}$/', $sent);
+    }
+
     public function testOauth2IdTokenEchoesNonceAndHasJti(): void
     {
+        $rsaKey = openssl_pkey_new(['private_key_type' => OPENSSL_KEYTYPE_RSA, 'private_key_bits' => 2048]);
+        self::assertInstanceOf(\OpenSSLAsymmetricKey::class, $rsaKey);
+        $rsaPrivateKey = '';
+        self::assertTrue(openssl_pkey_export($rsaKey, $rsaPrivateKey));
+        if (!is_string($rsaPrivateKey)) {
+            self::fail('RSA private key export did not return a string.');
+        }
         $handle = new SaOAuth2Handle(new SaOAuth2Config([
             'grantTypes' => ['authorization_code'],
             'openIdMode' => true,
             'issuer'     => 'https://issuer.example.com',
         ]));
         SaToken::setConfig(new SaTokenConfig(array_merge($this->baseConfig(), [
-            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'rsaPrivateKey' => $rsaPrivateKey,
         ])));
         $handle->registerClient(new SaOAuth2Client([
             'clientId'     => 'oidc-nonce',
-            'clientSecret' => 'secret-with-proper-length',
+            'clientSecret' => 'oauth-test-secret-with-at-least-32-bytes',
             'grantTypes'   => ['authorization_code'],
             'redirectUris' => ['https://app.example.com/cb'],
             'scopes'       => ['openid'],
         ]));
 
         $code = $handle->generateAuthorizationCode('oidc-nonce', 62003, 'https://app.example.com/cb', 'openid', '', '', 'nonce-abc-123');
-        $at = $handle->exchangeTokenByCode($code->getCode(), 'oidc-nonce', 'secret-with-proper-length', 'https://app.example.com/cb');
+        $at = $handle->exchangeTokenByCode($code->getCode(), 'oidc-nonce', 'oauth-test-secret-with-at-least-32-bytes', 'https://app.example.com/cb');
 
         $this->assertNotEmpty($at->getIdToken());
         $parts = explode('.', $at->getIdToken());
@@ -1177,7 +2920,7 @@ class SecurityRegressionTest extends TestCase
     {
         $logic = SaToken::getStpLogic('login');
 
-        foreach ([null, '', [], new \stdClass()] as $bad) {
+        foreach ([null, '', [], false, true, new \stdClass()] as $bad) {
             try {
                 $logic->getSessionByLoginId($bad);
                 $this->fail('非法 loginId 应被拒绝: ' . gettype($bad));
@@ -1189,6 +2932,8 @@ class SecurityRegressionTest extends TestCase
         // 合法 loginId 正常创建
         $session = $logic->getSessionByLoginId(62004);
         $this->assertNotNull($session);
+        $zeroSession = $logic->getSessionByLoginId(0);
+        $this->assertSame('satoken:session:login:0', $zeroSession?->getId());
     }
 
     public function testApiKeySurfacesLockContentionAfterRetries(): void
@@ -1198,9 +2943,9 @@ class SecurityRegressionTest extends TestCase
         ])));
         $loginResult = StpUtil::login(62005);
         $apiKeyAuth = new \SaToken\Auth\SaApiKey();
-        $apiKeyAuth->registerKey('k-test-1', 's-test-1', 62005);
+        $apiKeyAuth->registerKey('k-test-1', 'security-regression-api-secret-value-32b', 62005);
 
-        $request = new class ('k-test-1', 's-test-1') implements \Psr\Http\Message\ServerRequestInterface {
+        $request = new class ('k-test-1', 'security-regression-api-secret-value-32b') implements \Psr\Http\Message\ServerRequestInterface {
             use PsrRequestStubTrait;
             public function __construct(private string $k, private string $s)
             {
@@ -1246,7 +2991,6 @@ class SecurityRegressionTest extends TestCase
 
         // PSR-7 不可变：最终 response 存于 context 的 responseMap 中
         $ref = new \ReflectionProperty(\SaToken\Util\SaTokenContext::class, 'responseMap');
-        $ref->setAccessible(true);
         /** @var array<string, mixed> $responseMap */
         $responseMap = $ref->getValue();
         $finalResponse = $responseMap[\SaToken\Util\SaTokenContext::getContextId()] ?? null;
@@ -1377,7 +3121,7 @@ trait PsrRequestStubTrait
     /** @return array<string, mixed> */
     public function getServerParams(): array
     {
-        return [];
+        return ['REMOTE_ADDR' => '192.0.2.102'];
     }
 
     /** @return array<string, string> */

@@ -28,14 +28,16 @@ class RefreshTokenStrategy implements GrantTypeStrategyInterface
 
     public function validateRequest(array $params): void
     {
-        if (empty($params['client_id'])) {
-            throw new SaTokenException('缺少必需的参数: client_id');
+        foreach (['client_id', 'client_secret', 'refresh_token'] as $parameter) {
+            if (!is_string($params[$parameter] ?? null)) {
+                throw new SaTokenException("参数 {$parameter} 必须是字符串");
+            }
+            if ($params[$parameter] === '') {
+                throw new SaTokenException("缺少必需的参数: {$parameter}");
+            }
         }
-        if (empty($params['client_secret'])) {
-            throw new SaTokenException('缺少必需的参数: client_secret');
-        }
-        if (empty($params['refresh_token'])) {
-            throw new SaTokenException('缺少必需的参数: refresh_token');
+        if (array_key_exists('scope', $params) && !is_string($params['scope'])) {
+            throw new SaTokenException('参数 scope 必须是字符串');
         }
     }
 

@@ -11,11 +11,110 @@ use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
 use SaToken\Security\SaSensitiveVerify;
 
+class SensitiveVerifyInterleavingDao extends SaTokenDaoMemory
+{
+    /** @var callable(string, ?string): void|null */
+    private $afterNextGet = null;
+
+    /** @var callable(string): void|null */
+    private $beforeNextGetAndDelete = null;
+
+    private ?string $replaceRateKeyOnStateLock = null;
+
+    private ?string $interleaveNextOtpWrite = null;
+
+    /** @var callable(): void|null */
+    private $afterStateLockAcquire = null;
+
+    public function afterNextGet(callable $callback): void
+    {
+        $this->afterNextGet = $callback;
+    }
+
+    public function beforeNextGetAndDelete(callable $callback): void
+    {
+        $this->beforeNextGetAndDelete = $callback;
+    }
+
+    public function getAndDelete(string $key): ?string
+    {
+        if ($this->beforeNextGetAndDelete !== null) {
+            $callback = $this->beforeNextGetAndDelete;
+            $this->beforeNextGetAndDelete = null;
+            $callback($key);
+        }
+
+        return parent::getAndDelete($key);
+    }
+
+    public function replaceRateKeyOnNextStateLock(string $rateKey): void
+    {
+        $this->replaceRateKeyOnStateLock = $rateKey;
+    }
+
+    public function afterNextStateLockAcquire(callable $callback): void
+    {
+        $this->afterStateLockAcquire = $callback;
+    }
+
+    public function interleaveNextOtpWrite(string $key, callable $callback): void
+    {
+        $this->interleaveNextOtpWrite = $key;
+        $this->beforeOtpWrite = $callback;
+    }
+
+    /** @var callable(): void|null */
+    private $beforeOtpWrite = null;
+
+    public function compareAndSet(string $key, ?string $expectedValue, ?string $newValue, ?int $timeout = null): bool
+    {
+        if ($key === $this->interleaveNextOtpWrite && $this->beforeOtpWrite !== null) {
+            $callback = $this->beforeOtpWrite;
+            $this->interleaveNextOtpWrite = null;
+            $this->beforeOtpWrite = null;
+            $callback();
+        }
+
+        return parent::compareAndSet($key, $expectedValue, $newValue, $timeout);
+    }
+
+    public function setIfNotExists(string $key, string $value, ?int $timeout = null): bool
+    {
+        if ($this->replaceRateKeyOnStateLock !== null && str_ends_with($key, ':state-lock')) {
+            $rateKey = $this->replaceRateKeyOnStateLock;
+            $this->replaceRateKeyOnStateLock = null;
+            $this->delete($rateKey);
+            $this->set($rateKey, 'another-request-owner', 60);
+        }
+
+        $acquired = parent::setIfNotExists($key, $value, $timeout);
+        if ($acquired && str_ends_with($key, ':state-lock') && $this->afterStateLockAcquire !== null) {
+            $callback = $this->afterStateLockAcquire;
+            $this->afterStateLockAcquire = null;
+            $callback();
+        }
+
+        return $acquired;
+    }
+
+    public function get(string $key): ?string
+    {
+        $value = parent::get($key);
+        if ($this->afterNextGet !== null) {
+            $callback = $this->afterNextGet;
+            $this->afterNextGet = null;
+            $callback($key, $value);
+        }
+        return $value;
+    }
+}
+
 class SaSensitiveVerifyTest extends TestCase
 {
     protected function setUp(): void
     {
         SaToken::reset();
+        SaToken::getConfig()->setSignKey('sensitive-verify-test-sign-key-32-bytes');
         SaToken::setDao(new SaTokenDaoMemory());
         SaSensitiveVerify::reset();
     }
@@ -24,6 +123,24 @@ class SaSensitiveVerifyTest extends TestCase
     {
         SaToken::reset();
         SaSensitiveVerify::reset();
+    }
+
+    private function issueSafeToken(string $scene, mixed $loginId, string $loginType = 'login', int $validSeconds = 600, ?string $tokenBinding = null): string
+    {
+        $token = (new \ReflectionMethod(SaSensitiveVerify::class, 'issueSafeToken'))
+            ->invoke(null, $scene, $loginId, $loginType, $validSeconds, $tokenBinding);
+        if (!is_string($token)) {
+            throw new \LogicException('Safe token test fixture was not issued');
+        }
+
+        return $token;
+    }
+
+    public function testDirectSafeTokenIssuanceFailsClosed(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('必须通过已验证的 OTP 流程');
+        SaSensitiveVerify::createSafeToken('direct-issue', 'alice');
     }
 
     public function testGenerateCodeReturnsNumericString(): void
@@ -37,6 +154,76 @@ class SaSensitiveVerifyTest extends TestCase
         $this->assertMatchesRegularExpression('/^\d{6}$/', $code);
     }
 
+    public function testSensitiveVerificationRejectsInvalidLoginIdsInsteadOfAliasingThem(): void
+    {
+        foreach ([null, '', false, true, [], new \stdClass()] as $loginId) {
+            try {
+                SaSensitiveVerify::generateCode('invalid-login-id', $loginId);
+                self::fail('Invalid loginId values must not share a sensitive verification state');
+            } catch (SaTokenException $exception) {
+                self::assertStringContainsString('loginId', $exception->getMessage());
+            }
+        }
+
+        try {
+            $this->issueSafeToken('invalid-login-id', false);
+            self::fail('Safe tokens must not bind to a normalized invalid identity');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('loginId', $exception->getMessage());
+        }
+    }
+
+    public function testSensitiveVerificationRejectsOversizedScenes(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('scene 长度不能超过');
+        SaSensitiveVerify::generateCode(str_repeat('s', 257), 'alice');
+    }
+
+    public function testSensitiveVerificationRejectsOversizedLoginIds(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('loginId 长度无效');
+        SaSensitiveVerify::generateCode('payment', str_repeat('u', 4097));
+    }
+
+    public function testGeneratedCodeIsStoredAsOneWayHash(): void
+    {
+        $scene = 'hashed-code-scene';
+        $loginId = 10001;
+
+        $code = SaSensitiveVerify::generateCode($scene, $loginId);
+        $stored = SaToken::getDao()->get(SaSensitiveVerify::getKey($scene, $loginId));
+        self::assertNotNull($stored);
+        $envelope = json_decode($stored, true);
+        $this->assertIsArray($envelope);
+        $encodedPayload = is_string($envelope['payload'] ?? null) ? $envelope['payload'] : '';
+        $payload = base64_decode($encodedPayload, true);
+        $data = is_string($payload) ? json_decode($payload, true) : null;
+
+        $this->assertIsArray($data);
+        $this->assertArrayNotHasKey('code', $data);
+        $this->assertIsString($data['codeHash'] ?? null);
+        $this->assertNotSame($code, $data['codeHash']);
+        $this->assertTrue(password_verify($code, $data['codeHash']));
+        $this->assertTrue(SaSensitiveVerify::verifyCode($scene, $code, $loginId));
+    }
+
+    public function testCodeLengthRejectsInsecureAndUnboundedValues(): void
+    {
+        foreach ([0, 1, 5, 13, PHP_INT_MAX] as $length) {
+            try {
+                SaSensitiveVerify::setCodeLength($length);
+                $this->fail('验证码长度超出安全范围应被拒绝');
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('6-12', $e->getMessage());
+            }
+        }
+
+        SaSensitiveVerify::setCodeLength(8);
+        $this->assertMatchesRegularExpression('/^\d{8}$/', SaSensitiveVerify::generateCode('long-code', 10001));
+    }
+
     public function testVerifyValidCodeReturnsTrue(): void
     {
         $scene = 'test-scene';
@@ -48,6 +235,175 @@ class SaSensitiveVerifyTest extends TestCase
         $this->assertTrue($result);
     }
 
+    public function testCodeRegenerationCannotInterleaveWithVerification(): void
+    {
+        $dao = new SensitiveVerifyInterleavingDao();
+        SaToken::setDao($dao);
+        $scene = 'interleaved-scene';
+        $loginId = 10001;
+        $oldCode = SaSensitiveVerify::generateCode($scene, $loginId);
+        $regenerationWasBlocked = false;
+        $key = SaSensitiveVerify::getKey($scene, $loginId);
+
+        $dao->afterNextStateLockAcquire(static function () use ($scene, $loginId, &$regenerationWasBlocked): void {
+            try {
+                SaSensitiveVerify::generateCode($scene, $loginId);
+            } catch (SaTokenException $e) {
+                $regenerationWasBlocked = str_contains($e->getMessage(), '状态正在更新');
+            }
+        });
+
+        $this->assertTrue(SaSensitiveVerify::verifyCode($scene, $oldCode, $loginId));
+        $this->assertTrue($regenerationWasBlocked);
+
+        $newCode = SaSensitiveVerify::generateCode($scene, $loginId);
+        $this->assertFalse(SaSensitiveVerify::isVerified($scene, $loginId));
+        $this->assertFalse(SaSensitiveVerify::verifyCode($scene, $oldCode, $loginId));
+        $this->assertTrue(SaSensitiveVerify::verifyCode($scene, $newCode, $loginId));
+    }
+
+    public function testExpiredGenerationLockCannotRestoreAnOlderOtpAfterResend(): void
+    {
+        $dao = new SensitiveVerifyInterleavingDao();
+        SaToken::setDao($dao);
+        $scene = 'expired-generation-lock';
+        $loginId = 'alice';
+        $key = SaSensitiveVerify::getKey($scene, $loginId);
+        $newCode = null;
+
+        $dao->interleaveNextOtpWrite($key, function () use ($dao, $key, $scene, $loginId, &$newCode): void {
+            // Model the first worker's 30-second lease expiring while its DAO
+            // write is stalled. A later resend commits before the stale write
+            // resumes.
+            $dao->delete($key . ':state-lock');
+            $newCode = SaSensitiveVerify::generateCode($scene, $loginId);
+        });
+
+        try {
+            SaSensitiveVerify::generateCode($scene, $loginId);
+            self::fail('A stale generator must not overwrite a newer OTP state');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('并发更新', $exception->getMessage());
+        }
+
+        self::assertIsString($newCode);
+        self::assertTrue(SaSensitiveVerify::verifyCode($scene, $newCode, $loginId));
+    }
+
+    public function testSendIntervalZeroDisablesRateLimitWithoutCreatingPermanentKey(): void
+    {
+        SaToken::getConfig()->setSensitiveVerifyCallback(static fn () => null);
+        SaSensitiveVerify::setSendInterval(0);
+
+        SaSensitiveVerify::sendCode('unlimited-scene', 10001);
+        SaSensitiveVerify::sendCode('unlimited-scene', 10001);
+
+        $rateKey = SaSensitiveVerify::getKey('unlimited-scene', 10001) . ':sent';
+        $this->assertNull(SaToken::getDao()->get($rateKey));
+    }
+
+    public function testSendIntervalCannotBeBypassedByChangingScene(): void
+    {
+        $sendCount = 0;
+        SaToken::getConfig()->setSensitiveVerifyCallback(static function () use (&$sendCount): void {
+            $sendCount++;
+        });
+
+        SaSensitiveVerify::sendCode('login', 10001);
+
+        try {
+            SaSensitiveVerify::sendCode('password-reset', 10001);
+            self::fail('同一账号不能通过更换 OTP scene 绕过发送冷却');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('发送过于频繁', $exception->getMessage());
+        }
+
+        self::assertSame(1, $sendCount);
+    }
+
+    public function testInvalidSceneDoesNotReserveAccountSendInterval(): void
+    {
+        SaToken::getConfig()->setSensitiveVerifyCallback(static fn () => null);
+        $accountRateKey = 'satoken:sensitive:sent:login:' . hash('sha256', 'alice');
+
+        try {
+            SaSensitiveVerify::sendCode(str_repeat('s', 257), 'alice');
+            self::fail('超长 scene 必须在预留发送冷却前拒绝');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('scene 长度不能超过', $exception->getMessage());
+        }
+
+        self::assertNull(SaToken::getDao()->get($accountRateKey));
+    }
+
+    public function testFailedSendDoesNotDeleteAnotherRequestsRateLimitReservation(): void
+    {
+        SaToken::getConfig()->setSensitiveVerifyCallback(static fn () => null);
+        $dao = new SensitiveVerifyInterleavingDao();
+        SaToken::setDao($dao);
+        $scene = 'rate-owner-scene';
+        $loginId = 10001;
+        $key = SaSensitiveVerify::getKey($scene, $loginId);
+        $rateKey = $key . ':sent';
+        $dao->set($key . ':state-lock', 'existing-owner', 30);
+        $dao->replaceRateKeyOnNextStateLock($rateKey);
+
+        try {
+            SaSensitiveVerify::sendCode($scene, $loginId);
+            $this->fail('已有验证码状态锁时应拒绝发送');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('状态正在更新', $e->getMessage());
+        }
+
+        $this->assertSame('another-request-owner', $dao->get($rateKey));
+    }
+
+    public function testFailedSendDoesNotDeleteNewOtpGenerationWithSameCode(): void
+    {
+        $scene = 'failed-send-generation';
+        $loginId = 10001;
+        $key = SaSensitiveVerify::getKey($scene, $loginId);
+        $dao = new SensitiveVerifyInterleavingDao();
+        SaToken::setDao($dao);
+
+        SaToken::getConfig()->setSensitiveVerifyCallback(static function (string $sentScene, string $code, int $sentLoginId) use ($key, $dao): void {
+            $replacement = [
+                'codeHash' => password_hash($code, PASSWORD_DEFAULT),
+                'generationId' => str_repeat('f', 32),
+                'createdAt' => time(),
+                'expiresAt' => time() + 300,
+                'attempts' => 0,
+                'verified' => false,
+            ];
+            $record = (new \ReflectionMethod(SaSensitiveVerify::class, 'encodeSensitiveState'))
+                ->invoke(null, $replacement, $key);
+            self::assertIsString($record);
+            $dao->set($key, $record, 360);
+            throw new \RuntimeException('delivery failed after a concurrent resend');
+        });
+
+        try {
+            SaSensitiveVerify::sendCode($scene, $loginId);
+            self::fail('Delivery failure must be propagated');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('delivery failed after a concurrent resend', $exception->getMessage());
+        }
+
+        self::assertNotNull($dao->get($key), 'The newer OTP generation must survive even when its code matches');
+    }
+
+    public function testConcurrentSuccessfulCodeVerificationIsRejectedByAtomicClaim(): void
+    {
+        $scene = 'test-scene';
+        $loginId = 10001;
+        $code = SaSensitiveVerify::generateCode($scene, $loginId);
+
+        // Represents another worker having atomically claimed this verification.
+        SaToken::getDao()->setIfNotExists(SaSensitiveVerify::getKey($scene, $loginId) . ':verified', '1', 360);
+
+        $this->assertFalse(SaSensitiveVerify::verifyCode($scene, $code, $loginId));
+    }
+
     public function testVerifyWrongCodeReturnsFalse(): void
     {
         $scene = 'test-scene';
@@ -57,6 +413,36 @@ class SaSensitiveVerifyTest extends TestCase
         $result = SaSensitiveVerify::verifyCode($scene, '000000', $loginId);
 
         $this->assertFalse($result);
+    }
+
+    public function testExpiredStateLockCannotLoseFailedOtpAttempts(): void
+    {
+        $dao = new SensitiveVerifyInterleavingDao();
+        SaToken::setDao($dao);
+        $scene = 'expired-state-lock-attempt-count';
+        $loginId = 'alice';
+        SaSensitiveVerify::generateCode($scene, $loginId);
+        $stateKey = SaSensitiveVerify::getKey($scene, $loginId);
+
+        $dao->afterNextGet(function (string $key) use ($dao, $stateKey, $scene, $loginId): void {
+            if ($key !== $stateKey) {
+                return;
+            }
+
+            // Simulate the first worker's lease expiring after its snapshot
+            // read. The nested worker records a failed attempt first.
+            $dao->delete($stateKey . ':state-lock');
+            self::assertFalse(SaSensitiveVerify::verifyCode($scene, 'wrong-code', $loginId));
+        });
+
+        self::assertFalse(SaSensitiveVerify::verifyCode($scene, 'wrong-code', $loginId));
+        self::assertSame(1, SaSensitiveVerify::getRemainingAttempts($scene, $loginId));
+        self::assertFalse(SaSensitiveVerify::verifyCode($scene, 'wrong-code', $loginId));
+        self::assertSame(0, SaSensitiveVerify::getRemainingAttempts($scene, $loginId));
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('验证码尝试次数过多');
+        SaSensitiveVerify::verifyCode($scene, 'wrong-code', $loginId);
     }
 
     public function testMaxAttemptsLimitThrowsException(): void
@@ -76,6 +462,26 @@ class SaSensitiveVerifyTest extends TestCase
         $this->expectException(SaTokenException::class);
         $this->expectExceptionMessage('验证码尝试次数过多');
         SaSensitiveVerify::verifyCode($scene, $wrongCode, $loginId);
+    }
+
+    public function testMaxAttemptsRejectsNonPositiveValuesWithoutChangingCurrentLimit(): void
+    {
+        SaSensitiveVerify::setMaxAttempts(3);
+
+        foreach ([0, -1, PHP_INT_MIN] as $maxAttempts) {
+            try {
+                SaSensitiveVerify::setMaxAttempts($maxAttempts);
+                self::fail('验证码最大尝试次数必须为正数');
+            } catch (SaTokenException $exception) {
+                self::assertStringContainsString('正整数', $exception->getMessage());
+            }
+        }
+
+        $scene = 'invalid-max-attempts';
+        $loginId = 'alice';
+        $code = SaSensitiveVerify::generateCode($scene, $loginId);
+
+        self::assertTrue(SaSensitiveVerify::verifyCode($scene, $code, $loginId));
     }
 
     public function testIsVerifiedReturnsTrueAfterSuccessfulVerification(): void
@@ -105,14 +511,131 @@ class SaSensitiveVerifyTest extends TestCase
         $this->assertFalse(SaSensitiveVerify::isVerified($scene, $loginId));
     }
 
+    public function testExpiredClearLockCannotDeleteANewerOtpGeneration(): void
+    {
+        $dao = new SensitiveVerifyInterleavingDao();
+        SaToken::setDao($dao);
+        $scene = 'expired-clear-lock-generation';
+        $loginId = 'alice';
+        SaSensitiveVerify::generateCode($scene, $loginId);
+        $stateKey = SaSensitiveVerify::getKey($scene, $loginId);
+        $newCode = null;
+
+        $dao->afterNextGet(function (string $key) use ($dao, $stateKey, $scene, $loginId, &$newCode): void {
+            if ($key !== $stateKey) {
+                return;
+            }
+
+            // Simulate the clear worker's lock lease expiring after it reads
+            // the old state, then let another worker issue a fresh OTP.
+            $dao->delete($stateKey . ':state-lock');
+            $newCode = SaSensitiveVerify::generateCode($scene, $loginId);
+        });
+
+        try {
+            SaSensitiveVerify::clearVerified($scene, $loginId);
+            self::fail('过期锁持有者必须检测到状态已被新验证码替换');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('状态已并发更新', $exception->getMessage());
+        }
+
+        self::assertIsString($newCode);
+        self::assertTrue(SaSensitiveVerify::verifyCode($scene, $newCode, $loginId));
+    }
+
+    public function testClearResumingAfterLeaseExpiryCannotDeleteNewOtpReadAfterResume(): void
+    {
+        $dao = new SensitiveVerifyInterleavingDao();
+        SaToken::setDao($dao);
+        $scene = 'clear-resume-after-lease-expiry';
+        $loginId = 'alice';
+        SaSensitiveVerify::generateCode($scene, $loginId);
+        $stateKey = SaSensitiveVerify::getKey($scene, $loginId);
+        $newCode = null;
+
+        $dao->afterNextStateLockAcquire(function () use ($dao, $stateKey, $scene, $loginId, &$newCode): void {
+            // The clear worker acquired its lease but pauses before reading
+            // the record. A later request takes over and writes a new OTP;
+            // the stale worker then resumes and would read that new snapshot.
+            $dao->delete($stateKey . ':state-lock');
+            $newCode = SaSensitiveVerify::generateCode($scene, $loginId);
+        });
+
+        try {
+            SaSensitiveVerify::clearVerified($scene, $loginId);
+            self::fail('A stale clear worker must not delete a newer OTP generation');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('状态已并发更新', $exception->getMessage());
+        }
+
+        self::assertIsString($newCode);
+        self::assertTrue(SaSensitiveVerify::verifyCode($scene, $newCode, $loginId));
+    }
+
+    public function testStaleSafeTokenRequestCannotConsumeLaterOtpVerification(): void
+    {
+        $dao = new SensitiveVerifyInterleavingDao();
+        SaToken::setDao($dao);
+        $scene = 'stale-safe-token-request';
+        $loginId = 'alice';
+        SaSensitiveVerify::generateCode($scene, $loginId);
+        $stateKey = SaSensitiveVerify::getKey($scene, $loginId);
+        $newCode = null;
+
+        $dao->afterNextStateLockAcquire(function () use ($dao, $stateKey, $scene, $loginId, &$newCode): void {
+            // An old safe-token request acquired the state lease before the
+            // user completed a new OTP flow, then resumed after that flow.
+            $dao->delete($stateKey . ':state-lock');
+            $newCode = SaSensitiveVerify::generateCode($scene, $loginId);
+            self::assertTrue(SaSensitiveVerify::verifyCode($scene, $newCode, $loginId));
+        });
+
+        try {
+            SaSensitiveVerify::createSafeTokenAfterVerified($scene, $loginId);
+            self::fail('A stale safe-token request must not consume a later OTP verification');
+        } catch (NotSafeException) {
+            // The old request lost its state lease and must not consume the new proof.
+        }
+
+        self::assertTrue(SaSensitiveVerify::isVerified($scene, $loginId));
+        $safeToken = SaSensitiveVerify::createSafeTokenAfterVerified($scene, $loginId);
+        self::assertTrue(SaSensitiveVerify::verifySafeToken($scene, $safeToken, $loginId));
+    }
+
+    public function testStaleOtpAttemptCannotBurnAttemptsOnLaterGeneration(): void
+    {
+        $dao = new SensitiveVerifyInterleavingDao();
+        SaToken::setDao($dao);
+        $scene = 'stale-otp-attempt';
+        $loginId = 'alice';
+        $oldCode = SaSensitiveVerify::generateCode($scene, $loginId);
+        $stateKey = SaSensitiveVerify::getKey($scene, $loginId);
+        $newCode = null;
+
+        $dao->afterNextStateLockAcquire(function () use ($dao, $stateKey, $scene, $loginId, &$newCode): void {
+            $dao->delete($stateKey . ':state-lock');
+            $newCode = SaSensitiveVerify::generateCode($scene, $loginId);
+        });
+
+        self::assertFalse(SaSensitiveVerify::verifyCode($scene, $oldCode, $loginId));
+        self::assertSame(3, SaSensitiveVerify::getRemainingAttempts($scene, $loginId));
+        self::assertIsString($newCode);
+        self::assertTrue(SaSensitiveVerify::verifyCode($scene, $newCode, $loginId));
+    }
+
     public function testCreateAndVerifySafeToken(): void
     {
         $scene = 'test-scene';
         $loginId = 10001;
         $loginType = 'login';
 
-        $token = SaSensitiveVerify::createSafeToken($scene, $loginId, $loginType);
+        $token = $this->issueSafeToken($scene, $loginId, $loginType);
         $this->assertEquals(64, strlen($token));
+
+        $keys = SaToken::getDao()->searchKeys('satoken:sensitive:login:safe-token:', '', 0, 10);
+        self::assertCount(1, $keys);
+        self::assertStringContainsString(hash('sha256', $token), $keys[0]);
+        self::assertStringNotContainsString(substr($token, 0, 16), $keys[0]);
 
         $result = SaSensitiveVerify::verifySafeToken($scene, $token, $loginId, $loginType);
         $this->assertTrue($result);
@@ -123,7 +646,7 @@ class SaSensitiveVerifyTest extends TestCase
         $scene = 'test-scene';
         $loginId = 10001;
 
-        SaSensitiveVerify::createSafeToken($scene, $loginId);
+        $this->issueSafeToken($scene, $loginId);
         $result = SaSensitiveVerify::verifySafeToken($scene, 'wrong-token', $loginId);
 
         $this->assertFalse($result);
@@ -134,13 +657,72 @@ class SaSensitiveVerifyTest extends TestCase
         $scene = 'test-scene';
         $loginId = 10001;
 
-        $token = SaSensitiveVerify::createSafeToken($scene, $loginId);
+        $token = $this->issueSafeToken($scene, $loginId);
 
         $firstResult = SaSensitiveVerify::verifySafeToken($scene, $token, $loginId);
         $this->assertTrue($firstResult);
 
         $secondResult = SaSensitiveVerify::verifySafeToken($scene, $token, $loginId);
         $this->assertFalse($secondResult);
+    }
+
+    public function testSafeTokenStateCannotBeCopiedToAnotherLoginId(): void
+    {
+        $scene = 'copied-safe-token-state';
+        $token = $this->issueSafeToken($scene, 'alice');
+        $sourceKey = 'satoken:sensitive:login:safe-token:' . $scene . ':' . hash('sha256', 'alice') . ':' . hash('sha256', $token);
+        $targetKey = 'satoken:sensitive:login:safe-token:' . $scene . ':' . hash('sha256', 'bob') . ':' . hash('sha256', $token);
+        $sourceState = SaToken::getDao()->get($sourceKey);
+        self::assertNotNull($sourceState);
+        SaToken::getDao()->set($targetKey, $sourceState, 660);
+
+        self::assertFalse(SaSensitiveVerify::verifySafeToken($scene, $token, 'bob'));
+    }
+
+    public function testSafeTokenExpiryIsRecheckedWhenAtomicallyConsumed(): void
+    {
+        $dao = new SensitiveVerifyInterleavingDao();
+        SaToken::setDao($dao);
+        $scene = 'safe-token-expiry-race';
+        $loginId = 'alice';
+        $token = $this->issueSafeToken($scene, $loginId);
+        $key = 'satoken:sensitive:login:safe-token:' . $scene . ':' . hash('sha256', $loginId) . ':' . hash('sha256', $token);
+        $encodeState = new \ReflectionMethod(SaSensitiveVerify::class, 'encodeSensitiveState');
+
+        $dao->afterNextGet(static function (string $readKey, ?string $ignoredValue) use ($dao, $key, $scene, $loginId, $token, $encodeState): void {
+            if ($readKey !== $key) {
+                return;
+            }
+            $expiredState = $encodeState->invoke(null, [
+                'scene' => $scene,
+                'loginId' => $loginId,
+                'loginType' => 'login',
+                'createdAt' => time() - 601,
+                'expiresAt' => time() - 1,
+                'tokenHash' => hash('sha256', $token),
+            ], $key);
+            self::assertIsString($expiredState);
+            $dao->set($key, $expiredState, 60);
+        });
+
+        self::assertFalse(SaSensitiveVerify::verifySafeToken($scene, $token, $loginId));
+    }
+
+    public function testSafeTokenWithoutFullTokenHashIsRejected(): void
+    {
+        $scene = 'test-scene';
+        $loginId = 10001;
+        $token = $this->issueSafeToken($scene, $loginId);
+        $key = 'satoken:sensitive:login:safe-token:' . $scene . ':' . hash('sha256', (string) $loginId) . ':' . hash('sha256', $token);
+
+        SaToken::getDao()->set($key, json_encode([
+            'scene' => $scene,
+            'loginId' => (string) $loginId,
+            'loginType' => 'login',
+            'expiresAt' => time() + 600,
+        ]) ?: '{}', 660);
+
+        $this->assertFalse(SaSensitiveVerify::verifySafeToken($scene, $token, $loginId));
     }
 
     public function testGetRemainingAttemptsDecreasesOnWrongCode(): void
@@ -175,7 +757,7 @@ class SaSensitiveVerifyTest extends TestCase
         $scene = 'test-scene';
         $loginId = 10001;
 
-        SaSensitiveVerify::createSafeToken($scene, $loginId);
+        $this->issueSafeToken($scene, $loginId);
 
         $this->expectException(NotSafeException::class);
         SaSensitiveVerify::verifySafeTokenAndThrow($scene, 'wrong-token', $loginId);
@@ -198,14 +780,75 @@ class SaSensitiveVerifyTest extends TestCase
         $this->assertTrue(SaSensitiveVerify::isVerified($scene, $loginId, 'admin'));
     }
 
-    public function testSendCodeReturnsCode(): void
+    public function testOtpCannotCrossLoginTypesThroughSceneDelimiterCollision(): void
+    {
+        $loginId = 10001;
+        $code = SaSensitiveVerify::generateCode('admin:otp', $loginId, 'user');
+
+        $this->assertFalse(SaSensitiveVerify::verifyCode('otp', $code, $loginId, 'user:admin'));
+        $this->assertTrue(SaSensitiveVerify::verifyCode('admin:otp', $code, $loginId, 'user'));
+    }
+
+    public function testSafeTokenCannotCrossLoginTypesThroughSceneDelimiterCollision(): void
+    {
+        $loginId = 10002;
+        $token = $this->issueSafeToken('admin:safe-token:otp', $loginId, 'user');
+
+        $this->assertFalse(SaSensitiveVerify::verifySafeToken('otp', $token, $loginId, 'user:safe-token:admin'));
+        $this->assertTrue(SaSensitiveVerify::verifySafeToken('admin:safe-token:otp', $token, $loginId, 'user'));
+    }
+
+    public function testSendCodeDeliversCodeWithoutReturningIt(): void
     {
         $scene = 'test-scene';
         $loginId = 10001;
+        $deliveredCode = null;
+        SaToken::getConfig()->setSensitiveVerifyCallback(
+            static function (string $sentScene, string $code, mixed $sentLoginId) use (&$deliveredCode, $scene, $loginId): void {
+                self::assertSame($scene, $sentScene);
+                self::assertSame($loginId, $sentLoginId);
+                $deliveredCode = $code;
+            }
+        );
 
-        $code = SaSensitiveVerify::sendCode($scene, $loginId);
+        SaSensitiveVerify::sendCode($scene, $loginId);
 
-        $this->assertEquals(6, strlen($code));
+        $this->assertSame('void', (string) (new \ReflectionMethod(SaSensitiveVerify::class, 'sendCode'))->getReturnType());
+        $this->assertIsString($deliveredCode);
+        $this->assertMatchesRegularExpression('/^\d{6}$/', $deliveredCode);
+    }
+
+    public function testSendCodeRequiresDeliveryCallback(): void
+    {
+        try {
+            SaSensitiveVerify::sendCode('missing-sender', 10003);
+            $this->fail('未配置发送回调时不得生成不可投递的验证码');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('回调未配置', $e->getMessage());
+        }
+
+        $key = SaSensitiveVerify::getKey('missing-sender', 10003);
+        $this->assertNull(SaToken::getDao()->get($key));
+        $this->assertNull(SaToken::getDao()->get($key . ':sent'));
+    }
+
+    public function testFailedDeliveryRevokesUnsentCodeAndReleasesRateLimit(): void
+    {
+        $scene = 'failed-delivery';
+        $loginId = 'delivery-user';
+        SaToken::getConfig()->setSensitiveVerifyCallback(static function (): void {
+            throw new \RuntimeException('provider unavailable');
+        });
+
+        try {
+            SaSensitiveVerify::sendCode($scene, $loginId);
+            self::fail('A delivery callback failure must be reported');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('provider unavailable', $exception->getMessage());
+        }
+
+        self::assertFalse(SaSensitiveVerify::verifyCode($scene, '000000', $loginId));
+        self::assertNull(SaToken::getDao()->get(SaSensitiveVerify::getKey($scene, $loginId) . ':sent'));
     }
 
     public function testCodeCannotBeReusedAfterVerification(): void
@@ -220,5 +863,130 @@ class SaSensitiveVerifyTest extends TestCase
 
         $secondVerify = SaSensitiveVerify::verifyCode($scene, $code, $loginId);
         $this->assertFalse($secondVerify);
+    }
+
+    public function testNonPositiveCodeLifetimeIsRejected(): void
+    {
+        $this->expectException(SaTokenException::class);
+        SaSensitiveVerify::setValidSeconds(0);
+    }
+
+    public function testTamperedCodeExpiryFailsClosed(): void
+    {
+        $scene = 'invalid-expiry-code';
+        $loginId = 10031;
+        $code = SaSensitiveVerify::generateCode($scene, $loginId);
+        $key = SaSensitiveVerify::getKey($scene, $loginId);
+        $envelope = json_decode((string) SaToken::getDao()->get($key), true);
+        if (!is_array($envelope)) {
+            self::fail('Generated code state envelope must be a JSON object');
+        }
+        $payload = base64_decode(is_string($envelope['payload'] ?? null) ? $envelope['payload'] : '', true);
+        $data = is_string($payload) ? json_decode($payload, true) : null;
+        self::assertIsArray($data);
+        $data['expiresAt'] = 0;
+        $envelope['payload'] = base64_encode(json_encode($data) ?: '{}');
+        SaToken::getDao()->set($key, json_encode($envelope) ?: '{}', 300);
+
+        $this->assertFalse(SaSensitiveVerify::verifyCode($scene, $code, $loginId));
+    }
+
+    public function testTamperedVerificationStateCannotForgeSuccessfulOtp(): void
+    {
+        $scene = 'tampered-verification-state';
+        $loginId = 10034;
+        SaSensitiveVerify::generateCode($scene, $loginId);
+        $key = SaSensitiveVerify::getKey($scene, $loginId);
+        $envelope = json_decode((string) SaToken::getDao()->get($key), true);
+        self::assertIsArray($envelope);
+        $payload = base64_decode(is_string($envelope['payload'] ?? null) ? $envelope['payload'] : '', true);
+        $data = is_string($payload) ? json_decode($payload, true) : null;
+        self::assertIsArray($data);
+        $data['verified'] = true;
+        $envelope['payload'] = base64_encode(json_encode($data) ?: '{}');
+        SaToken::getDao()->set($key, json_encode($envelope) ?: '{}', 300);
+
+        self::assertFalse(SaSensitiveVerify::isVerified($scene, $loginId));
+        self::assertFalse(SaSensitiveVerify::verifyCode($scene, '000000', $loginId));
+    }
+
+    public function testVerifiedOtpStateCannotBeCopiedToAnotherLoginId(): void
+    {
+        $scene = 'copied-verification-state';
+        $sourceLoginId = 'alice';
+        $targetLoginId = 'bob';
+        $code = SaSensitiveVerify::generateCode($scene, $sourceLoginId);
+        self::assertTrue(SaSensitiveVerify::verifyCode($scene, $code, $sourceLoginId));
+
+        $sourceKey = SaSensitiveVerify::getKey($scene, $sourceLoginId);
+        $targetKey = SaSensitiveVerify::getKey($scene, $targetLoginId);
+        $sourceState = SaToken::getDao()->get($sourceKey);
+        self::assertNotNull($sourceState);
+        SaToken::getDao()->set($targetKey, $sourceState, 60);
+
+        self::assertFalse(SaSensitiveVerify::isVerified($scene, $targetLoginId));
+    }
+
+    public function testExpiredStateLockCannotMintTwoSafeTokensFromOneOtpVerification(): void
+    {
+        $dao = new SensitiveVerifyInterleavingDao();
+        SaToken::setDao($dao);
+        $scene = 'expired-state-lock-single-use';
+        $loginId = 'alice';
+        $code = SaSensitiveVerify::generateCode($scene, $loginId);
+        self::assertTrue(SaSensitiveVerify::verifyCode($scene, $code, $loginId));
+
+        $stateKey = SaSensitiveVerify::getKey($scene, $loginId);
+        $nestedToken = null;
+        $dao->beforeNextGetAndDelete(function (string $key) use ($dao, $stateKey, $scene, $loginId, &$nestedToken): void {
+            if ($key !== $stateKey) {
+                return;
+            }
+
+            // Model another worker acquiring the state lock after its lease
+            // expires while this request is between reading and deleting.
+            $dao->delete($stateKey . ':state-lock');
+            $nestedToken = SaSensitiveVerify::createSafeTokenAfterVerified($scene, $loginId);
+        });
+
+        try {
+            SaSensitiveVerify::createSafeTokenAfterVerified($scene, $loginId);
+            self::fail('One OTP verification must not issue two safe tokens after lock lease expiry');
+        } catch (NotSafeException) {
+            self::assertIsString($nestedToken);
+            self::assertTrue(SaSensitiveVerify::verifySafeToken($scene, $nestedToken, $loginId));
+        }
+    }
+
+    public function testCodeGenerationRequiresStateSigningKey(): void
+    {
+        SaToken::getConfig()->setSignKey('');
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('至少 32 字节的 signKey');
+        SaSensitiveVerify::generateCode('missing-state-signing-key', 10035);
+    }
+
+    public function testSafeTokenRejectsNonPositiveLifetime(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->issueSafeToken('invalid-expiry-safe-token', 10032, 'login', 0);
+    }
+
+    public function testTamperedSafeTokenStateFailsClosed(): void
+    {
+        $scene = 'invalid-expiry-safe-token';
+        $loginId = 10033;
+        $token = $this->issueSafeToken($scene, $loginId);
+        $key = 'satoken:sensitive:login:safe-token:' . $scene . ':' . hash('sha256', (string) $loginId) . ':' . hash('sha256', $token);
+        SaToken::getDao()->set($key, json_encode([
+            'scene' => $scene,
+            'loginId' => (string) $loginId,
+            'loginType' => 'login',
+            'expiresAt' => 0,
+            'tokenHash' => hash('sha256', $token),
+        ]) ?: '{}', 300);
+
+        $this->assertFalse(SaSensitiveVerify::verifySafeToken($scene, $token, $loginId));
     }
 }

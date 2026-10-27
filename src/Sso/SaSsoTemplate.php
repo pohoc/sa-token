@@ -7,16 +7,23 @@ namespace SaToken\Sso;
 use CryptoSm\SM3\HmacSm3;
 use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
+use SaToken\Util\SaTokenCryptoType;
 
 class SaSsoTemplate
 {
+    protected const MAX_RESPONSE_BYTES = 1_048_576;
+
+    protected const MAX_SIGNED_PARAMS = 128;
+
+    protected const MAX_SIGNED_PARAMS_BYTES = 65536;
+
     protected ?string $lastError = null;
 
     protected string $cryptoType = 'intl';
 
     public function __construct(?string $cryptoType = null)
     {
-        $this->cryptoType = $cryptoType ?? SaToken::getConfig()->getCryptoType();
+        $this->cryptoType = SaTokenCryptoType::validate($cryptoType ?? SaToken::getConfig()->getCryptoType());
     }
 
     /**
@@ -31,7 +38,7 @@ class SaSsoTemplate
         $response = $this->doRequest('GET', $url);
         if ($response === false || $response === '') {
             $errorMsg = $this->lastError ?? 'SSO HTTP 请求失败';
-            throw new SaTokenException("SSO HTTP 请求失败：{$url} - {$errorMsg}");
+            throw new SaTokenException('SSO HTTP 请求失败：' . $this->sanitizeUrlForError($url) . " - {$errorMsg}");
         }
 
         return $response;
@@ -44,7 +51,7 @@ class SaSsoTemplate
     {
         $response = $this->doRequest('POST', $url, $data);
         if ($response === false) {
-            throw new SaTokenException("SSO HTTP 请求失败：{$url}" . ($this->lastError ? ' - ' . $this->lastError : ''));
+            throw new SaTokenException('SSO HTTP 请求失败：' . $this->sanitizeUrlForError($url) . ($this->lastError ? ' - ' . $this->lastError : ''));
         }
 
         return $response;
@@ -56,7 +63,23 @@ class SaSsoTemplate
      */
     public function signParams(array $params, string $clientSecret): array
     {
+        if (strlen($clientSecret) < 32) {
+            throw new SaTokenException('SSO 客户端密钥长度不足，至少需要 32 字节');
+        }
         unset($params['sign']);
+        if (count($params) > self::MAX_SIGNED_PARAMS) {
+            throw new SaTokenException('SSO 签名参数数量超过限制');
+        }
+        $totalBytes = 0;
+        foreach ($params as $key => $value) {
+            if (!is_string($key) || !is_string($value)) {
+                throw new SaTokenException('SSO 签名参数必须是字符串键值');
+            }
+            $totalBytes += strlen($key) + strlen($value);
+            if ($totalBytes > self::MAX_SIGNED_PARAMS_BYTES) {
+                throw new SaTokenException('SSO 签名参数总长度超过限制');
+            }
+        }
         ksort($params);
         $signStr = http_build_query($params) . '&key=' . $clientSecret;
 
@@ -72,26 +95,40 @@ class SaSsoTemplate
     /**
      * 接受外部输入的参数集（值可能为 mixed），仅标量值参与规范化。
      *
-     * $maxAge 非 null 且参数集含 timestamp 时额外校验时效（秒），
+     * $maxAge 非 null 时要求 timestamp 存在且为数字，并校验时效（秒），
      * 防止合法签名在窗口外被无限重放（check-ticket/SLO 回调建议传入）
      *
      * @param array<string, mixed> $params
      */
     public function verifySign(array $params, string $clientSecret, ?int $maxAge = null): bool
     {
+        if (strlen($clientSecret) < 32 || count($params) > self::MAX_SIGNED_PARAMS) {
+            return false;
+        }
         $ts = $params['timestamp'] ?? null;
-        if ($maxAge !== null && is_scalar($ts)) {
-            if (abs(time() - (int) (string) $ts) > $maxAge) {
+        if ($maxAge !== null) {
+            if (!is_scalar($ts) || !is_numeric($ts) || abs(time() - (int) (string) $ts) > $maxAge) {
                 return false;
             }
         }
         $sign = $params['sign'] ?? '';
         unset($params['sign']);
         $normalized = [];
+        $totalBytes = 0;
         foreach ($params as $k => $v) {
-            if (is_scalar($v)) {
-                $normalized[(string) $k] = (string) $v;
+            // Reject values that cannot be represented by the flat signing
+            // format. Silently dropping them would authenticate only a subset
+            // of the request while callers may still consume the full array.
+            if (!is_scalar($v)) {
+                return false;
             }
+            $key = (string) $k;
+            $value = (string) $v;
+            $totalBytes += strlen($key) + strlen($value);
+            if ($totalBytes > self::MAX_SIGNED_PARAMS_BYTES) {
+                return false;
+            }
+            $normalized[$key] = $value;
         }
         ksort($normalized);
         $signStr = http_build_query($normalized) . '&key=' . $clientSecret;
@@ -111,6 +148,18 @@ class SaSsoTemplate
     protected function doRequest(string $method, string $url, array $data = []): string|false
     {
         $this->lastError = null;
+        $urlParts = parse_url($url);
+        $scheme = is_array($urlParts) ? strtolower((string) ($urlParts['scheme'] ?? '')) : '';
+        if (!is_array($urlParts) || !isset($urlParts['host']) || $urlParts['host'] === ''
+            || !in_array($scheme, ['http', 'https'], true)
+            || preg_match('/[\\\\\x00-\x20\x7f]/', $url) === 1
+            || array_key_exists('user', $urlParts)
+            || array_key_exists('pass', $urlParts)
+            || array_key_exists('fragment', $urlParts)) {
+            $this->lastError = 'Only HTTP and HTTPS URLs are allowed';
+            return false;
+        }
+
         if (function_exists('curl_init')) {
             return $this->curlRequest($method, $url, $data);
         }
@@ -119,19 +168,56 @@ class SaSsoTemplate
     }
 
     /**
+     * Keep only the URL origin in exceptions. Paths, queries, and userinfo can
+     * all carry credentials or signed material in deployment-specific URLs.
+     */
+    protected function sanitizeUrlForError(string $url): string
+    {
+        $parts = parse_url($url);
+        if (!is_array($parts)) {
+            return '[invalid URL]';
+        }
+
+        $scheme = isset($parts['scheme']) ? $parts['scheme'] . '://' : '';
+        $host = (string) ($parts['host'] ?? '');
+        if (str_contains($host, ':') && !str_starts_with($host, '[')) {
+            $host = '[' . $host . ']';
+        }
+        $port = isset($parts['port']) ? ':' . $parts['port'] : '';
+        return $scheme . $host . $port;
+    }
+
+    /**
      * @param array<string, string> $data
      */
     protected function curlRequest(string $method, string $url, array $data = []): string|false
     {
         $ch = curl_init();
+        if ($ch === false) {
+            $this->lastError = 'Unable to initialize Curl';
+            return false;
+        }
         $nonEmptyUrl = $url !== '' ? $url : 'http://localhost';
         curl_setopt($ch, CURLOPT_URL, $nonEmptyUrl);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        // Stream the body through a bounded callback instead of letting cURL
+        // buffer an untrusted endpoint response without a memory limit.
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, false);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
         curl_setopt($ch, CURLOPT_TIMEOUT, 10);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
         // 协议白名单：即使配置被注入 file:// 等伪协议，也不会触发本地文件读取
         curl_setopt($ch, CURLOPT_PROTOCOLS, CURLPROTO_HTTPS | CURLPROTO_HTTP);
         curl_setopt($ch, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTPS | CURLPROTO_HTTP);
+
+        $responseBody = '';
+        $responseTooLarge = false;
+        curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($handle, string $chunk) use (&$responseBody, &$responseTooLarge): int {
+            if (!$this->appendResponseChunk($responseBody, $chunk)) {
+                $responseTooLarge = true;
+                return 0;
+            }
+            return strlen($chunk);
+        });
 
         if ($method === 'POST') {
             curl_setopt($ch, CURLOPT_POST, true);
@@ -141,12 +227,14 @@ class SaSsoTemplate
             }
         }
 
-        /** @var string|false $response */
-        $response = curl_exec($ch);
+        $result = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
 
-        if ($response === false) {
+        if ($responseTooLarge) {
+            $this->lastError = 'SSO response exceeds the 1 MiB limit';
+            return false;
+        }
+        if ($result === false) {
             $this->lastError = 'Curl request failed';
             return false;
         }
@@ -156,7 +244,7 @@ class SaSsoTemplate
             return false;
         }
 
-        return $response;
+        return $responseBody;
     }
 
     /**
@@ -166,9 +254,17 @@ class SaSsoTemplate
     {
         $context = [
             'http' => [
-                'method'  => $method,
-                'timeout' => 10,
-                'header'  => 'Content-Type: application/x-www-form-urlencoded',
+                'method'          => $method,
+                'timeout'         => 10,
+                'header'          => 'Content-Type: application/x-www-form-urlencoded',
+                // 不跟随 Location：否则 HTTPS ticket 端点可把敏感 POST
+                // 重定向到未验证的 HTTP/第三方主机。
+                'follow_location' => 0,
+                'max_redirects'   => 0,
+            ],
+            'ssl' => [
+                'verify_peer'      => true,
+                'verify_peer_name' => true,
             ],
         ];
 
@@ -176,10 +272,27 @@ class SaSsoTemplate
             $context['http']['content'] = http_build_query($data);
         }
 
-        $result = @file_get_contents($url, false, stream_context_create($context));
+        // Read one byte beyond the accepted maximum so oversized responses can
+        // be rejected without loading their full body into memory.
+        $result = @file_get_contents($url, false, stream_context_create($context), 0, self::MAX_RESPONSE_BYTES + 1);
         if ($result === false) {
-            $this->lastError = error_get_last()['message'] ?? 'file_get_contents failed';
+            // PHP's warning may embed the full URL, including query credentials
+            // or tickets. Keep transport details out of exceptions and logs.
+            $this->lastError = 'SSO stream request failed';
+        } elseif (strlen($result) > self::MAX_RESPONSE_BYTES) {
+            $this->lastError = 'SSO response exceeds the 1 MiB limit';
+            return false;
         }
         return $result !== false ? $result : false;
+    }
+
+    protected function appendResponseChunk(string &$response, string $chunk): bool
+    {
+        if (strlen($chunk) > self::MAX_RESPONSE_BYTES - strlen($response)) {
+            return false;
+        }
+
+        $response .= $chunk;
+        return true;
     }
 }

@@ -9,6 +9,7 @@ use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoMemory;
 use SaToken\Exception\NotLoginException;
 use SaToken\Exception\NotSafeException;
+use SaToken\Exception\SaTokenException;
 use SaToken\Listener\SaTokenListenerInterface;
 use SaToken\SaLoginParameter;
 use SaToken\SaToken;
@@ -68,6 +69,52 @@ class StpLogicIntegrationTest extends TestCase
         $request->method('getHeader')->with('satoken')->willReturn([$token]);
         SaTokenContext::setRequest($request);
         return $token;
+    }
+
+    public function testDuplicateTokenHeadersFailClosedWithoutCookieFallback(): void
+    {
+        $token = $this->logic->login('duplicate-header-user')->getAccessToken();
+        SaToken::getConfig()->setIsReadCookie(true);
+
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->with('satoken')->willReturn(['attacker-value', $token]);
+        $request->method('getCookieParams')->willReturn(['satoken' => $token]);
+        SaTokenContext::setRequest($request);
+
+        $this->assertNull($this->logic->getTokenValue());
+        $this->assertNull($this->logic->getLoginId());
+    }
+
+    public function testShorterNewTokenDoesNotExpireLongerAccountTokenList(): void
+    {
+        $loginId = 'mixed-timeout-user';
+        $longLogin = $this->logic->login($loginId, new SaLoginParameter(['timeout' => 3600, 'isShare' => false]));
+        $shortLogin = $this->logic->login($loginId, new SaLoginParameter(['timeout' => 60, 'isShare' => false]));
+
+        $listKey = TokenManager::buildLoginIdKey('login', $loginId);
+        $this->assertGreaterThan(3500, $this->dao->getTimeout($listKey));
+        $this->assertSame($loginId, $this->logic->getLoginIdByToken($longLogin->getAccessToken()));
+        $this->assertSame($loginId, $this->logic->getLoginIdByToken($shortLogin->getAccessToken()));
+    }
+
+    public function testLoginParameterRejectsZeroTimeout(): void
+    {
+        $this->expectException(SaTokenException::class);
+        new SaLoginParameter(['timeout' => 0]);
+    }
+
+    public function testRenewTimeoutRejectsZero(): void
+    {
+        $this->loginAndGetToken('renew-zero-timeout-user');
+
+        $this->expectException(SaTokenException::class);
+        $this->logic->renewTimeout(0);
+    }
+
+    public function testLoginParameterRejectsUnboundedMaxLoginCountSentinel(): void
+    {
+        $this->expectException(SaTokenException::class);
+        new SaLoginParameter(['maxLoginCount' => -2]);
     }
 
     // ======== getSession 集成测试 ========
@@ -353,6 +400,9 @@ class StpLogicIntegrationTest extends TestCase
         $deviceTypes = array_map(fn ($t) => $t->getDeviceType(), $terminals);
         $this->assertContains('PC', $deviceTypes);
         $this->assertContains('APP', $deviceTypes);
+        foreach ($terminals as $terminal) {
+            self::assertSame('', $terminal->getTokenValue(), '终端元数据查询不得泄露可重放的 Bearer Token');
+        }
     }
 
     public function testGetTerminalListByLoginIdEmpty(): void

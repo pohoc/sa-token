@@ -518,6 +518,24 @@ class StpUtil
         return self::getStpLogic()->getRefreshTokenByAccessToken($accessToken);
     }
 
+    /** Reserve an anti-brute-force attempt before validating credentials. */
+    public static function checkAntiBrute(string $account): void
+    {
+        self::getStpLogic()->checkAntiBrute($account);
+    }
+
+    /** Record a failed credential attempt after checkAntiBrute(). */
+    public static function recordAntiBruteFailure(string $account): void
+    {
+        self::getStpLogic()->recordAntiBruteFailure($account);
+    }
+
+    /** Release the attempt reservation after credentials are accepted. */
+    public static function clearAntiBruteFailures(mixed $account): void
+    {
+        self::getStpLogic()->clearAntiBruteFailures($account);
+    }
+
     public static function revokeToken(string $tokenValue): bool
     {
         return self::getStpLogic()->revokeToken($tokenValue);

@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace SaToken\Tests;
 
 use PHPUnit\Framework\TestCase;
+use SaToken\Dao\SaTokenDaoPsr16;
 use SaToken\Exception\SaTokenException;
+use SaToken\SaToken;
 use SaToken\Sign\SaSign;
 
 class SaSignTest extends TestCase
@@ -41,6 +43,16 @@ class SaSignTest extends TestCase
         $params = $this->sign->signParams(['foo' => 'bar']);
 
         $this->assertTrue($this->sign->verifySign($params));
+    }
+
+    public function testPsr16DaoStillRejectsReplayedSignatures(): void
+    {
+        class_exists(ArrayPsr16Cache::class);
+        SaToken::setDao(new SaTokenDaoPsr16(new StrictArrayPsr16Cache()));
+        $params = $this->sign->signParams(['operation' => 'transfer']);
+
+        $this->assertTrue($this->sign->verifySign($params));
+        $this->assertFalse($this->sign->verifySign($params));
     }
 
     public function testVerifySignReturnsFalseForMissingSign(): void
@@ -81,6 +93,25 @@ class SaSignTest extends TestCase
         $this->assertTrue($this->sign->verifySign($params));
     }
 
+    public function testDisablingNonceStoreWithoutValidatorFailsClosed(): void
+    {
+        $signKey = getenv('TEST_SIGN_KEY') ?: 'test-key-placeholder-32-bytes-lo';
+        $sign = new SaSign(['key' => $signKey, 'nonceStore' => false]);
+        $params = $sign->signParams(['operation' => 'transfer']);
+
+        $this->assertFalse($sign->verifySign($params));
+    }
+
+    public function testDisablingNonceStoreUsesConfiguredExternalValidator(): void
+    {
+        $signKey = getenv('TEST_SIGN_KEY') ?: 'test-key-placeholder-32-bytes-lo';
+        $sign = new SaSign(['key' => $signKey, 'nonceStore' => false]);
+        $sign->setNonceValidator(fn (string $nonce) => true);
+        $params = $sign->signParams(['operation' => 'transfer']);
+
+        $this->assertTrue($sign->verifySign($params));
+    }
+
     public function testSha256Algorithm(): void
     {
         $this->sign->setSignAlg('sha256');
@@ -95,6 +126,14 @@ class SaSignTest extends TestCase
         $this->expectExceptionMessage('签名密钥未配置');
 
         new SaSign(['key' => '']);
+    }
+
+    public function testShortSignKeyRejected(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('签名密钥长度不足');
+
+        new SaSign(['key' => 'key-a']);
     }
 
     public function testUnsupportedAlgorithmRejected(): void
@@ -114,12 +153,59 @@ class SaSignTest extends TestCase
 
     public function testKeyUsedInSign(): void
     {
-        $sign1 = new SaSign(['key' => 'key-a']);
-        $sign2 = new SaSign(['key' => 'key-b']);
+        $sign1 = new SaSign(['key' => 'key-a-with-at-least-32-bytes-long']);
+        $sign2 = new SaSign(['key' => 'key-b-with-at-least-32-bytes-long']);
 
         $params1 = $sign1->signParams(['foo' => 'bar']);
         $params2 = $sign2->signParams(['foo' => 'bar', 'timestamp' => $params1['timestamp'], 'nonce' => $params1['nonce']]);
 
         $this->assertNotEquals($params1['sign'], $params2['sign']);
+    }
+
+    public function testDifferentKeysDoNotConsumeEachOthersNonce(): void
+    {
+        $sign1 = new SaSign(['key' => 'key-a-with-at-least-32-bytes-long']);
+        $sign2 = new SaSign(['key' => 'key-b-with-at-least-32-bytes-long']);
+        $nonce = 'shared-client-chosen-nonce';
+        $timestamp = (string) time();
+        $params1 = $sign1->signParams(['operation' => 'transfer', 'timestamp' => $timestamp, 'nonce' => $nonce]);
+        $params2 = $sign2->signParams(['operation' => 'transfer', 'timestamp' => $timestamp, 'nonce' => $nonce]);
+
+        $this->assertTrue($sign1->verifySign($params1));
+        $this->assertTrue($sign2->verifySign($params2));
+    }
+
+    public function testVerifySignRejectsNonceConsumedByLegacyGlobalStore(): void
+    {
+        $nonce = 'nonce-consumed-before-key-scoping';
+        $params = $this->sign->signParams(['operation' => 'transfer', 'nonce' => $nonce]);
+        SaToken::getDao()->set('satoken:sign:nonce:' . hash('sha256', $nonce), '1', 1260);
+
+        $this->assertFalse($this->sign->verifySign($params));
+    }
+
+    public function testVerifySignRejectsOversizedNonceBeforeReplayStore(): void
+    {
+        $params = $this->sign->signParams(['operation' => 'transfer', 'nonce' => str_repeat('n', 257)]);
+
+        $this->assertFalse($this->sign->verifySign($params));
+    }
+
+    public function testVerifySignRejectsOversizedSignedValueBeforeSignatureWork(): void
+    {
+        $params = $this->sign->signParams(['operation' => 'transfer']);
+        $params['payload'] = str_repeat('x', 65537);
+
+        $this->assertFalse($this->sign->verifySign($params));
+    }
+
+    public function testVerifySignRejectsTooManyParameters(): void
+    {
+        $params = $this->sign->signParams(['operation' => 'transfer']);
+        for ($index = 0; $index < 128; $index++) {
+            $params['field' . $index] = 'x';
+        }
+
+        $this->assertFalse($this->sign->verifySign($params));
     }
 }

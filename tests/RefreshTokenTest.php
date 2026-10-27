@@ -5,9 +5,12 @@ declare(strict_types=1);
 namespace SaToken\Tests;
 
 use PHPUnit\Framework\TestCase;
+use SaToken\Dao\SaTokenDaoMemory;
 use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
+use SaToken\StpLogic;
 use SaToken\StpUtil;
+use SaToken\TokenManager;
 use SaToken\Util\SaTokenContext;
 
 class RefreshTokenTest extends TestCase
@@ -40,6 +43,49 @@ class RefreshTokenTest extends TestCase
         $this->assertTrue(StpUtil::isRefreshTokenValid($refreshToken));
     }
 
+    public function testOversizedRefreshTokenIsRejectedBeforeDaoLookupOrLock(): void
+    {
+        $dao = new class () extends SaTokenDaoMemory {
+            public int $refreshTokenLookups = 0;
+
+            public function get(string $key): ?string
+            {
+                if (str_starts_with($key, TokenManager::REFRESH_TOKEN_PREFIX)
+                    || str_starts_with($key, TokenManager::REFRESH_TOKEN_USED_PREFIX)) {
+                    $this->refreshTokenLookups++;
+                }
+                return parent::get($key);
+            }
+        };
+        SaToken::setDao($dao);
+        $refreshToken = str_repeat('r', TokenManager::MAX_TOKEN_VALUE_BYTES + 1);
+        $manager = new TokenManager();
+
+        self::assertNull($manager->getRefreshTokenData($refreshToken));
+        self::assertNull($manager->consumeRefreshToken($refreshToken));
+        self::assertNull($manager->getConsumedRefreshTokenData($refreshToken));
+        self::assertSame(-2, $manager->getRefreshTokenTimeout($refreshToken));
+        self::assertFalse($manager->isRefreshTokenValid($refreshToken));
+        $manager->deleteConsumedRefreshTokenData($refreshToken);
+        self::assertSame(0, $dao->refreshTokenLookups);
+
+        try {
+            StpUtil::refreshToken($refreshToken);
+            self::fail('超长 RefreshToken 必须按无效凭据拒绝');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('无效', $exception->getMessage());
+        }
+        self::assertSame(0, $dao->refreshTokenLookups);
+
+        try {
+            $manager->deleteRefreshToken($refreshToken);
+            self::fail('超长 RefreshToken 不得进入锁操作');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('Token 长度无效', $exception->getMessage());
+        }
+        self::assertSame(0, $dao->refreshTokenLookups);
+    }
+
     public function testCreateRefreshTokenWithInvalidAccessToken(): void
     {
         $this->expectException(SaTokenException::class);
@@ -54,6 +100,285 @@ class RefreshTokenTest extends TestCase
 
         $this->assertNotEmpty($refreshToken);
         $this->assertTrue(StpUtil::isRefreshTokenValid($refreshToken));
+    }
+
+    public function testInvalidCustomTimeoutDoesNotRevokeExistingRefreshToken(): void
+    {
+        $loginResult = StpUtil::login(10003);
+        $accessToken = $loginResult->getAccessToken();
+        $refreshToken = StpUtil::createRefreshToken($accessToken);
+
+        foreach ([0, -2, PHP_INT_MAX] as $timeout) {
+            try {
+                StpUtil::createRefreshToken($accessToken, $timeout);
+                $this->fail("无效 Refresh Token 有效期 {$timeout} 应被拒绝");
+            } catch (SaTokenException $e) {
+                $this->assertStringContainsString('有效期', $e->getMessage());
+            }
+            $this->assertTrue(StpUtil::isRefreshTokenValid($refreshToken));
+        }
+    }
+
+    public function testKickoutByTokenRevokesItsRefreshToken(): void
+    {
+        $loginResult = StpUtil::login(10020);
+        $accessToken = $loginResult->getAccessToken();
+        $refreshToken = StpUtil::createRefreshToken($accessToken);
+
+        StpUtil::kickoutByTokenValue($accessToken);
+
+        $this->assertFalse(StpUtil::isRefreshTokenValid($refreshToken));
+        try {
+            StpUtil::refreshToken($refreshToken);
+            $this->fail('被踢出的会话对应 RefreshToken 不得重新签发会话');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('无效', $e->getMessage());
+        }
+    }
+
+    public function testLogoutRevokesRefreshedDescendantWhenOldTokenWasAlreadyValidated(): void
+    {
+        $manager = new class () extends TokenManager {
+            public ?\Closure $afterNextTokenLookup = null;
+
+            public function getLoginIdByToken(string $tokenValue): ?string
+            {
+                $loginId = parent::getLoginIdByToken($tokenValue);
+                if ($this->afterNextTokenLookup !== null) {
+                    $afterLookup = $this->afterNextTokenLookup;
+                    $this->afterNextTokenLookup = null;
+                    $afterLookup($tokenValue, $loginId);
+                }
+
+                return $loginId;
+            }
+
+        };
+        $logic = new StpLogic('login', $manager);
+        $login = $logic->login('logout-refresh-race');
+        $oldAccessToken = $login->getAccessToken();
+        $oldRefreshToken = $login->getRefreshToken();
+        self::assertNotSame('', $oldRefreshToken);
+        $otherSession = $logic->login(
+            'logout-refresh-race',
+            (new \SaToken\SaLoginParameter())->setDeviceType('other-device')
+        );
+
+        $refreshedResult = null;
+        $manager->afterNextTokenLookup = function () use ($logic, $oldRefreshToken, &$refreshedResult): void {
+            $refreshedResult = $logic->refreshToken($oldRefreshToken);
+        };
+        SaTokenContext::setRequest(new class ($oldAccessToken) {
+            public function __construct(private string $token)
+            {
+            }
+
+            public function getHeaderLine(string $name): string
+            {
+                return strtolower($name) === 'satoken' ? $this->token : '';
+            }
+        });
+
+        $logic->logout();
+
+        self::assertInstanceOf(\SaToken\SaLoginResult::class, $refreshedResult);
+        self::assertNull(
+            $logic->getLoginIdByToken($refreshedResult->getAccessToken()),
+            '注销已验证的旧 AccessToken 时，其并发刷出的后代会话也必须失效'
+        );
+        self::assertFalse($manager->isRefreshTokenValid($refreshedResult->getRefreshToken()));
+        self::assertSame('logout-refresh-race', $logic->getLoginIdByToken($otherSession->getAccessToken()));
+    }
+
+    public function testTokenSessionDataDoesNotCollideWithRefreshLineageMetadata(): void
+    {
+        $logic = new StpLogic('login');
+        $login = $logic->login('token-session-refresh');
+        SaTokenContext::setTokenOverride('login', $login->getAccessToken());
+
+        $tokenSession = $logic->getTokenSession();
+        self::assertNotNull($tokenSession);
+        $tokenSession->set('checkout-state', 'pending');
+        $sessionId = $logic->getTokenManager()->getTokenSessionId($login->getAccessToken(), 'login');
+        self::assertIsString($sessionId);
+
+        $reloadedSession = $logic->getTokenSession(false);
+        self::assertNotNull($reloadedSession);
+        self::assertSame('pending', $reloadedSession->get('checkout-state'));
+
+        $refreshed = $logic->refreshToken($login->getRefreshToken());
+        self::assertSame(
+            $sessionId,
+            $logic->getTokenManager()->getTokenSessionId($refreshed->getAccessToken(), 'login')
+        );
+        SaTokenContext::setTokenOverride('login', $refreshed->getAccessToken());
+        self::assertSame('token-session-refresh', $logic->getLoginId());
+    }
+
+    public function testLegacyTokenSessionLineageMigratesWithoutExposingMetadataAsSessionData(): void
+    {
+        $logic = new StpLogic('login');
+        $login = $logic->login('legacy-token-session-lineage');
+        $legacySessionId = str_repeat('a', 32);
+        $legacyKey = TokenManager::TOKEN_SESSION_PREFIX . $login->getAccessToken();
+        SaToken::getDao()->delete(TokenManager::TOKEN_SESSION_LINEAGE_PREFIX . $login->getAccessToken());
+        SaToken::getDao()->set($legacyKey, json_encode([
+            'loginId' => 'legacy-token-session-lineage',
+            'loginType' => 'login',
+            'sessionId' => $legacySessionId,
+        ], JSON_THROW_ON_ERROR), 7200);
+        SaTokenContext::setTokenOverride('login', $login->getAccessToken());
+
+        $session = $logic->getTokenSession();
+
+        self::assertNotNull($session);
+        self::assertSame($legacySessionId, $logic->getTokenManager()->getTokenSessionId($login->getAccessToken(), 'login'));
+        self::assertNull($session->get('sessionId'));
+        self::assertNull(SaToken::getDao()->get($legacyKey));
+    }
+
+    public function testKickoutByLoginIdRevokesAllRefreshTokens(): void
+    {
+        $loginResult = StpUtil::login(10021);
+        $accessToken = $loginResult->getAccessToken();
+        $refreshToken = StpUtil::createRefreshToken($accessToken);
+
+        StpUtil::kickout(10021);
+
+        $this->assertFalse(StpUtil::isRefreshTokenValid($refreshToken));
+    }
+
+    public function testRevokeAccessTokenRevokesItsRefreshToken(): void
+    {
+        $loginResult = StpUtil::login(10022);
+        $accessToken = $loginResult->getAccessToken();
+        $refreshToken = StpUtil::createRefreshToken($accessToken);
+
+        $this->assertTrue(StpUtil::revokeToken($accessToken));
+        $this->assertFalse(StpUtil::isRefreshTokenValid($refreshToken));
+    }
+
+    public function testMaxLoginCountEvictionRevokesOldRefreshToken(): void
+    {
+        SaToken::getConfig()->setMaxLoginCount(1);
+        $firstLogin = StpUtil::login(10023);
+        $oldRefreshToken = StpUtil::createRefreshToken($firstLogin->getAccessToken());
+
+        $secondLogin = StpUtil::login(10023);
+
+        $this->assertNotSame($firstLogin->getAccessToken(), $secondLogin->getAccessToken());
+        $this->assertFalse(StpUtil::isRefreshTokenValid($oldRefreshToken));
+    }
+
+    public function testCreatingRefreshTokenAgainInvalidatesPreviousOne(): void
+    {
+        $accessToken = StpUtil::login(10024)->getAccessToken();
+        $firstRefreshToken = StpUtil::createRefreshToken($accessToken);
+        $secondRefreshToken = StpUtil::createRefreshToken($accessToken);
+
+        $this->assertNotSame($firstRefreshToken, $secondRefreshToken);
+        $this->assertFalse(StpUtil::isRefreshTokenValid($firstRefreshToken));
+        $this->assertTrue(StpUtil::isRefreshTokenValid($secondRefreshToken));
+    }
+
+    public function testConsumedRefreshTokenCannotBeReRegisteredAfterCredentialLeaseIsLost(): void
+    {
+        $dao = new class () extends SaTokenDaoMemory {
+            public ?string $markerKeyToInterleave = null;
+
+            public ?string $credentialLockKey = null;
+
+            public ?\Closure $afterMarkerCheck = null;
+
+            public function exists(string $key): bool
+            {
+                $exists = parent::exists($key);
+                if ($key === $this->markerKeyToInterleave && !$exists && $this->afterMarkerCheck !== null) {
+                    $callback = $this->afterMarkerCheck;
+                    $this->afterMarkerCheck = null;
+                    $callback();
+                }
+
+                return $exists;
+            }
+        };
+        SaToken::setDao($dao);
+        $logic = new StpLogic('login');
+        $loginId = 'consumed-refresh-registration-race';
+        $accessToken = $logic->login($loginId)->getAccessToken();
+        $refreshToken = $logic->createRefreshToken($accessToken);
+        $manager = $logic->getTokenManager();
+        $dao->markerKeyToInterleave = TokenManager::REFRESH_TOKEN_USED_PREFIX . hash('sha256', $refreshToken);
+        $dao->credentialLockKey = TokenManager::LOCK_PREFIX . 'refresh-credential:' . hash('sha256', $refreshToken);
+        $dao->afterMarkerCheck = function () use ($dao, $refreshToken): void {
+            // Simulate a paused issuer resuming after its lease was taken over.
+            $dao->delete((string) $dao->credentialLockKey);
+            $consumer = new TokenManager();
+            self::assertNotNull($consumer->consumeRefreshToken($refreshToken));
+        };
+
+        try {
+            $manager->saveRefreshToken($refreshToken, $accessToken, $loginId, 'login', 3600);
+            self::fail('丢失凭据锁后，旧签发者不得重新注册已消费的 RefreshToken');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('锁已失效', $exception->getMessage());
+        }
+
+        self::assertFalse($logic->isRefreshTokenValid($refreshToken));
+        self::assertNotNull($manager->getConsumedRefreshTokenData($refreshToken));
+        $this->expectException(SaTokenException::class);
+        $logic->refreshToken($refreshToken);
+    }
+
+    public function testRefreshTokenCannotBeCreatedForAnotherLoginType(): void
+    {
+        $memberLogic = SaToken::getStpLogic('member');
+        $accessToken = $memberLogic->login(10025)->getAccessToken();
+
+        $this->expectException(SaTokenException::class);
+        SaToken::getStpLogic('admin')->createRefreshToken($accessToken);
+    }
+
+    public function testRefreshTokenCollisionDoesNotOverwriteExistingOwner(): void
+    {
+        $manager = StpUtil::getStpLogic()->getTokenManager();
+        $accessTokenA = $manager->createTokenValue(10026, 'login');
+        $accessTokenB = $manager->createTokenValue(10027, 'login');
+        $manager->saveToken($accessTokenA, 10026, 'login');
+        $manager->saveToken($accessTokenB, 10027, 'login');
+        $manager->saveRefreshToken('same-refresh-token', $accessTokenA, 10026, 'login', 3600);
+
+        try {
+            $manager->saveRefreshToken('same-refresh-token', $accessTokenB, 10027, 'login', 3600);
+            $this->fail('RefreshToken 碰撞不能覆盖已有凭据');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('冲突', $e->getMessage());
+        }
+
+        $data = $manager->getRefreshTokenData('same-refresh-token');
+        $this->assertSame('10026', $data['loginId'] ?? null);
+        $this->assertSame('same-refresh-token', $manager->getRefreshTokenByAccessToken(10026, 'login', $accessTokenA));
+        $this->assertNull($manager->getRefreshTokenByAccessToken(10027, 'login', $accessTokenB));
+    }
+
+    public function testSaveRefreshTokenRequiresAccountLock(): void
+    {
+        $manager = StpUtil::getStpLogic()->getTokenManager();
+        $otherManager = new TokenManager();
+        $loginId = 'refresh-save-lock-user';
+        $lockKey = 'login:login:' . hash('sha256', $loginId);
+        self::assertTrue($otherManager->acquireLock($lockKey));
+
+        try {
+            $manager->saveRefreshToken('refresh-save-lock-token', 'access-save-lock-token', $loginId, 'login', 3600);
+            self::fail('账号锁被其他请求持有时不能写入 RefreshToken');
+        } catch (SaTokenException $e) {
+            self::assertStringContainsString('同账号', $e->getMessage());
+        }
+
+        self::assertNull($manager->getRefreshTokenData('refresh-save-lock-token'));
+        self::assertNull($manager->getRefreshTokenByAccessToken($loginId, 'login', 'access-save-lock-token'));
+        $otherManager->releaseLock($lockKey);
     }
 
     public function testRefreshTokenRotation(): void
@@ -75,6 +400,171 @@ class RefreshTokenTest extends TestCase
 
         $this->assertTrue(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($result->getAccessToken()));
         $this->assertFalse(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($accessToken));
+    }
+
+    public function testExpiredRefreshLeaseCannotEraseTheWinnerReplayMarker(): void
+    {
+        $loginId = 'refresh-lease-race-user';
+        $dao = new class () extends SaTokenDaoMemory {
+            public ?\Closure $beforeRefreshGetAndDelete = null;
+
+            public function getAndDelete(string $key): ?string
+            {
+                if ($this->beforeRefreshGetAndDelete !== null
+                    && str_starts_with($key, TokenManager::REFRESH_TOKEN_PREFIX)) {
+                    $callback = $this->beforeRefreshGetAndDelete;
+                    $this->beforeRefreshGetAndDelete = null;
+                    $callback($key);
+                }
+                return parent::getAndDelete($key);
+            }
+        };
+        SaToken::setDao($dao);
+
+        $oldAccessToken = StpUtil::login($loginId)->getAccessToken();
+        $oldRefreshToken = StpUtil::createRefreshToken($oldAccessToken);
+        $rotatedAccessToken = '';
+        $rotatedRefreshToken = '';
+        $dao->beforeRefreshGetAndDelete = function () use ($dao, $loginId, $oldRefreshToken, &$rotatedAccessToken, &$rotatedRefreshToken): void {
+            // Simulate a paused worker whose account and per-token lock leases
+            // expire while a second worker consumes the same RefreshToken.
+            $dao->delete(TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId));
+            $dao->delete(TokenManager::LOCK_PREFIX . 'refresh-credential:' . hash('sha256', $oldRefreshToken));
+            $otherLogic = new StpLogic('login', new TokenManager());
+            $result = $otherLogic->refreshToken($oldRefreshToken);
+            $rotatedAccessToken = $result->getAccessToken();
+            $rotatedRefreshToken = (string) $result->getRefreshToken();
+        };
+
+        try {
+            StpUtil::refreshToken($oldRefreshToken);
+            self::fail('A refresh request that resumes after losing its lease must detect the consumed token');
+        } catch (SaTokenException) {
+            // Either replay-specific or invalid-token rejection is acceptable;
+            // the stale worker itself may no longer own the account lock.
+        }
+
+        self::assertNotSame('', $rotatedAccessToken);
+        $replayLogic = new StpLogic('login', new TokenManager());
+        try {
+            $replayLogic->refreshToken($oldRefreshToken);
+            self::fail('A later replay must still find the winner marker');
+        } catch (SaTokenException) {
+            // Expected whether the descendant is revoked immediately or the
+            // retained marker triggers account-wide revocation on this request.
+        }
+        self::assertFalse(
+            StpUtil::getStpLogic()->getTokenManager()->isTokenValid($rotatedAccessToken),
+            'Reusing the consumed token after a lock lease expires must revoke the winning descendant session'
+        );
+        self::assertFalse(StpUtil::isRefreshTokenValid($rotatedRefreshToken));
+    }
+
+    public function testRefreshingStatelessJwtReturnsUsableStatelessJwt(): void
+    {
+        SaToken::reset();
+        SaToken::init([
+            'timeout'              => 7200,
+            'activityTimeout'      => -1,
+            'jwtStateless'         => true,
+            'jwtSecretKey'         => 'test-refresh-stateless-jwt-secret-32-bytes',
+            'refreshToken'         => true,
+            'refreshTokenTimeout'  => 2592000,
+            'refreshTokenRotation' => true,
+        ]);
+        $logic = new StpLogic('login');
+
+        $accessToken = $logic->loginStateless('stateless-refresh-user');
+        $refreshToken = $logic->createRefreshToken($accessToken);
+        $result = $logic->refreshToken($refreshToken);
+
+        self::assertSame('stateless-refresh-user', $logic->getLoginIdByToken($result->getAccessToken()));
+        self::assertNotSame($accessToken, $result->getAccessToken());
+        self::assertNull($logic->getLoginIdByToken($accessToken));
+        self::assertTrue($logic->isRefreshTokenValid($result->getRefreshToken()));
+    }
+
+    public function testStatelessAccountKickoutRevokesItsRefreshTokens(): void
+    {
+        SaToken::reset();
+        SaToken::init([
+            'timeout'              => 7200,
+            'activityTimeout'      => -1,
+            'jwtStateless'         => true,
+            'jwtSecretKey'         => 'test-refresh-stateless-jwt-secret-32-bytes',
+            'refreshToken'         => true,
+            'refreshTokenTimeout'  => 2592000,
+            'refreshTokenRotation' => true,
+        ]);
+        $logic = new StpLogic('login');
+
+        $accessToken = $logic->loginStateless('stateless-kickout-user');
+        $refreshToken = $logic->createRefreshToken($accessToken);
+        $logic->kickout('stateless-kickout-user');
+
+        self::assertNull($logic->getLoginIdByToken($accessToken));
+        self::assertFalse($logic->isRefreshTokenValid($refreshToken));
+        try {
+            $logic->refreshToken($refreshToken);
+            self::fail('被踢出的无状态账号不能通过 RefreshToken 重新建立会话');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('无效', $exception->getMessage());
+        }
+    }
+
+    public function testStatelessRefreshRejectsOldTokenAfterAccountRevocationEvenIfIndexIsMissing(): void
+    {
+        SaToken::reset();
+        SaToken::init([
+            'timeout'              => 7200,
+            'activityTimeout'      => -1,
+            'jwtStateless'         => true,
+            'jwtSecretKey'         => 'test-refresh-stateless-jwt-secret-32-bytes',
+            'refreshToken'         => true,
+            'refreshTokenTimeout'  => 2592000,
+            'refreshTokenRotation' => true,
+        ]);
+        $logic = new StpLogic('login');
+        $loginId = 'stateless-orphan-refresh-user';
+
+        $accessToken = $logic->loginStateless($loginId);
+        $refreshToken = $logic->createRefreshToken($accessToken);
+        // Simulate an incomplete/corrupt refresh index: the bearer record is
+        // still present, but account-wide cleanup cannot enumerate it.
+        SaToken::getDao()->delete('satoken:refreshAccount:login:' . $loginId);
+        $logic->getTokenManager()->revokeStatelessTokensByLoginId($loginId, 'login');
+
+        try {
+            $logic->refreshToken($refreshToken);
+            self::fail('账号撤销水位之后的旧 JWT 不得通过残留 RefreshToken 重新签发');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('撤销', $exception->getMessage());
+        }
+
+        self::assertNull($logic->getLoginIdByToken($accessToken));
+    }
+
+    public function testStatelessRefreshCanRenewExpiredAccessJwt(): void
+    {
+        SaToken::reset();
+        SaToken::init([
+            'timeout'              => 1,
+            'activityTimeout'      => -1,
+            'jwtStateless'         => true,
+            'jwtSecretKey'         => 'test-refresh-stateless-jwt-secret-32-bytes',
+            'refreshToken'         => true,
+            'refreshTokenTimeout'  => 60,
+            'refreshTokenRotation' => true,
+        ]);
+        $logic = new StpLogic('login');
+
+        $accessToken = $logic->loginStateless('stateless-expired-refresh-user');
+        $refreshToken = $logic->createRefreshToken($accessToken, 60);
+        sleep(2);
+
+        self::assertNull($logic->getLoginIdByToken($accessToken));
+        $result = $logic->refreshToken($refreshToken);
+        self::assertSame('stateless-expired-refresh-user', $logic->getLoginIdByToken($result->getAccessToken()));
     }
 
     public function testRefreshTokenWithoutRotation(): void
@@ -109,6 +599,49 @@ class RefreshTokenTest extends TestCase
         $this->assertNotEquals($result->getAccessToken(), $result2->getAccessToken());
     }
 
+    public function testConcurrentRefreshWithoutRotationRevokesPreviousRotatedAccessToken(): void
+    {
+        SaToken::reset();
+        SaToken::init([
+            'timeout'              => 7200,
+            'refreshToken'         => true,
+            'refreshTokenTimeout'  => 2592000,
+            'refreshTokenRotation' => false,
+        ]);
+
+        $dao = new class () extends \SaToken\Dao\SaTokenDaoMemory {
+            public ?string $triggerKey = null;
+            public ?\Closure $afterRead = null;
+
+            public function get(string $key): ?string
+            {
+                $value = parent::get($key);
+                if ($key === $this->triggerKey && $this->afterRead !== null) {
+                    $callback = $this->afterRead;
+                    $this->afterRead = null;
+                    $callback();
+                }
+                return $value;
+            }
+        };
+        SaToken::setDao($dao);
+
+        $accessToken = StpUtil::login(10005)->getAccessToken();
+        $refreshToken = StpUtil::createRefreshToken($accessToken);
+        $firstRefresh = null;
+        $dao->triggerKey = TokenManager::REFRESH_TOKEN_PREFIX . $refreshToken;
+        $dao->afterRead = function () use ($refreshToken, &$firstRefresh): void {
+            $firstRefresh = StpUtil::refreshToken($refreshToken);
+        };
+
+        $secondRefresh = StpUtil::refreshToken($refreshToken);
+
+        self::assertNotNull($firstRefresh);
+        self::assertFalse(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($firstRefresh->getAccessToken()));
+        self::assertTrue(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($secondRefresh->getAccessToken()));
+        self::assertSame($refreshToken, $secondRefresh->getRefreshToken());
+    }
+
     public function testRefreshTokenInvalid(): void
     {
         $this->expectException(SaTokenException::class);
@@ -123,8 +656,87 @@ class RefreshTokenTest extends TestCase
 
         $result1 = StpUtil::refreshToken($refreshToken);
 
-        $this->expectException(SaTokenException::class);
-        StpUtil::refreshToken($refreshToken);
+        try {
+            StpUtil::refreshToken($refreshToken);
+            $this->fail('RefreshToken 重放必须撤销轮换后派生的账号会话');
+        } catch (SaTokenException $exception) {
+            $this->assertStringContainsString('重放', $exception->getMessage());
+        }
+
+        $this->assertFalse(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($result1->getAccessToken()));
+        $this->assertFalse(StpUtil::isRefreshTokenValid((string) $result1->getRefreshToken()));
+
+        $newLogin = StpUtil::login(10005);
+        try {
+            StpUtil::refreshToken($refreshToken);
+            $this->fail('已处理的旧 RefreshToken 后续重放不得再次触发撤销');
+        } catch (SaTokenException $exception) {
+            $this->assertStringContainsString('无效', $exception->getMessage());
+        }
+        $this->assertTrue(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($newLogin->getAccessToken()));
+    }
+
+    public function testPermanentRefreshTokenReplayMarkerDoesNotExpire(): void
+    {
+        SaToken::getConfig()
+            ->setTimeout(-1)
+            ->setRefreshTokenTimeout(-1);
+
+        $accessToken = StpUtil::login('permanent-refresh-replay-user')->getAccessToken();
+        $refreshToken = StpUtil::createRefreshToken($accessToken);
+        $rotated = StpUtil::refreshToken($refreshToken);
+        $markerKey = TokenManager::REFRESH_TOKEN_USED_PREFIX . hash('sha256', $refreshToken);
+
+        self::assertSame(-1, SaToken::getDao()->getTimeout($markerKey));
+
+        try {
+            StpUtil::refreshToken($refreshToken);
+            self::fail('永久 RefreshToken 的重放标记不得过期');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('重放', $exception->getMessage());
+        }
+
+        self::assertFalse(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($rotated->getAccessToken()));
+        self::assertFalse(StpUtil::isRefreshTokenValid((string) $rotated->getRefreshToken()));
+    }
+
+    public function testConcurrentRotatedRefreshReplayRevokesWinningDescendants(): void
+    {
+        $dao = new class () extends \SaToken\Dao\SaTokenDaoMemory {
+            public ?string $triggerKey = null;
+            public ?\Closure $afterRead = null;
+
+            public function get(string $key): ?string
+            {
+                $value = parent::get($key);
+                if ($key === $this->triggerKey && $this->afterRead !== null) {
+                    $callback = $this->afterRead;
+                    $this->afterRead = null;
+                    $callback();
+                }
+                return $value;
+            }
+        };
+        SaToken::setDao($dao);
+
+        $accessToken = StpUtil::login(10051)->getAccessToken();
+        $refreshToken = StpUtil::createRefreshToken($accessToken);
+        $winningResult = null;
+        $dao->triggerKey = TokenManager::REFRESH_TOKEN_PREFIX . $refreshToken;
+        $dao->afterRead = function () use ($refreshToken, &$winningResult): void {
+            $winningResult = StpUtil::refreshToken($refreshToken);
+        };
+
+        try {
+            StpUtil::refreshToken($refreshToken);
+            $this->fail('并发旧 RefreshToken 重放必须撤销获胜请求签发的会话');
+        } catch (SaTokenException $exception) {
+            $this->assertStringContainsString('重放', $exception->getMessage());
+        }
+
+        $this->assertNotNull($winningResult);
+        $this->assertFalse(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($winningResult->getAccessToken()));
+        $this->assertFalse(StpUtil::isRefreshTokenValid((string) $winningResult->getRefreshToken()));
     }
 
     public function testRevokeRefreshToken(): void
@@ -138,6 +750,26 @@ class RefreshTokenTest extends TestCase
         $result = StpUtil::revokeRefreshToken($refreshToken);
         $this->assertTrue($result);
         $this->assertFalse(StpUtil::isRefreshTokenValid($refreshToken));
+    }
+
+    public function testRevokeRefreshTokenDoesNotRaceAnInFlightRefresh(): void
+    {
+        $loginId = 10030;
+        $accessToken = StpUtil::login($loginId)->getAccessToken();
+        $refreshToken = StpUtil::createRefreshToken($accessToken);
+        $lockKey = \SaToken\TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', (string) $loginId);
+        $this->assertTrue(SaToken::getDao()->setIfNotExists($lockKey, 'refresh-in-progress', 5));
+
+        try {
+            StpUtil::revokeRefreshToken($refreshToken);
+            $this->fail('刷新正在处理时撤销不得报告成功');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('正在处理中', $e->getMessage());
+        } finally {
+            SaToken::getDao()->delete($lockKey);
+        }
+
+        $this->assertTrue(StpUtil::isRefreshTokenValid($refreshToken));
     }
 
     public function testRevokeInvalidRefreshToken(): void
@@ -157,6 +789,27 @@ class RefreshTokenTest extends TestCase
         $result = StpUtil::revokeRefreshTokenByAccessToken($accessToken);
         $this->assertTrue($result);
         $this->assertFalse(StpUtil::isRefreshTokenValid($refreshToken));
+    }
+
+    public function testStatelessRefreshTokenCanBeLookedUpAndRevokedByAccessToken(): void
+    {
+        SaToken::reset();
+        SaToken::init([
+            'timeout'              => 7200,
+            'activityTimeout'      => -1,
+            'jwtStateless'         => true,
+            'jwtSecretKey'         => 'test-refresh-stateless-jwt-secret-32-bytes',
+            'refreshToken'         => true,
+            'refreshTokenTimeout'  => 2592000,
+            'refreshTokenRotation' => true,
+        ]);
+        $logic = new StpLogic('login');
+        $accessToken = $logic->loginStateless('stateless-refresh-revoke-by-access');
+        $refreshToken = $logic->createRefreshToken($accessToken);
+
+        self::assertSame($refreshToken, $logic->getRefreshTokenByAccessToken($accessToken));
+        self::assertTrue($logic->revokeRefreshTokenByAccessToken($accessToken));
+        self::assertFalse($logic->isRefreshTokenValid($refreshToken));
     }
 
     public function testGetRefreshTokenByAccessToken(): void
@@ -199,6 +852,47 @@ class RefreshTokenTest extends TestCase
         StpUtil::logoutByLoginId(10010);
 
         $this->assertFalse(StpUtil::isRefreshTokenValid($refreshToken));
+    }
+
+    public function testRefreshTokenCannotRestoreSessionAfterAccountIndexWasRemovedBeforeBearerDeleteFailure(): void
+    {
+        $dao = new class () extends \SaToken\Dao\SaTokenDaoMemory {
+            public bool $failNextTokenDelete = false;
+
+            public function compareAndDelete(string $key, string $expectedValue): bool
+            {
+                if ($this->failNextTokenDelete && str_starts_with($key, TokenManager::TOKEN_PREFIX)) {
+                    $this->failNextTokenDelete = false;
+                    throw new \RuntimeException('simulated bearer-delete failure');
+                }
+                return parent::compareAndDelete($key, $expectedValue);
+            }
+        };
+        SaToken::setDao($dao);
+        $loginId = 10077;
+        $accessToken = StpUtil::login($loginId)->getAccessToken();
+        $refreshToken = StpUtil::createRefreshToken($accessToken);
+
+        $dao->failNextTokenDelete = true;
+        try {
+            StpUtil::logoutByLoginId($loginId);
+            self::fail('模拟批量删除故障必须向调用方报告');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('simulated bearer-delete failure', $exception->getMessage());
+        }
+
+        // A later login recreates the account index; the old credential must
+        // still be rejected because its own AccessToken is not in that index.
+        $newAccessToken = StpUtil::login($loginId)->getAccessToken();
+        self::assertNotSame($accessToken, $newAccessToken);
+
+        try {
+            StpUtil::refreshToken($refreshToken);
+            self::fail('重新登录建立新索引后，旧 RefreshToken 不得恢复会话');
+        } catch (SaTokenException $exception) {
+            self::assertMatchesRegularExpression('/无法刷新|无效或已过期/', $exception->getMessage());
+        }
+        self::assertTrue(StpUtil::getStpLogic()->getTokenManager()->isTokenValid($newAccessToken));
     }
 
     public function testLoginAutoCreatesRefreshTokenWhenEnabled(): void

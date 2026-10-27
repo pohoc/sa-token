@@ -6,18 +6,22 @@ namespace SaToken\Tests;
 
 use PHPUnit\Framework\TestCase;
 use SaToken\Config\SaTokenConfig;
+use SaToken\Dao\SaTokenDaoDeleteIfExpiredInterface;
 use SaToken\Dao\SaTokenDaoInterface;
 use SaToken\Dao\SaTokenDaoMemory;
 use SaToken\SaToken;
 use SaToken\Session\SaSessionCleaner;
+use SaToken\TokenManager;
 
 /**
  * 模拟一个"记录了 TTL 但从不物理删除过期记录"的自定义存储后端
  * （例如按 expire 字段过滤读取的数据库 DAO），这正是 SaSessionCleaner
  * 存在的意义：回收后端未自动删除的过期记录
  */
-final class LazyTtlDaoStub extends SaTokenDaoMemory
+final class LazyTtlDaoStub extends SaTokenDaoMemory implements SaTokenDaoDeleteIfExpiredInterface
 {
+    public ?string $refreshBeforeDeleteKey = null;
+
     #[\Override]
     public function get(string $key): ?string
     {
@@ -61,6 +65,25 @@ final class LazyTtlDaoStub extends SaTokenDaoMemory
     protected function cleanExpired(): void
     {
     }
+
+    public function deleteIfExpired(string $key): bool
+    {
+        // Model a concurrent writer refreshing the key after the sweeper's scan.
+        if ($key === $this->refreshBeforeDeleteKey) {
+            $this->refreshBeforeDeleteKey = null;
+            $this->set($key, 'refreshed', 1000);
+        }
+
+        if (!isset($this->dataMap[$key])) {
+            return false;
+        }
+        $expireAt = $this->dataMap[$key]['expire_at'];
+        if ($expireAt === null || $expireAt > time()) {
+            return false;
+        }
+        $this->delete($key);
+        return true;
+    }
 }
 
 class SaSessionCleanerTest extends TestCase
@@ -99,23 +122,76 @@ class SaSessionCleanerTest extends TestCase
         $this->assertNotNull($dao->get('satoken:login:token:valid-token'));
     }
 
+    public function testCleanOnceRotatesPagesSoLeadingLiveRecordsCannotStarveExpiredRecords(): void
+    {
+        $dao = SaToken::getDao();
+        self::assertInstanceOf(LazyTtlDaoStub::class, $dao);
+        SaSessionCleaner::setBatchSize(2);
+
+        $dao->set('satoken:login:token:live-a', 'user-a', 1000);
+        $dao->set('satoken:login:token:live-b', 'user-b', 1000);
+        $dao->set('satoken:login:token:expired-c', 'user-c', 10);
+        $this->backdate($dao, 'satoken:login:token:expired-c');
+
+        self::assertSame(0, SaSessionCleaner::cleanOnce());
+        self::assertSame(1, SaSessionCleaner::cleanOnce());
+        self::assertNull($dao->get('satoken:login:token:expired-c'));
+        self::assertNotNull($dao->get('satoken:login:token:live-a'));
+        self::assertNotNull($dao->get('satoken:login:token:live-b'));
+    }
+
+    public function testSetBatchSizeRejectsNonPositiveValues(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        SaSessionCleaner::setBatchSize(0);
+    }
+
+    public function testCleanOnceRemovesExpiredVersionedLoginIdIndex(): void
+    {
+        $dao = SaToken::getDao();
+        $key = TokenManager::buildLoginIdKey('login', 'expired-index-user');
+        $dao->set($key, 'index', 10);
+        $this->backdate($dao, $key);
+
+        self::assertSame(1, SaSessionCleaner::cleanOnce());
+        self::assertNull($dao->get($key));
+    }
+
     public function testCleanOnceRemovesExpiredSessions(): void
     {
         $dao = SaToken::getDao();
 
         $dao->set('satoken:session:expired-session-1', 'data', 10);
         $dao->set('satoken:tokenSession:expired-token-session', 'data', 10);
+        $dao->set('satoken:tokenSessionLineage:expired-token-lineage', 'data', 10);
         $dao->set('satoken:session:valid-session', 'data', 1000);
 
         $this->backdate($dao, 'satoken:session:expired-session-1');
         $this->backdate($dao, 'satoken:tokenSession:expired-token-session');
+        $this->backdate($dao, 'satoken:tokenSessionLineage:expired-token-lineage');
 
         $cleaned = SaSessionCleaner::cleanOnce();
 
-        $this->assertSame(2, $cleaned);
+        $this->assertSame(3, $cleaned);
         $this->assertNull($dao->get('satoken:session:expired-session-1'));
         $this->assertNull($dao->get('satoken:tokenSession:expired-token-session'));
+        $this->assertNull($dao->get('satoken:tokenSessionLineage:expired-token-lineage'));
         $this->assertNotNull($dao->get('satoken:session:valid-session'));
+    }
+
+    public function testCleanOnceRemovesExpiredDistributedLocksAndSloNonces(): void
+    {
+        $dao = SaToken::getDao();
+        $expiredLock = 'satoken:lock:expired-account-lock';
+        $expiredNonce = 'satoken:sso:slo:nonce:' . hash('sha256', 'expired-slo-nonce');
+        $dao->set($expiredLock, 'owner', 10);
+        $dao->set($expiredNonce, '1', 10);
+        $this->backdate($dao, $expiredLock);
+        $this->backdate($dao, $expiredNonce);
+
+        self::assertSame(2, SaSessionCleaner::cleanOnce());
+        self::assertNull($dao->get($expiredLock));
+        self::assertNull($dao->get($expiredNonce));
     }
 
     public function testCleanOnceSkipsValidAndPermanentRecords(): void
@@ -131,6 +207,39 @@ class SaSessionCleanerTest extends TestCase
         $this->assertSame(0, $cleaned);
         $this->assertNotNull($dao->get('satoken:login:token:valid-token-1'));
         $this->assertNotNull($dao->get('satoken:session:permanent-session'));
+    }
+
+    public function testCleanOnceRemovesExpiredOAuth2FamilyAndRefreshLocks(): void
+    {
+        $dao = SaToken::getDao();
+
+        $dao->set('oauth2:family:expired-family', 'data', 10);
+        $dao->set('oauth2:refresh:expired-family-lock', 'lock', 10);
+        $dao->set('oauth2:family:valid-family', 'data', 1000);
+        $this->backdate($dao, 'oauth2:family:expired-family');
+        $this->backdate($dao, 'oauth2:refresh:expired-family-lock');
+
+        $cleaned = SaSessionCleaner::cleanOnce();
+
+        $this->assertSame(2, $cleaned);
+        $this->assertNull($dao->get('oauth2:family:expired-family'));
+        $this->assertNull($dao->get('oauth2:refresh:expired-family-lock'));
+        $this->assertNotNull($dao->get('oauth2:family:valid-family'));
+    }
+
+    public function testCleanerDoesNotDeleteKeyRefreshedAfterItsScan(): void
+    {
+        $dao = SaToken::getDao();
+        self::assertInstanceOf(LazyTtlDaoStub::class, $dao);
+        $key = 'oauth2:family:refresh-race';
+        $dao->set($key, 'expired', 10);
+        $this->backdate($dao, $key);
+        $dao->refreshBeforeDeleteKey = $key;
+
+        $cleaned = SaSessionCleaner::cleanOnce();
+
+        $this->assertSame(0, $cleaned);
+        $this->assertSame('refreshed', $dao->get($key));
     }
 
     public function testCleanerNeverTouchesForeignPrefixes(): void
@@ -224,7 +333,6 @@ class SaSessionCleanerTest extends TestCase
             $this->fail('测试需要 LazyTtlDaoStub');
         }
         $ref = new \ReflectionProperty(SaTokenDaoMemory::class, 'dataMap');
-        $ref->setAccessible(true);
         /** @var array<string, array{value: string, expire_at: int|null}> $dataMap */
         $dataMap = $ref->getValue($dao);
         if (isset($dataMap[$key])) {

@@ -6,11 +6,24 @@ namespace SaToken\Auth;
 
 use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
+use SaToken\Security\SaAntiBruteUtil;
 use SaToken\StpUtil;
 use SaToken\Util\SaTokenContext;
 
 class SaHttpAuth
 {
+    protected const MAX_BASIC_HEADER_BYTES = 8192;
+
+    protected const MAX_DIGEST_HEADER_BYTES = 8192;
+
+    protected const MAX_LOGIN_NAME_BYTES = 1024;
+
+    protected const MAX_LOGIN_SECRET_BYTES = 4096;
+
+    protected const DIGEST_NONCE_TTL = 300;
+
+    protected const DIGEST_NONCE_SECRET_KEY = 'satoken:auth:digest:nonce-secret';
+
     /** @var callable(string, string): mixed|null */
     protected $basicValidator = null;
 
@@ -19,11 +32,22 @@ class SaHttpAuth
 
     public function checkBasic(string $realm = 'Sa-Token'): void
     {
+        $this->denyAuthenticationFallback();
+
+        if (SaTokenContext::hasMultipleHeaderValues('Authorization', true)) {
+            $this->sendChallenge($realm);
+            throw new SaTokenException('Basic Authorization Header 存在多个值');
+        }
+
         $authHeader = SaTokenContext::getHeader('Authorization');
 
         if ($authHeader === null || preg_match('/^basic\s+/i', $authHeader) !== 1) {
             $this->sendChallenge($realm);
             throw new SaTokenException('未提供有效的 Basic 认证信息');
+        }
+        if (strlen($authHeader) > self::MAX_BASIC_HEADER_BYTES) {
+            $this->sendChallenge($realm);
+            throw new SaTokenException('Basic Authorization Header 超过最大长度');
         }
 
         $encoded = trim(substr($authHeader, 6));
@@ -41,27 +65,61 @@ class SaHttpAuth
 
         [$username, $password] = $parts;
 
+        if (strlen($username) > self::MAX_LOGIN_NAME_BYTES) {
+            $this->sendChallenge($realm);
+            throw new SaTokenException('Basic 用户名长度无效，最大为 ' . self::MAX_LOGIN_NAME_BYTES . ' 字节');
+        }
+        if (strlen($password) > self::MAX_LOGIN_SECRET_BYTES) {
+            $this->sendChallenge($realm);
+            throw new SaTokenException('Basic 密码长度无效，最大为 ' . self::MAX_LOGIN_SECRET_BYTES . ' 字节');
+        }
+
         if ($this->basicValidator === null) {
             throw new SaTokenException('未设置 Basic 认证校验器');
         }
 
-        $loginId = ($this->basicValidator)($username, $password);
+        SaAntiBruteUtil::checkAndThrow($username);
 
-        if ($loginId === null) {
+        try {
+            $loginId = ($this->basicValidator)($username, $password);
+        } catch (\Throwable $exception) {
+            SaAntiBruteUtil::recordFailure($username);
+            throw $exception;
+        }
+
+        if ($loginId === null || is_bool($loginId) || !is_scalar($loginId) || $loginId === '') {
+            SaAntiBruteUtil::recordFailure($username);
             $this->sendChallenge($realm);
             throw new SaTokenException('Basic 认证失败');
         }
 
-        StpUtil::login($loginId);
+        try {
+            $result = StpUtil::login($loginId);
+            SaAntiBruteUtil::clearCurrentAccountFailures($username);
+            SaTokenContext::setTokenOverride(StpUtil::getStpLogic()->getLoginType(), $result->getAccessToken());
+        } finally {
+            SaAntiBruteUtil::releaseCurrentSourceAttempt($username);
+        }
     }
 
     public function checkDigest(string $realm = 'Sa-Token'): void
     {
+        $this->denyAuthenticationFallback();
+
+        if (SaTokenContext::hasMultipleHeaderValues('Authorization')) {
+            $this->sendDigestChallenge($realm);
+            throw new SaTokenException('Digest Authorization Header 存在多个值');
+        }
+
         $authHeader = SaTokenContext::getHeader('Authorization');
 
         if ($authHeader === null || preg_match('/^digest\s+/i', $authHeader) !== 1) {
             $this->sendDigestChallenge($realm);
             throw new SaTokenException('未提供有效的 Digest 认证信息');
+        }
+        if (strlen($authHeader) > self::MAX_DIGEST_HEADER_BYTES) {
+            $this->sendDigestChallenge($realm);
+            throw new SaTokenException('Digest Authorization Header 超过最大长度');
         }
 
         $params = $this->parseDigestHeader($authHeader);
@@ -74,9 +132,18 @@ class SaHttpAuth
         $uri = $params['uri'] ?? null;
         $response = $params['response'] ?? null;
 
-        if ($username === null || $nonce === null || $uri === null || $response === null) {
+        if ($username === null || $nonce === null || $uri === null || $response === null
+            || ($params['realm'] ?? null) !== $realm
+            || $qop !== 'auth'
+            || !is_string($nc) || preg_match('/^[0-9a-fA-F]{8}$/D', $nc) !== 1
+            || !is_string($cnonce) || $cnonce === '') {
             $this->sendDigestChallenge($realm);
-            throw new SaTokenException('Digest 认证信息不完整');
+            throw new SaTokenException('Digest 认证信息不完整或与服务端挑战不匹配');
+        }
+        if (strlen($username) > self::MAX_LOGIN_NAME_BYTES || strlen($nonce) > 256
+            || strlen($uri) > 4096 || strlen($cnonce) > 1024 || strlen($response) > 256) {
+            $this->sendDigestChallenge($realm);
+            throw new SaTokenException('Digest 认证字段超过最大长度');
         }
 
         // nonce 必须是服务端签发的（RFC 2617 允许 nonce 未过期期间复用，
@@ -91,31 +158,66 @@ class SaHttpAuth
             throw new SaTokenException('未设置 Digest 认证校验器');
         }
 
-        $ha1 = ($this->digestValidator)($username);
+        $request = SaTokenContext::getRequest();
+        if (!is_object($request) || !method_exists($request, 'getMethod')) {
+            throw new SaTokenException('无法读取当前 HTTP 请求方法，拒绝 Digest 认证');
+        }
+        $requestMethod = $request->getMethod();
+        if (!is_string($requestMethod) || $requestMethod === '') {
+            throw new SaTokenException('当前 HTTP 请求方法无效，拒绝 Digest 认证');
+        }
+        $requestTarget = $this->getDigestRequestTarget($request);
+        if ($requestTarget === null || !hash_equals($requestTarget, $uri)) {
+            $this->sendDigestChallenge($realm);
+            throw new SaTokenException('Digest URI 与当前请求目标不匹配');
+        }
+        $method = strtoupper($requestMethod);
 
-        if ($ha1 === null) {
+        SaAntiBruteUtil::checkAndThrow($username);
+
+        try {
+            $this->authenticateDigestRequest($username, $nonce, $nc, $cnonce, $uri, $response, $method, $realm);
+        } finally {
+            SaAntiBruteUtil::releaseCurrentSourceAttempt($username);
+        }
+    }
+
+    protected function authenticateDigestRequest(
+        string $username,
+        string $nonce,
+        string $nc,
+        string $cnonce,
+        string $uri,
+        string $response,
+        string $method,
+        string $realm
+    ): void {
+        if ($this->digestValidator === null) {
+            throw new SaTokenException('未设置 Digest 认证校验器');
+        }
+
+        try {
+            $ha1 = ($this->digestValidator)($username);
+        } catch (\Throwable $exception) {
+            SaAntiBruteUtil::recordFailure($username);
+            throw $exception;
+        }
+
+        // Digest HA1 is an MD5 hex digest in this implementation. Empty or
+        // malformed validator sentinels must fail closed; otherwise an empty
+        // HA1 lets callers forge a valid response for an unknown user.
+        if (!is_string($ha1) || preg_match('/^[0-9a-fA-F]{32}$/D', $ha1) !== 1) {
+            SaAntiBruteUtil::recordFailure($username);
             $this->sendDigestChallenge($realm);
             throw new SaTokenException('Digest 认证失败');
         }
 
-        $request = SaTokenContext::getRequest();
-        $method = 'GET';
-        if (is_object($request) && method_exists($request, 'getMethod')) {
-            $m = $request->getMethod();
-            $method = is_string($m) ? strtoupper($m) : 'GET';
-        }
-
         $ha2 = md5($method . ':' . $uri);
 
-        $ha1Str = is_string($ha1) ? $ha1 : (is_scalar($ha1) ? (string) $ha1 : '');
-
-        if ($qop !== null && ($qop === 'auth' || $qop === 'auth-int')) {
-            $expected = md5($ha1Str . ':' . $nonce . ':' . $nc . ':' . $cnonce . ':' . $qop . ':' . $ha2);
-        } else {
-            $expected = md5($ha1Str . ':' . $nonce . ':' . $ha2);
-        }
+        $expected = md5($ha1 . ':' . $nonce . ':' . $nc . ':' . $cnonce . ':auth:' . $ha2);
 
         if (!hash_equals($expected, $response)) {
+            SaAntiBruteUtil::recordFailure($username);
             $this->sendDigestChallenge($realm);
             throw new SaTokenException('Digest 认证失败');
         }
@@ -127,7 +229,26 @@ class SaHttpAuth
             throw new SaTokenException('Digest nonce 已使用，可能遭受重放攻击');
         }
 
-        StpUtil::login($username);
+        $result = StpUtil::login($username);
+        SaAntiBruteUtil::clearCurrentAccountFailures($username);
+        SaTokenContext::setTokenOverride(StpUtil::getStpLogic()->getLoginType(), $result->getAccessToken());
+    }
+
+    /** 获取实际请求目标，避免把为其他资源签发的 Digest 响应移用到当前路径。 */
+    protected function getDigestRequestTarget(object $request): ?string
+    {
+        if (method_exists($request, 'getRequestTarget')) {
+            $target = $request->getRequestTarget();
+            return is_string($target) && $target !== '' ? $target : null;
+        }
+
+        // Symfony HttpFoundation 等常见适配器使用 getRequestUri()。
+        if (method_exists($request, 'getRequestUri')) {
+            $target = $request->getRequestUri();
+            return is_string($target) && $target !== '' ? $target : null;
+        }
+
+        return null;
     }
 
     public function setBasicValidator(callable $validator): static
@@ -142,41 +263,103 @@ class SaHttpAuth
         return $this;
     }
 
+    protected function denyAuthenticationFallback(): void
+    {
+        SaTokenContext::denyTokenFallback();
+    }
+
     public function sendChallenge(string $realm): void
     {
-        SaTokenContext::setHeader('WWW-Authenticate', 'Basic realm="' . $realm . '"');
+        SaTokenContext::setHeader('WWW-Authenticate', 'Basic realm="' . $this->formatChallengeRealm($realm) . '"');
     }
 
     public function sendDigestChallenge(string $realm): void
     {
+        $formattedRealm = $this->formatChallengeRealm($realm);
         $nonce = $this->generateNonce();
         $challenge = sprintf(
             'Digest realm="%s", nonce="%s", qop="auth"',
-            $realm,
+            $formattedRealm,
             $nonce
         );
         SaTokenContext::setHeader('WWW-Authenticate', $challenge);
-        $this->issueDigestNonce($nonce);
+    }
+
+    protected function formatChallengeRealm(string $realm): string
+    {
+        if (preg_match('/[\x00-\x1F\x7F]/', $realm) === 1) {
+            throw new SaTokenException('认证 realm 不能包含控制字符');
+        }
+
+        return str_replace(['\\', '"'], ['\\\\', '\\"'], $realm);
     }
 
     public function generateNonce(): string
     {
-        return bin2hex(random_bytes(16));
+        $issuedAt = time();
+        $nonceId = bin2hex(random_bytes(16));
+        $payload = $issuedAt . ':' . $nonceId;
+        $signature = hash_hmac('sha256', $payload, $this->getDigestNonceSecret());
+
+        return $payload . ':' . $signature;
     }
 
-    protected function digestNonceKey(string $nonce): string
+    protected function getDigestNonceSecret(): string
     {
-        return 'satoken:auth:digest:nonce:' . hash('sha256', $nonce);
+        $dao = SaToken::getDao();
+        $secret = $dao->get(self::DIGEST_NONCE_SECRET_KEY);
+        if ($secret !== null) {
+            if (preg_match('/^[0-9a-f]{64}$/D', $secret) !== 1) {
+                throw new SaTokenException('Digest nonce 密钥存储数据无效');
+            }
+            return hex2bin($secret) ?: throw new SaTokenException('Digest nonce 密钥存储数据无效');
+        }
+
+        $candidate = bin2hex(random_bytes(32));
+        if (!$dao->setIfNotExists(self::DIGEST_NONCE_SECRET_KEY, $candidate, null)) {
+            $secret = $dao->get(self::DIGEST_NONCE_SECRET_KEY);
+            if ($secret === null || preg_match('/^[0-9a-f]{64}$/D', $secret) !== 1) {
+                throw new SaTokenException('Digest nonce 密钥初始化失败');
+            }
+            $candidate = $secret;
+        }
+
+        return hex2bin($candidate) ?: throw new SaTokenException('Digest nonce 密钥初始化失败');
     }
 
-    protected function issueDigestNonce(string $nonce): void
+    /** @return array{issuedAt: int, nonceId: string}|null */
+    protected function parseIssuedDigestNonce(string $nonce): ?array
     {
-        SaToken::getDao()->set($this->digestNonceKey($nonce), '1', 300);
+        $parts = explode(':', $nonce);
+        if (count($parts) !== 3
+            || preg_match('/^[0-9]{10}$/D', $parts[0]) !== 1
+            || preg_match('/^[0-9a-f]{32}$/D', $parts[1]) !== 1
+            || preg_match('/^[0-9a-f]{64}$/D', $parts[2]) !== 1) {
+            return null;
+        }
+
+        $issuedAt = (int) $parts[0];
+        if ($issuedAt > time() || time() - $issuedAt > self::DIGEST_NONCE_TTL) {
+            return null;
+        }
+
+        $payload = $parts[0] . ':' . $parts[1];
+        $expected = hash_hmac('sha256', $payload, $this->getDigestNonceSecret());
+        if (!hash_equals($expected, $parts[2])) {
+            return null;
+        }
+
+        return ['issuedAt' => $issuedAt, 'nonceId' => $parts[1]];
     }
 
     protected function isDigestNonceIssued(string $nonce): bool
     {
-        return SaToken::getDao()->get($this->digestNonceKey($nonce)) !== null;
+        $parsed = $this->parseIssuedDigestNonce($nonce);
+        if ($parsed === null) {
+            return false;
+        }
+
+        return SaToken::getDao()->get('satoken:auth:digest:nonce:used:' . $parsed['nonceId']) === null;
     }
 
     /**
@@ -185,7 +368,17 @@ class SaHttpAuth
      */
     protected function consumeDigestNonce(string $nonce): bool
     {
-        return SaToken::getDao()->getAndDelete($this->digestNonceKey($nonce)) !== null;
+        $parsed = $this->parseIssuedDigestNonce($nonce);
+        if ($parsed === null) {
+            return false;
+        }
+
+        $ttl = max(1, self::DIGEST_NONCE_TTL - (time() - $parsed['issuedAt']) + 1);
+        return SaToken::getDao()->setIfNotExists(
+            'satoken:auth:digest:nonce:used:' . $parsed['nonceId'],
+            '1',
+            $ttl
+        );
     }
 
     /**
@@ -193,21 +386,52 @@ class SaHttpAuth
      */
     public function parseDigestHeader(string $header): array
     {
+        if (strlen($header) > self::MAX_DIGEST_HEADER_BYTES) {
+            return [];
+        }
+
         $headerPart = substr($header, 7) ?: '';
         if ($headerPart === '') {
             return [];
         }
 
         $result = [];
-
-        preg_match_all('/(\w+)=(?:"([^"]*)"|([\w=\/+]+))/', $headerPart, $matches, PREG_SET_ORDER);
+        $offset = 0;
+        $length = strlen($headerPart);
+        preg_match_all('/(\w+)\s*=\s*(?:"((?:\\\\.|[^"\\\\])*)"|([^,\s]+))/', $headerPart, $matches, PREG_SET_ORDER | PREG_OFFSET_CAPTURE);
 
         foreach ($matches as $match) {
-            $key = $match[1];
-            $value = ($match[2] ?? '') !== '' ? $match[2] : ($match[3] ?? '');
+            $fieldOffset = $match[0][1];
+            $separator = substr($headerPart, $offset, $fieldOffset - $offset);
+            if (($offset === 0 && trim($separator) !== '')
+                || ($offset > 0 && preg_match('/^\s*,\s*$/D', $separator) !== 1)) {
+                return [];
+            }
+
+            $key = strtolower($match[1][0]);
+            if (array_key_exists($key, $result)) {
+                return [];
+            }
+            if (($match[2][1] ?? -1) >= 0) {
+                $value = preg_replace_callback(
+                    '/\\\\(.)/s',
+                    static fn (array $escape): string => $escape[1],
+                    $match[2][0]
+                );
+                if (!is_string($value)) {
+                    return [];
+                }
+            } else {
+                $value = $match[3][0] ?? '';
+            }
             $result[$key] = $value;
+            $offset = $fieldOffset + strlen($match[0][0]);
         }
 
+        $trailing = substr($headerPart, $offset, $length - $offset);
+        if ($matches === [] || trim($trailing) !== '') {
+            return [];
+        }
         return $result;
     }
 }

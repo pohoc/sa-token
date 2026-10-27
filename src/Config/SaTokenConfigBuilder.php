@@ -244,6 +244,12 @@ class SaTokenConfigBuilder
         return $this;
     }
 
+    public function antiBruteIpMaxFailures(int $count): self
+    {
+        $this->config['antiBruteIpMaxFailures'] = $count;
+        return $this;
+    }
+
     public function deviceManagement(bool $enabled): self
     {
         $this->config['deviceManagement'] = $enabled;

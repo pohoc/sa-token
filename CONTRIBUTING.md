@@ -57,7 +57,7 @@ vendor/bin/phpstan analyse
 
 ## Coding Standards
 
-- PHP 8.1+ compatible
+- PHP 8.2+ compatible
 - `declare(strict_types=1)` in every file
 - PSR-4 autoloading
 - PSR-12 coding style

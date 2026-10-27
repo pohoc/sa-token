@@ -27,6 +27,8 @@ sa-token 通过 `SaTokenContext` 提供跨框架兼容层，支持以下请求/�
 
 如果只做了第 1 步，没有把 response 回写到 `SaTokenContext`，那么 `isWriteCookie`、`isWriteHeader`、RefreshToken 响应头等能力都不会生效。
 
+登录接口必须先由应用自己的认证服务校验账号凭据，再把服务端查到的用户 ID 传给 `StpUtil::login()`。绝不能直接信任请求中的 `userId`，也不能在公开登录接口中无凭据地签发固定账号的 Token。
+
 ### 请求方法
 - `getHeader(name)` - PSR-7 标准
 - `header(name)` - ThinkPHP/Laravel 风格
@@ -42,7 +44,7 @@ sa-token 通过 `SaTokenContext` 提供跨框架兼容层，支持以下请求/�
 ### 响应方法
 - `withHeader(name, value)` / `withAddedHeader(name, value)` - PSR-7 标准
 - `header(name, value)` - ThinkPHP/Laravel 风格
-- `cookie(name, value, ...)` - 通用风格
+- ThinkPHP `Response::cookie(name, value, options)` 使用选项数组；Laravel/Symfony 响应通过 `HeaderBag::setCookie()` 写入，保留 SaToken 配置的过期时间、Secure、HttpOnly 和 SameSite 属性
 
 ---
 
@@ -112,14 +114,22 @@ class SaTokenMiddleware
 namespace app\controller;
 
 use SaToken\StpUtil;
+use app\service\AuthService;
 use think\facade\Route;
 
 class AuthController
 {
-    public function login()
+    public function login(AuthService $authService)
     {
-        $userId = 1001;
-        $result = StpUtil::login($userId);
+        $user = $authService->authenticate(
+            input('post.username/s', ''),
+            input('post.password/s', '')
+        );
+        if ($user === null) {
+            return json(['code' => 401, 'msg' => '账号或密码错误'], 401);
+        }
+
+        $result = StpUtil::login($user->id);
         return json(['code' => 0, 'msg' => '登录成功', 'data' => $result->toArray()]);
     }
 
@@ -237,13 +247,22 @@ class SaTokenMiddleware
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use SaToken\StpUtil;
 
 class AuthController extends Controller
 {
     public function login(Request $request)
     {
-        $userId = $request->input('userId', 1001);
+        if (!Auth::attempt($request->only('email', 'password'))) {
+            return response()->json(['code' => 401, 'msg' => '账号或密码错误'], 401);
+        }
+
+        // 身份来自已通过 Laravel 认证的用户，不读取客户端提交的 userId。
+        $userId = Auth::id();
+        if ($userId === null) {
+            return response()->json(['code' => 401, 'msg' => '认证失败'], 401);
+        }
         $result = StpUtil::login($userId);
         return response()->json([
             'code' => 0,
@@ -365,15 +384,22 @@ namespace App\Controller;
 
 use SaToken\StpUtil;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
+use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\Routing\Annotation\Route;
 
 class AuthController extends AbstractController
 {
     #[Route('/auth/login', methods: ['POST'])]
-    public function login(): JsonResponse
+    public function login(Security $security): JsonResponse
     {
-        $userId = 1001;
+        // 此示例假定应用的 Symfony Security firewall 已验证当前用户。
+        $user = $security->getUser();
+        if ($user === null) {
+            return $this->json(['code' => 401, 'msg' => '账号或密码错误'], 401);
+        }
+
+        $userId = $user->getUserIdentifier();
         $result = StpUtil::login($userId);
         return $this->json([
             'code' => 0,
@@ -461,13 +487,9 @@ Hyperf/Swoole 是协程化框架，sa-token 已内置协程支持：
 
 use SaToken\SaToken;
 use SaToken\Util\SaTokenContext;
-use Hyperf\Coroutine\Coroutine;
 
-// 协程内使用
+// Hyperf/Swoole 与原生 PHP Fiber 会自动隔离请求上下文。
 go(function () {
-    $coroutineId = (string) Coroutine::id();
-    SaTokenContext::setContextId($coroutineId);
-
     // 登录等操作...
     StpUtil::login(1001);
 });
@@ -501,33 +523,57 @@ require __DIR__ . '/vendor/autoload.php';
 SaToken::init();
 
 $server = new Server('0.0.0.0', 9501);
+$authenticateCredentials = static function (string $username, string $password): int|string|null {
+    // 在这里调用应用自己的用户认证服务；无效凭据必须返回 null。
+    return null;
+};
 
-$server->on('request', function (Request $request, Response $response) {
-    // 设置上下文 ID（协程安全）
-    $coroutineId = (string) Swoole\Coroutine::getCid();
-    SaTokenContext::setContextId($coroutineId);
-    SaTokenContext::setResponse($response);
-
-    // 适配 Request
+$server->on('request', function (Request $request, Response $response) use ($authenticateCredentials) {
+    // SaTokenContext 自动使用当前 Swoole 协程 ID 隔离请求上下文。
+    // 路径必须从当前 Swoole 请求读取，不能依赖常驻 worker 中可能缺失或残留的 $_SERVER['REQUEST_URI']。
     $wrappedRequest = new class($request) {
         protected $request;
         public function __construct($request) {
             $this->request = $request;
         }
         public function header($name) {
-            return $this->request->header[$name] ?? null;
+            return $this->request->header[strtolower($name)] ?? null;
         }
         public function cookie($name) {
             return $this->request->cookie[$name] ?? null;
         }
+        public function getClientIp() {
+            $ip = $this->request->server['remote_addr'] ?? null;
+            return is_string($ip) ? $ip : null;
+        }
+        public function getPathInfo() {
+            $uri = $this->request->server['request_uri'] ?? null;
+            if (!is_string($uri) || $uri === '') {
+                return '/';
+            }
+            $path = parse_url($uri, PHP_URL_PATH);
+            return is_string($path) && $path !== '' ? $path : '/';
+        }
     };
 
+    // setRequest 会清除该上下文里可能残留的旧响应绑定，因此先绑定请求。
     SaTokenContext::setRequest($wrappedRequest);
+    SaTokenContext::setResponse($response);
     try {
         $path = $request->server['request_uri'];
 
         if ($path === '/auth/login') {
-            $result = StpUtil::login(1001);
+            $userId = $authenticateCredentials(
+                (string) ($request->post['username'] ?? ''),
+                (string) ($request->post['password'] ?? '')
+            );
+            if ($userId === null || $userId === '') {
+                $response->status(401);
+                $response->end(json_encode(['code' => 401, 'msg' => '账号或密码错误']));
+                return;
+            }
+
+            $result = StpUtil::login($userId);
             $response->header('Content-Type', 'application/json');
             $response->end(json_encode([
                 'code' => 0,
@@ -585,6 +631,8 @@ SaToken::setDao(new SaTokenDaoRedis($redis));
 SaToken::init();
 ```
 
+注入已有的 `\Redis` 客户端时，必须关闭 PhpRedis serializer 和 compression，使用默认原始值编码。DAO 的 CAS、一次性消费和锁操作由 Lua 脚本直接比较 Redis 原始字节，serializer/compression 会让 Lua 与普通 `GET/SET` 的值不一致；不兼容客户端会在接入时被拒绝。
+
 ### PSR-16 缓存适配器
 
 ```php
@@ -604,6 +652,8 @@ $cache = new FilesystemCachePool($filesystem);
 SaToken::setDao(new SaTokenDaoPsr16($cache));
 SaToken::init();
 ```
+
+适配器通过主机本地文件锁协调使用相同有效 Unix UID 和同一锁目录的 PHP 进程。默认锁目录按当前有效 UID 隔离，且目录和锁文件权限分别收紧为 `0700`、`0600`；因此不同系统用户即使指定同一锁目录也无法共享这些锁。若跨 UID 或跨主机共享 PSR-16 缓存，请改用 Redis DAO 或支持分布式原子操作的自定义 DAO。可用构造函数第二个参数指定本地锁目录。
 
 ---
 
@@ -628,7 +678,7 @@ SaToken::init();
 | ✅ 账号封禁 | `disable` / `checkDisable` |
 | ✅ 防暴力破解 | `SaAntiBruteUtil` |
 | ✅ Refresh Token | 双 Token 机制 + Token 轮换 |
-| ✅ JWT 支持 | `jwtStateless` / `jwtMixed` |
+| ✅ JWT 支持 | `jwtStateless` / `jwtMode='mixed'` |
 | ✅ 国密加密 | SM2/SM3/SM4 支持 |
 | ✅ OAuth2.0 | 标准授权流程 |
 | ✅ SSO 单点登录 | 多种模式 |

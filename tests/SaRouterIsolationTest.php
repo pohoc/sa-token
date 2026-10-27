@@ -124,6 +124,84 @@ class SaRouterIsolationTest extends TestCase
         $this->assertTrue($user);
     }
 
+    public function testSettingNextRequestResetsCachedPathForReusedContext(): void
+    {
+        SaTokenContext::setContextId('reused-request-context');
+        SaTokenContext::setRequest(new class () {
+            public function getPathInfo(): string
+            {
+                return '/public/health';
+            }
+        });
+        $this->assertSame('/public/health', SaRouter::getCurrentPath());
+
+        // Some long-running integrations can reuse a context identifier and
+        // miss clearContext() on an exceptional request path. A new request
+        // must never inherit the previous request's cached authorization path.
+        SaTokenContext::setRequest(new class () {
+            public function getPathInfo(): string
+            {
+                return '/admin/console';
+            }
+        });
+
+        $this->assertSame('/admin/console', SaRouter::getCurrentPath());
+
+        $authorizationCheckRan = false;
+        SaRouter::notMatch('/public/**')->check(function () use (&$authorizationCheckRan): void {
+            $authorizationCheckRan = true;
+        });
+        $this->assertTrue($authorizationCheckRan, '新管理路径不能继承公开路径的鉴权豁免');
+    }
+
+    public function testFrameworkPathWithoutLeadingSlashStillMatchesSlashPatterns(): void
+    {
+        SaTokenContext::setRequest(new class () {
+            public function path(): string
+            {
+                return 'admin/panel';
+            }
+        });
+
+        $checked = false;
+        SaRouter::match('/admin/**')->check(function () use (&$checked): void {
+            $checked = true;
+        });
+
+        SaTokenContext::clear();
+        $this->assertTrue($checked, 'path() 省略前导斜杠时仍须匹配受保护路由规则');
+    }
+
+    public function testEncodedPathSeparatorsMatchDecodedFrameworkRoutes(): void
+    {
+        SaTokenContext::setRequest(new class () {
+            public function getPathInfo(): string
+            {
+                return '/admin%2Fpanel';
+            }
+        });
+
+        $checked = false;
+        SaRouter::match('/admin/panel')->check(function () use (&$checked): void {
+            $checked = true;
+        });
+
+        SaTokenContext::clear();
+        $this->assertTrue($checked, '受保护路径规则必须与框架一次 URL 解码后的路由路径一致');
+    }
+
+    public function testEncodedPathIsDecodedOnlyOnce(): void
+    {
+        SaRouter::setCurrentPath('/admin%252Fpanel');
+
+        $checked = false;
+        SaRouter::match('/admin%2Fpanel')->check(function () use (&$checked): void {
+            $checked = true;
+        });
+
+        $this->assertTrue($checked, '双重编码路径只能解码一层，与框架路由器保持一致');
+    }
+
     public function testFullResetClearsAllState(): void
     {
         SaTokenContext::setContextId('ctx-x');

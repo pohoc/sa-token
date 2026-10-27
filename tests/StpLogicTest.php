@@ -7,10 +7,50 @@ namespace SaToken\Tests;
 use PHPUnit\Framework\TestCase;
 use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoMemory;
+use SaToken\Exception\SaTokenException;
 use SaToken\SaLoginParameter;
 use SaToken\SaToken;
 use SaToken\StpLogic;
 use SaToken\TokenManager;
+use SaToken\Util\SaTokenContext;
+
+class SaTokenContextParameterBagStub
+{
+    /** @param array<string, string> $values */
+    public function __construct(private array $values)
+    {
+    }
+
+    /** @return array<string, string> */
+    public function all(): array
+    {
+        return $this->values;
+    }
+}
+
+class SaTokenContextFrameworkRequestStub
+{
+    public function __construct(
+        public SaTokenContextParameterBagStub $query,
+        public SaTokenContextParameterBagStub $request
+    ) {
+    }
+
+    public function input(string $name): ?string
+    {
+        return $this->request->all()[$name] ?? $this->query->all()[$name] ?? null;
+    }
+
+    public function header(string $name): string
+    {
+        return '';
+    }
+
+    public function getQueryString(): string
+    {
+        return 'satoken=' . rawurlencode($this->query->all()['satoken'] ?? '');
+    }
+}
 
 class StpLogicTest extends TestCase
 {
@@ -76,6 +116,139 @@ class StpLogicTest extends TestCase
         $this->assertNull($this->tokenManager->getSwitchTo($token, 'login'));
     }
 
+    public function testSwitchToRejectsInvalidIdentityValues(): void
+    {
+        foreach ([null, '', false, true, [], new \stdClass()] as $invalidLoginId) {
+            try {
+                $this->logic->switchTo($invalidLoginId);
+                self::fail('切换身份不得接受空值、布尔值或非标量值');
+            } catch (SaTokenException $exception) {
+                self::assertStringContainsString('非空、非布尔标量', $exception->getMessage());
+            }
+        }
+    }
+
+    public function testConflictingQueryAndBodyTokensFailClosed(): void
+    {
+        SaToken::getConfig()->setIsReadBody(true);
+        $queryToken = $this->logic->login('query-user')->getAccessToken();
+        $bodyToken = $this->logic->login('body-user')->getAccessToken();
+
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $uri = $this->createMock(\Psr\Http\Message\UriInterface::class);
+        $uri->method('getQuery')->willReturn('satoken=' . rawurlencode($queryToken));
+        $request->method('getUri')->willReturn($uri);
+        $request->method('getQueryParams')->willReturn(['satoken' => $queryToken]);
+        $request->method('getParsedBody')->willReturn(['satoken' => $bodyToken]);
+        SaTokenContext::setRequest($request);
+
+        self::assertNull($this->logic->getTokenValue());
+        self::assertFalse($this->logic->isLogin());
+    }
+
+    public function testConflictingFrameworkQueryAndBodyTokensFailClosed(): void
+    {
+        SaToken::getConfig()->setIsReadBody(true);
+        $queryToken = $this->logic->login('framework-query-user')->getAccessToken();
+        $bodyToken = $this->logic->login('framework-body-user')->getAccessToken();
+        $request = new SaTokenContextFrameworkRequestStub(
+            new SaTokenContextParameterBagStub(['satoken' => $queryToken]),
+            new SaTokenContextParameterBagStub(['satoken' => $bodyToken])
+        );
+        SaTokenContext::setRequest($request);
+
+        self::assertNull($this->logic->getTokenValue());
+        self::assertFalse($this->logic->isLogin());
+    }
+
+    public function testCombinedHeaderTokensFailClosed(): void
+    {
+        SaToken::getConfig()->setIsReadHeader(true);
+        $firstToken = $this->logic->login('header-user-one')->getAccessToken();
+        $secondToken = $this->logic->login('header-user-two')->getAccessToken();
+        $request = new class ($firstToken . ', ' . $secondToken) {
+            public function __construct(private string $combinedToken)
+            {
+            }
+
+            public function getHeaderLine(string $name): string
+            {
+                return $name === 'satoken' ? $this->combinedToken : '';
+            }
+        };
+        SaTokenContext::setRequest($request);
+
+        self::assertNull($this->logic->getTokenValue());
+        self::assertFalse($this->logic->isLogin());
+    }
+
+    public function testOversizedBearerTokensAreRejectedBeforeAuthenticationLookup(): void
+    {
+        SaToken::getConfig()->setIsReadHeader(true);
+        $oversizedToken = str_repeat('t', TokenManager::MAX_TOKEN_VALUE_BYTES + 1);
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->willReturnCallback(static fn (string $name): array => $name === 'satoken'
+            ? [$oversizedToken]
+            : []);
+        SaTokenContext::setRequest($request);
+
+        self::assertNull($this->logic->getTokenValue());
+        self::assertFalse($this->logic->isLogin());
+        self::assertNull($this->logic->getLoginIdByToken($oversizedToken));
+        self::assertFalse($this->tokenManager->isBlacklisted($oversizedToken));
+
+        SaTokenContext::setTokenOverride('login', $oversizedToken);
+        self::assertNull($this->logic->getTokenValue());
+    }
+
+    public function testOversizedTokenCannotBeAddedToBlacklist(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('Token 长度无效');
+        $this->tokenManager->addToBlacklist(str_repeat('t', TokenManager::MAX_TOKEN_VALUE_BYTES + 1), 60);
+    }
+
+    public function testOversizedTokensFailClosedAcrossTokenMetadataOperations(): void
+    {
+        $token = str_repeat('x', TokenManager::MAX_TOKEN_VALUE_BYTES + 1);
+
+        self::assertNull($this->tokenManager->getTokenSessionBinding($token, 'login'));
+        self::assertSame('', $this->tokenManager->getTokenSessionLoginType($token));
+        self::assertNull($this->tokenManager->getTokenSessionId($token, 'login'));
+        self::assertNull($this->tokenManager->getLastActiveTime($token));
+        self::assertSame(-2, $this->tokenManager->getTokenTimeout($token));
+        self::assertFalse($this->tokenManager->isTokenValid($token));
+        self::assertFalse($this->logic->isTokenRevoked($token));
+        self::assertNull($this->tokenManager->getFingerprint($token));
+        self::assertFalse($this->tokenManager->isSafe($token, 'transfer', 'login'));
+        self::assertNull($this->tokenManager->getSwitchTo($token, 'login'));
+        self::assertNull($this->logic->getLoginIdByToken($token));
+        self::assertNull($this->logic->kickoutByTokenValue($token));
+        self::assertFalse($this->logic->revokeToken($token));
+
+        foreach ([
+            fn () => $this->tokenManager->deleteToken($token, 'user', 'login'),
+            fn () => $this->tokenManager->renewTimeout($token, 60),
+            fn () => $this->tokenManager->openSafe($token, 'transfer', 60, 'login'),
+            fn () => $this->tokenManager->setSwitchTo($token, 'other-user', 'login'),
+            fn () => $this->tokenManager->saveFingerprint($token, 'fingerprint'),
+            fn () => $this->logic->writeTokenToResponse($token, new SaLoginParameter()),
+        ] as $operation) {
+            try {
+                $operation();
+                self::fail('超长 Token 写操作必须拒绝');
+            } catch (SaTokenException $exception) {
+                self::assertStringContainsString('Token 长度无效', $exception->getMessage());
+            }
+        }
+
+        $this->tokenManager->updateLastActiveToNow($token);
+        $this->tokenManager->closeSafe($token, 'transfer', 'login');
+        $this->tokenManager->clearSwitch($token, 'login');
+        $this->tokenManager->deleteFingerprint($token);
+        $this->tokenManager->removeFromBlacklist($token);
+    }
+
     public function testDisableWithLevel(): void
     {
         $this->logic->disable(10001, 'comment', 2, 3600);
@@ -134,6 +307,13 @@ class StpLogicTest extends TestCase
 
         $terminals = $this->logic->getTerminalListByLoginId(10001);
         $this->assertCount(2, $terminals);
+    }
+
+    public function testZeroMaxLoginCountRejectedAtConfigurationTime(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('最大登录数必须是正整数，或使用 -1 表示不限制');
+        SaToken::getConfig()->setMaxLoginCount(0);
     }
 
     public function testCreateTempToken(): void

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace SaToken\Tests;
 
 use PHPUnit\Framework\TestCase;
+use SaToken\Exception\SaTokenException;
 use SaToken\Tests\Fixtures\SymfonyHeaderBagStub;
 use SaToken\Util\SaTokenContext;
 
@@ -14,6 +15,7 @@ class SaTokenContextTest extends TestCase
     {
         SaTokenContext::setContextId('default');
         SaTokenContext::clear();
+        SaTokenContext::setTrustedProxies([]);
     }
 
     // ---- Context ID ----
@@ -40,12 +42,211 @@ class SaTokenContextTest extends TestCase
         $this->assertNull(SaTokenContext::getRequest());
     }
 
+    public function testGetClientIpFromFrameworkRequest(): void
+    {
+        SaTokenContext::setRequest(new class () {
+            public function getClientIp(): string
+            {
+                return '198.51.100.24';
+            }
+        });
+
+        $this->assertSame('198.51.100.24', SaTokenContext::getClientIp());
+    }
+
+    public function testTrustedProxyAllowlistUsesFrameworkRequestRawPeerAddress(): void
+    {
+        SaTokenContext::setTrustedProxies(['198.51.100.1']);
+        SaTokenContext::setRequest(new class () {
+            public function getClientIp(): string
+            {
+                // Simulate a framework configured to trust a broader proxy set.
+                return '203.0.113.66';
+            }
+
+            /** @return array{REMOTE_ADDR: string} */
+            public function getServerParams(): array
+            {
+                return ['REMOTE_ADDR' => '198.51.100.1'];
+            }
+
+            public function getHeaderLine(string $name): string
+            {
+                return strcasecmp($name, 'X-Forwarded-For') === 0 ? '192.0.2.9' : '';
+            }
+        });
+
+        $this->assertSame('192.0.2.9', SaTokenContext::getClientIp());
+    }
+
+    public function testTrustedProxyAddressesUseCanonicalIpv6Matching(): void
+    {
+        SaTokenContext::setTrustedProxies([
+            '2001:0db8:0:0:0:0:0:1',
+            '2001:db8::2',
+        ]);
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '2001:db8::1']);
+        $request->method('getHeader')->willReturnCallback(static function (string $name): array {
+            return strcasecmp($name, 'X-Forwarded-For') === 0
+                ? ['2001:0db8:0:0:0:0:0:9, 2001:0db8:0:0:0:0:0:2']
+                : [];
+        });
+        SaTokenContext::setRequest($request);
+
+        self::assertSame('2001:db8::9', SaTokenContext::getClientIp());
+    }
+
+    public function testTrustedProxyDoesNotTrustResolvedFrameworkIpWithoutRawPeerAddress(): void
+    {
+        SaTokenContext::setTrustedProxies(['198.51.100.1']);
+        SaTokenContext::setRequest(new class () {
+            public function getClientIp(): string
+            {
+                // A framework may trust a broader proxy set and resolve an
+                // attacker controlled X-Forwarded-For value here.
+                return '203.0.113.66';
+            }
+        });
+
+        $this->assertNull(SaTokenContext::getClientIp());
+    }
+
+    public function testTrustedProxyReadsRawPeerAddressFromFrameworkServerBag(): void
+    {
+        SaTokenContext::setTrustedProxies(['198.51.100.1']);
+        SaTokenContext::setRequest(new class () {
+            public object $server;
+
+            public function __construct()
+            {
+                $this->server = new class () {
+                    public function get(string $key): ?string
+                    {
+                        return $key === 'REMOTE_ADDR' ? '198.51.100.1' : null;
+                    }
+                };
+            }
+
+            public function getClientIp(): string
+            {
+                return '203.0.113.66';
+            }
+
+            public function getHeaderLine(string $name): string
+            {
+                return strcasecmp($name, 'X-Forwarded-For') === 0 ? '192.0.2.9' : '';
+            }
+        });
+
+        $this->assertSame('192.0.2.9', SaTokenContext::getClientIp());
+    }
+
+    public function testGetClientIpFromPsr7ServerParams(): void
+    {
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '203.0.113.10']);
+        SaTokenContext::setRequest($request);
+
+        $this->assertSame('203.0.113.10', SaTokenContext::getClientIp());
+    }
+
+    public function testGetClientIpCombinesRepeatedForwardedForHeaders(): void
+    {
+        SaTokenContext::setTrustedProxies(['198.51.100.1']);
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '198.51.100.1']);
+        $request->method('getHeader')->willReturnCallback(static function (string $name): array {
+            return strcasecmp($name, 'X-Forwarded-For') === 0
+                ? ['192.0.2.123', '203.0.113.88']
+                : [];
+        });
+        SaTokenContext::setRequest($request);
+
+        $this->assertSame('203.0.113.88', SaTokenContext::getClientIp());
+    }
+
+    public function testTrustedProxyDoesNotFallBackToSharedProxyIpForMalformedForwardedChain(): void
+    {
+        SaTokenContext::setTrustedProxies(['198.51.100.1']);
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '198.51.100.1']);
+        $request->method('getHeader')->willReturnCallback(static function (string $name): array {
+            return strcasecmp($name, 'X-Forwarded-For') === 0 ? ['192.0.2.25, invalid'] : [];
+        });
+        SaTokenContext::setRequest($request);
+
+        $this->assertNull(SaTokenContext::getClientIp());
+    }
+
+    public function testTrustedProxyDoesNotUseProxyIpWhenForwardedChainHasNoClient(): void
+    {
+        SaTokenContext::setTrustedProxies(['198.51.100.1', '198.51.100.2']);
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '198.51.100.1']);
+        $request->method('getHeader')->willReturnCallback(static function (string $name): array {
+            return strcasecmp($name, 'X-Forwarded-For') === 0 ? ['198.51.100.2'] : [];
+        });
+        SaTokenContext::setRequest($request);
+
+        $this->assertNull(SaTokenContext::getClientIp());
+    }
+
+    public function testTrustedProxyRejectsMalformedRealIpInsteadOfSharingProxyBucket(): void
+    {
+        SaTokenContext::setTrustedProxies(['198.51.100.1']);
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '198.51.100.1']);
+        $request->method('getHeader')->willReturnCallback(static function (string $name): array {
+            return strcasecmp($name, 'X-Real-IP') === 0 ? ['not-an-ip'] : [];
+        });
+        SaTokenContext::setRequest($request);
+
+        $this->assertNull(SaTokenContext::getClientIp());
+    }
+
+    public function testTrustedProxyWithoutForwardedClientAddressReturnsUnknown(): void
+    {
+        SaTokenContext::setTrustedProxies(['198.51.100.1']);
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '198.51.100.1']);
+        $request->method('getHeader')->willReturn([]);
+        SaTokenContext::setRequest($request);
+
+        $this->assertNull(SaTokenContext::getClientIp());
+    }
+
     public function testSetAndGetResponse(): void
     {
         $response = new \stdClass();
         SaTokenContext::setResponse($response);
 
         $this->assertSame($response, SaTokenContext::getResponse());
+    }
+
+    public function testNewRequestClearsPreviousResponseAndDeferredHeaders(): void
+    {
+        SaTokenContext::setContextId('reused-request-context');
+
+        SaTokenContext::setHeader('X-Pending-Previous-User', 'pending-token');
+        SaTokenContext::setRequest(new \stdClass());
+        $previousResponse = new TestResponseTracker();
+        SaTokenContext::setResponse($previousResponse);
+        $this->assertArrayNotHasKey('X-Pending-Previous-User', $previousResponse->headers);
+
+        SaTokenContext::setHeader('X-Previous-User', 'previous-token');
+
+        SaTokenContext::setRequest(new \stdClass());
+
+        $this->assertNull(SaTokenContext::getResponse());
+        $this->assertSame('previous-token', $previousResponse->headers['X-Previous-User']);
+
+        SaTokenContext::setHeader('X-Current-User', 'current-token');
+        $currentResponse = new TestResponseTracker();
+        SaTokenContext::setResponse($currentResponse);
+
+        $this->assertArrayNotHasKey('X-Previous-User', $currentResponse->headers);
+        $this->assertSame('current-token', $currentResponse->headers['X-Current-User']);
     }
 
     public function testGetResponseWhenNull(): void
@@ -88,6 +289,28 @@ class SaTokenContextTest extends TestCase
         $this->assertEquals(1, is_object($req2) && property_exists($req2, 'id') ? $req2->id : null);
     }
 
+    public function testContextIsolatedAcrossInterleavedFibers(): void
+    {
+        $fiberA = new \Fiber(static function (): mixed {
+            SaTokenContext::setRequest('request-a');
+            \Fiber::suspend();
+            return SaTokenContext::getRequest();
+        });
+        $fiberB = new \Fiber(static function (): mixed {
+            SaTokenContext::setRequest('request-b');
+            \Fiber::suspend();
+            return SaTokenContext::getRequest();
+        });
+
+        $fiberA->start();
+        $fiberB->start();
+        $fiberA->resume();
+        $fiberB->resume();
+
+        $this->assertSame('request-a', $fiberA->getReturn());
+        $this->assertSame('request-b', $fiberB->getReturn());
+    }
+
     // ---- Header with PSR-7 ----
 
     public function testGetHeaderFromPsr7Request(): void
@@ -111,6 +334,30 @@ class SaTokenContextTest extends TestCase
         SaTokenContext::setRequest($request);
 
         $this->assertNull(SaTokenContext::getHeader('satoken'));
+    }
+
+    public function testDetectsRepeatedHeaderValuesFromFrameworkHeaderBag(): void
+    {
+        $headerBag = new class () {
+            /** @return array<int, string> */
+            public function all(?string $name = null): array
+            {
+                return $name === 'satoken' ? ['token-one', 'token-two'] : [];
+            }
+        };
+        $request = new class ($headerBag) {
+            public function __construct(public object $headers)
+            {
+            }
+
+            public function header(string $name): string
+            {
+                return 'token-one';
+            }
+        };
+        SaTokenContext::setRequest($request);
+
+        self::assertTrue(SaTokenContext::hasMultipleHeaderValues('satoken'));
     }
 
     // ---- Cookie with PSR-7 ----
@@ -160,6 +407,19 @@ class SaTokenContextTest extends TestCase
         $this->assertEquals('body-token', SaTokenContext::getParam('token'));
     }
 
+    public function testConflictingParameterValuesAreRejected(): void
+    {
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $uri = $this->createMock(\Psr\Http\Message\UriInterface::class);
+        $uri->method('getQuery')->willReturn('token=first&token=second');
+        $request->method('getUri')->willReturn($uri);
+        $request->method('getQueryParams')->willReturn(['token' => 'second']);
+        $request->method('getParsedBody')->willReturn(null);
+        SaTokenContext::setRequest($request);
+
+        self::assertTrue(SaTokenContext::hasConflictingParamValues('token'));
+    }
+
     public function testGetParamWhenNoRequest(): void
     {
         $this->assertNull(SaTokenContext::getParam('token'));
@@ -178,6 +438,21 @@ class SaTokenContextTest extends TestCase
 
         // 新响应应该被存回上下文
         $this->assertSame($newResponse, SaTokenContext::getResponse());
+    }
+
+    public function testSetHeaderRejectsInvalidHeaderNames(): void
+    {
+        $rejected = 0;
+        foreach (['X-Test: injected', "X-\r\n-Test", '', ' X-Test'] as $name) {
+            try {
+                SaTokenContext::setHeader($name, 'value');
+                self::fail('非法响应头名称必须被拒绝');
+            } catch (SaTokenException) {
+                // Invalid names must not be transformed into different valid headers.
+                $rejected++;
+            }
+        }
+        self::assertSame(4, $rejected);
     }
 
     public function testSetHeaderWhenNoResponse(): void
@@ -208,6 +483,46 @@ class SaTokenContextTest extends TestCase
         $this->assertSame($newResponse, SaTokenContext::getResponse());
     }
 
+    public function testNegativeCookieTimeoutExpiresCookieImmediately(): void
+    {
+        $response = $this->createMock(\Psr\Http\Message\ResponseInterface::class);
+        $newResponse = $this->createMock(\Psr\Http\Message\ResponseInterface::class);
+        $response->expects(self::once())
+            ->method('withAddedHeader')
+            ->with('Set-Cookie', self::callback(static function (string $cookie): bool {
+                self::assertStringContainsString('satoken=', $cookie);
+                self::assertStringContainsString('Expires=', $cookie);
+                self::assertStringContainsString('Max-Age=0', $cookie);
+                return true;
+            }))
+            ->willReturn($newResponse);
+        SaTokenContext::setResponse($response);
+
+        SaTokenContext::setCookie('satoken', '', -1, '/', '', true, true, 'Lax');
+
+        self::assertSame($newResponse, SaTokenContext::getResponse());
+    }
+
+    public function testFrameworkCookieUsesMinutesAndNegativeTimeoutForDeletion(): void
+    {
+        $response = new class () {
+            /** @var list<array{string, string, int, string, string, bool, bool}> */
+            public array $cookies = [];
+
+            public function cookie(string $name, string $value, int $minutes, string $path, string $domain, bool $secure, bool $httpOnly): void
+            {
+                $this->cookies[] = [$name, $value, $minutes, $path, $domain, $secure, $httpOnly];
+            }
+        };
+        SaTokenContext::setResponse($response);
+
+        SaTokenContext::setCookie('satoken', 'token-value', 3600, '/', '', true, true);
+        SaTokenContext::setCookie('satoken', '', -1, '/', '', true, true);
+
+        self::assertSame(60, $response->cookies[0][2]);
+        self::assertSame(-1, $response->cookies[1][2]);
+    }
+
     public function testSetCookieWhenNoResponse(): void
     {
         $response = $this->createMock(\Psr\Http\Message\ResponseInterface::class);
@@ -223,6 +538,29 @@ class SaTokenContextTest extends TestCase
         SaTokenContext::setResponse($response);
 
         $this->assertSame($newResponse, SaTokenContext::getResponse());
+    }
+
+    public function testSetCookieRejectsInjectedAttributes(): void
+    {
+        $invalidCookies = [
+            ['satoken; Domain=attacker.example', 'value', '/', '', 'Lax'],
+            ['satoken', 'value', '/; Secure', '', 'Lax'],
+            ['satoken', 'value', '/', 'example.com; Domain=attacker.example', 'Lax'],
+            ['satoken', 'value', '/', '', 'Lax; Secure'],
+        ];
+        $rejected = 0;
+
+        foreach ($invalidCookies as [$name, $value, $path, $domain, $sameSite]) {
+            try {
+                SaTokenContext::setCookie($name, $value, 60, $path, $domain, true, true, $sameSite);
+                self::fail('不安全的 Cookie 属性必须被拒绝');
+            } catch (SaTokenException) {
+                // Expected: caller-controlled Cookie attributes cannot inject directives.
+                $rejected++;
+            }
+        }
+
+        self::assertSame(count($invalidCookies), $rejected);
     }
 
     public function testSetHeaderOnSymfonyStyleResponse(): void
@@ -262,5 +600,116 @@ class SaTokenContextTest extends TestCase
         $this->assertSame('satoken', $cookie->name ?? null);
         $this->assertSame('symfony-cookie', $cookie->value ?? null);
         $this->assertSame('None', $cookie->sameSite ?? null);
+    }
+
+    public function testLaravelStyleResponseUsesSymfonyCookieAttributesWhenAvailable(): void
+    {
+        if (!class_exists(\Symfony\Component\HttpFoundation\Cookie::class)) {
+            require_once __DIR__ . '/Fixtures/SymfonyHttpFoundationCookieStub.php';
+        }
+
+        $headers = new SymfonyHeaderBagStub();
+        $response = new class ($headers) {
+            /** @var array<int, bool|int|string> */
+            public array $cookieCalls = [];
+
+            public function __construct(public SymfonyHeaderBagStub $headers)
+            {
+            }
+
+            public function cookie(string $name, string $value, int $minutes, string $path, string $domain, bool $secure, bool $httpOnly): void
+            {
+                $this->cookieCalls = [$name, $value, $minutes, $path, $domain, $secure, $httpOnly];
+            }
+        };
+        SaTokenContext::setResponse($response);
+
+        SaTokenContext::setCookie('satoken', 'laravel-cookie', 3600, '/', 'example.com', true, true, 'Strict');
+
+        $this->assertSame([], $response->cookieCalls, '应优先使用 Symfony Cookie，避免 Laravel 分钟参数与配置丢失');
+        $this->assertCount(1, $headers->cookies);
+        $cookie = $headers->cookies[0];
+        $this->assertSame('Strict', $cookie->sameSite ?? null);
+        $this->assertGreaterThanOrEqual(time() + 3599, (int) $cookie->expire);
+        $this->assertLessThanOrEqual(time() + 3601, (int) $cookie->expire);
+    }
+
+    public function testThinkPhpStyleResponseReceivesCookieOptionsArray(): void
+    {
+        $cookieManager = new ThinkPhpCookieManagerStub();
+        $response = new ThinkPhpResponseStub($cookieManager);
+        SaTokenContext::setResponse($response);
+
+        SaTokenContext::setCookie('satoken', 'think-cookie', 3600, '/auth', 'example.com', true, true, 'Strict');
+
+        $this->assertSame([
+            'satoken',
+            'think-cookie',
+            [
+                'expire' => 3600,
+                'path' => '/auth',
+                'domain' => 'example.com',
+                'secure' => true,
+                'httponly' => true,
+                'samesite' => 'Strict',
+            ],
+        ], $cookieManager->lastSet);
+    }
+
+    public function testLaravelStyleFallbackReceivesSameSiteCookieAttribute(): void
+    {
+        $response = new class () {
+            /** @var array<int, bool|int|string|null> */
+            public array $cookieCalls = [];
+
+            public function cookie(
+                string $name,
+                string $value,
+                int $minutes,
+                string $path,
+                string $domain,
+                bool $secure,
+                bool $httpOnly,
+                bool $raw = false,
+                ?string $sameSite = null
+            ): void {
+                $this->cookieCalls = [$name, $value, $minutes, $path, $domain, $secure, $httpOnly, $raw, $sameSite];
+            }
+        };
+        SaTokenContext::setResponse($response);
+
+        SaTokenContext::setCookie('satoken', 'laravel-fallback', 3600, '/', '', true, true, 'Strict');
+
+        $this->assertSame(['satoken', 'laravel-fallback', 60, '/', '', true, true, false, 'Strict'], $response->cookieCalls);
+    }
+}
+
+class ThinkPhpCookieManagerStub
+{
+    /** @var array{0: string, 1: string, 2: array<string, bool|int|string>}|null */
+    public ?array $lastSet = null;
+
+    /** @param array<string, bool|int|string> $options */
+    public function set(string $name, string $value, array $options): void
+    {
+        $this->lastSet = [$name, $value, $options];
+    }
+}
+
+class ThinkPhpResponseStub
+{
+    public function __construct(private ThinkPhpCookieManagerStub $cookieManager)
+    {
+    }
+
+    public function getCookie(): ThinkPhpCookieManagerStub
+    {
+        return $this->cookieManager;
+    }
+
+    /** @param array<string, bool|int|string> $options */
+    public function cookie(string $name, string $value, array $options): void
+    {
+        $this->cookieManager->set($name, $value, $options);
     }
 }

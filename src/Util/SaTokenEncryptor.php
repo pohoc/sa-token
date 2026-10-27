@@ -12,6 +12,7 @@ use SaToken\Exception\SaTokenException;
 
 class SaTokenEncryptor
 {
+    private const CONTEXT_CIPHERTEXT_MAGIC = 'STC1';
     protected string $key;
 
     protected string $macKey;
@@ -20,10 +21,26 @@ class SaTokenEncryptor
 
     protected bool $useSm;
 
+    protected bool $keyMaterialStrong = false;
+
     public function __construct(bool $enabled, string $key, string $cryptoType = 'intl')
     {
+        $cryptoType = SaTokenCryptoType::validate($cryptoType);
         $this->enabled = $enabled;
         $this->useSm = ($cryptoType === 'sm');
+
+        if (!$enabled) {
+            $this->key = '';
+            $this->macKey = '';
+            return;
+        }
+
+        // AES needs 256 bits of key material. SM4 accepts its native 128-bit
+        // hexadecimal key representation or a high-entropy 32-byte passphrase.
+        // Keep deriving legacy short keys so decryptLegacy() can migrate old data,
+        // but never use them in normal encryption/decryption paths.
+        $this->keyMaterialStrong = strlen($key) >= 32
+            || ($key === '' && $this->isUnitTestRuntime());
 
         if ($this->useSm) {
             $this->key = $this->deriveSm4Key($key);
@@ -50,6 +67,8 @@ class SaTokenEncryptor
             return $plaintext;
         }
 
+        $this->assertStrongKeyMaterial();
+
         return $this->useSm ? $this->sm4Encrypt($plaintext) : $this->aesEncrypt($plaintext);
     }
 
@@ -59,7 +78,22 @@ class SaTokenEncryptor
             return $data;
         }
 
+        $this->assertStrongKeyMaterial();
+
         return $this->useSm ? $this->sm4Decrypt($data) : $this->aesDecrypt($data);
+    }
+
+    /**
+     * 显式迁移旧格式数据。SM4 旧格式使用无密钥 SM3 摘要，不提供真实性保证，
+     * 因此普通 decrypt() 不再接受；迁移方必须在可信、只读的旧数据来源上调用本方法。
+     */
+    public function decryptLegacy(string $data): string
+    {
+        if (!$this->enabled) {
+            return $data;
+        }
+
+        return $this->useSm ? $this->sm4Decrypt($data, true) : $this->aesDecrypt($data);
     }
 
     protected function aesEncrypt(string $plaintext): string
@@ -120,7 +154,7 @@ class SaTokenEncryptor
         }
     }
 
-    protected function sm4Decrypt(string $data): string
+    protected function sm4Decrypt(string $data, bool $allowLegacyUnkeyedIntegrity = false): string
     {
         $decoded = base64_decode($data, true);
         if ($decoded === false || strlen($decoded) < 64) {
@@ -131,9 +165,12 @@ class SaTokenEncryptor
         $iv = bin2hex(substr($decoded, 32, 16));
         $ciphertext = bin2hex(substr($decoded, 48));
 
-        // 兼容历史格式：先验 HMAC-SM3（独立密钥），再回退旧版无密钥 SM3 格式
+        // 先验当前带密钥 HMAC-SM3。旧版无密钥摘要只能由显式迁移入口接受。
         $expectedHmac = HmacSm3::hmac($this->macKey, $iv . $ciphertext);
         if (!hash_equals($expectedHmac, $hmac)) {
+            if (!$allowLegacyUnkeyedIntegrity) {
+                return $data;
+            }
             $legacyHmac = Sm3::sm3($iv . $ciphertext);
             if (!hash_equals($legacyHmac, $hmac)) {
                 return $data;
@@ -150,8 +187,8 @@ class SaTokenEncryptor
 
     /**
      * 解密并校验完整性，失败时返回 null（区别于"数据不存在"）。
-     * decrypt() 出于兼容存量明文/迁移场景会静默返回原文，无法感知篡改；
-     * 对安全敏感的读取路径建议使用本方法。
+     * 加密开启时只接受密文，拒绝未认证明文，防止攻击者用明文主体替换 DAO 中的密文。
+     * 需要迁移旧明文数据时，应在启用加密前显式迁移数据。
      */
     public function decryptChecked(string $data): ?string
     {
@@ -159,11 +196,103 @@ class SaTokenEncryptor
             return $data;
         }
 
+        if (!$this->keyMaterialStrong) {
+            return null;
+        }
+
+        if (!$this->isCiphertext($data)) {
+            return null;
+        }
+
+        if ($this->useSm) {
+            $decoded = base64_decode($data, true);
+            if ($decoded === false) {
+                return null;
+            }
+
+            $hmac = bin2hex(substr($decoded, 0, 32));
+            $iv = bin2hex(substr($decoded, 32, 16));
+            $ciphertext = bin2hex(substr($decoded, 48));
+            $expectedHmac = HmacSm3::hmac($this->macKey, $iv . $ciphertext);
+            if (!hash_equals($expectedHmac, $hmac)) {
+                // 旧版无密钥 SM3 摘要可由任何存储写入者重算，不构成完整性校验。
+                return null;
+            }
+
+            try {
+                $options = (new Sm4Options())->setIv($iv);
+                return Sm4::decrypt($ciphertext, $this->key, $options);
+            } catch (\Throwable) {
+                return null;
+            }
+        }
+
         $plaintext = $this->decrypt($data);
-        if ($plaintext === $data && $this->isCiphertext($data)) {
+        if ($plaintext === $data) {
             return null;
         }
         return $plaintext;
+    }
+
+    /** Encrypt a value whose integrity must be bound to its storage key. */
+    public function encryptForContext(string $plaintext, string $context): string
+    {
+        if (!$this->enabled) {
+            return $plaintext;
+        }
+        $this->assertStrongKeyMaterial();
+        $encoded = base64_decode($this->encrypt($plaintext), true);
+        if ($encoded === false || strlen($encoded) < 48) {
+            throw new SaTokenException('Token 内容加密失败');
+        }
+        $ivAndCiphertext = substr($encoded, 32);
+        $mac = $this->contextMac($context, $ivAndCiphertext);
+        return base64_encode(self::CONTEXT_CIPHERTEXT_MAGIC . $mac . $ivAndCiphertext);
+    }
+
+    /** Decrypt only a context-bound value; legacy unbound ciphertext fails closed. */
+    public function decryptCheckedForContext(string $data, string $context): ?string
+    {
+        if (!$this->enabled) {
+            return $data;
+        }
+        if (!$this->keyMaterialStrong) {
+            return null;
+        }
+        $decoded = base64_decode($data, true);
+        if ($decoded === false || strlen($decoded) < 52
+            || substr($decoded, 0, 4) !== self::CONTEXT_CIPHERTEXT_MAGIC) {
+            return null;
+        }
+        $mac = substr($decoded, 4, 32);
+        $ivAndCiphertext = substr($decoded, 36);
+        if (!hash_equals($this->contextMac($context, $ivAndCiphertext), $mac)) {
+            return null;
+        }
+        $standardMac = $this->useSm
+            ? hex2bin(HmacSm3::hmac($this->macKey, bin2hex(substr($ivAndCiphertext, 0, 16)) . bin2hex(substr($ivAndCiphertext, 16))))
+            : hash_hmac('sha256', $ivAndCiphertext, $this->macKey, true);
+        return $this->decryptChecked(base64_encode($standardMac . $ivAndCiphertext));
+    }
+
+    private function contextMac(string $context, string $payload): string
+    {
+        $message = "sa-token-context-v1\0" . pack('N', strlen($context)) . $context . $payload;
+        if (!$this->useSm) {
+            return hash_hmac('sha256', $message, $this->macKey, true);
+        }
+        $mac = hex2bin(HmacSm3::hmac($this->macKey, bin2hex($message)));
+        if ($mac === false) {
+            throw new SaTokenException('Token 内容完整性校验生成失败');
+        }
+        return $mac;
+    }
+
+    protected function assertStrongKeyMaterial(): void
+    {
+        if (!$this->keyMaterialStrong) {
+            throw new SaTokenException('加密密钥长度不足，AES 至少需要 32 字节；SM4 至少需要 32 字节或 32 位十六进制密钥');
+        }
     }
 
     /**
@@ -181,11 +310,17 @@ class SaTokenEncryptor
         return $this->useSm ? strlen($decoded) >= 64 : strlen($decoded) >= 48;
     }
 
+    protected function isUnitTestRuntime(): bool
+    {
+        // Environment variables are deployer-controlled and must never opt a
+        // production process into a predictable fallback encryption key.
+        return defined('PHPUNIT_COMPOSER_INSTALL');
+    }
+
     protected function deriveAesKey(string $key): string
     {
         if ($key === '') {
-            $isTest = defined('PHPUNIT_COMPOSER_INSTALL') || getenv('PHPUNIT_TESTING') !== false;
-            if ($isTest) {
+            if ($this->isUnitTestRuntime()) {
                 return hash_hkdf('sha256', 'sa-token-default-encrypt-key', 32, 'token-encrypt', '');
             }
             throw new SaTokenException('Sa-Token: 未配置加密密钥，请在生产环境中配置 aesKey 或 tokenEncryptKey');
@@ -199,8 +334,7 @@ class SaTokenEncryptor
     protected function deriveSm4Key(string $key): string
     {
         if ($key === '') {
-            $isTest = defined('PHPUNIT_COMPOSER_INSTALL') || getenv('PHPUNIT_TESTING') !== false;
-            if ($isTest) {
+            if ($this->isUnitTestRuntime()) {
                 return substr(bin2hex(hash_hkdf('sha256', 'sa-token-default-sm4-key', 32, 'token-encrypt-sm4', '')), 0, 32);
             }
             throw new SaTokenException('Sa-Token: 未配置 SM4 加密密钥，请在生产环境中配置 sm4Key 或 tokenEncryptKey');

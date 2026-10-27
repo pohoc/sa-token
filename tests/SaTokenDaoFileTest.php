@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace SaToken\Tests;
 
 use PHPUnit\Framework\TestCase;
+use SaToken\Config\SaTokenConfig;
 use SaToken\Dao\SaTokenDaoFile;
+use SaToken\Exception\SaTokenException;
 use SaToken\SaToken;
 use SaToken\StpUtil;
 
@@ -14,6 +16,13 @@ class SaTokenDaoFileTest extends TestCase
     protected string $basePath;
 
     protected SaTokenDaoFile $dao;
+
+    protected function getLockPath(string $key): string
+    {
+        $path = (new \ReflectionMethod(SaTokenDaoFile::class, 'lockFile'))->invoke($this->dao, $key);
+        self::assertIsString($path);
+        return $path;
+    }
 
     protected function setUp(): void
     {
@@ -24,6 +33,7 @@ class SaTokenDaoFileTest extends TestCase
     protected function tearDown(): void
     {
         // 清理测试目录（结构固定：basePath/{data,locks} 两层）
+        @unlink($this->basePath . '/set-result');
         foreach (['data', 'locks'] as $sub) {
             $dir = $this->basePath . '/' . $sub;
             if (!is_dir($dir)) {
@@ -55,12 +65,158 @@ class SaTokenDaoFileTest extends TestCase
         $this->assertSame(-2, $this->dao->getTimeout('k:basic'));
     }
 
+    public function testDeleteRejectsNonRegularRecordInsteadOfReportingSuccess(): void
+    {
+        $dataFile = (new \ReflectionMethod(SaTokenDaoFile::class, 'dataFile'))
+            ->invoke($this->dao, 'blocked-delete');
+        self::assertIsString($dataFile);
+        self::assertTrue(mkdir($dataFile));
+
+        try {
+            $this->expectException(SaTokenException::class);
+            $this->expectExceptionMessage('不能是符号链接或非普通文件');
+            $this->dao->delete('blocked-delete');
+        } finally {
+            rmdir($dataFile);
+        }
+    }
+
+    public function testExistingStorageDirectoriesAreRestricted(): void
+    {
+        $path = $this->basePath;
+        chmod($path . '/data', 0777);
+        chmod($path . '/locks', 0777);
+
+        new SaTokenDaoFile(['path' => $path]);
+
+        $this->assertSame(0700, fileperms($path . '/data') & 0777);
+        $this->assertSame(0700, fileperms($path . '/locks') & 0777);
+    }
+
+    public function testStorageDirectorySymlinkIsRejected(): void
+    {
+        $path = $this->basePath . '/linked-store';
+        $target = $this->basePath . '/external-data';
+        mkdir($path);
+        mkdir($target);
+        symlink($target, $path . '/data');
+
+        try {
+            new SaTokenDaoFile(['path' => $path]);
+            $this->fail('符号链接存储目录必须拒绝');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('不能是符号链接', $e->getMessage());
+        } finally {
+            unlink($path . '/data');
+            rmdir($target);
+            rmdir($path);
+        }
+    }
+
+    public function testStorageRootSymlinkIsRejected(): void
+    {
+        $path = $this->basePath . '/linked-root';
+        $target = $this->basePath . '/external-root';
+        mkdir($target . '/data', 0700, true);
+        mkdir($target . '/locks', 0700, true);
+        symlink($target, $path);
+
+        try {
+            new SaTokenDaoFile(['path' => $path]);
+            $this->fail('存储根目录为符号链接时必须拒绝');
+        } catch (SaTokenException $e) {
+            $this->assertStringContainsString('不能是符号链接', $e->getMessage());
+        } finally {
+            unlink($path);
+            rmdir($target . '/data');
+            rmdir($target . '/locks');
+            rmdir($target);
+        }
+    }
+
     public function testBinarySafeValues(): void
     {
         // 加密后的值可能含任意字节，必须 base64 层保证不损坏
         $binary = random_bytes(64) . "\x00\xff 中文";
         $this->dao->set('k:binary', $binary, 60);
         $this->assertSame($binary, $this->dao->get('k:binary'));
+    }
+
+    public function testStorageFilesArePrivateOnPosix(): void
+    {
+        if (DIRECTORY_SEPARATOR !== '/') {
+            $this->markTestSkipped('POSIX file mode assertions only apply on Unix-like systems.');
+        }
+
+        $this->dao->set('k:private', 'secret', 60);
+        $this->dao->setIfNotExists('k:private-lock', 'lock', 60);
+
+        $dataFile = $this->basePath . '/data/' . hash('sha256', 'k:private') . '.dat';
+        $lockFile = $this->getLockPath('k:private-lock');
+        $this->assertSame(0600, fileperms($dataFile) & 0777);
+        $this->assertSame(0600, fileperms($lockFile) & 0777);
+    }
+
+    public function testMissingKeyReadsUseABoundedLockFilePool(): void
+    {
+        foreach (range(1, 2000) as $index) {
+            self::assertNull($this->dao->get('untrusted-token-' . $index));
+        }
+
+        $lockFiles = glob($this->basePath . '/locks/*.lock') ?: [];
+        self::assertGreaterThan(0, count($lockFiles));
+        self::assertLessThanOrEqual(256, count($lockFiles));
+        self::assertLessThan(2000, count($lockFiles));
+    }
+
+    public function testDataRecordSymlinkIsRejected(): void
+    {
+        $key = 'k:symlink-record';
+        $target = $this->basePath . '/external-record';
+        $payload = json_encode([
+            'key' => $key,
+            'v' => base64_encode('forged'),
+            'e' => null,
+        ]);
+        self::assertIsString($payload);
+        file_put_contents($target, $payload);
+        $link = $this->basePath . '/data/' . hash('sha256', $key) . '.dat';
+        self::assertTrue(symlink($target, $link));
+
+        try {
+            $this->dao->get($key);
+            self::fail('数据记录符号链接必须拒绝');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('不能是符号链接', $exception->getMessage());
+        } finally {
+            @unlink($link);
+            @unlink($target);
+        }
+    }
+
+    public function testLockFileSymlinkIsRejectedWithoutChangingTargetPermissions(): void
+    {
+        if (DIRECTORY_SEPARATOR !== '/') {
+            $this->markTestSkipped('Symlink lock protection test requires POSIX filesystem behavior.');
+        }
+
+        $key = 'k:symlink-lock';
+        $target = $this->basePath . '/external-lock-target';
+        file_put_contents($target, 'unrelated file');
+        chmod($target, 0644);
+        $link = $this->getLockPath($key);
+        self::assertTrue(symlink($target, $link));
+
+        try {
+            $this->dao->set($key, 'value');
+            self::fail('锁文件符号链接必须拒绝');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('不能是符号链接', $exception->getMessage());
+        } finally {
+            @unlink($link);
+            self::assertSame(0644, fileperms($target) & 0777);
+            @unlink($target);
+        }
     }
 
     public function testPermanentAndExpiry(): void
@@ -86,12 +242,200 @@ class SaTokenDaoFileTest extends TestCase
         $this->assertSame(-1, $this->dao->getTimeout('k:e'));
     }
 
+    public function testExpireDoesNotReviveAnExpiredRecord(): void
+    {
+        $this->dao->set('k:expired-before-expire', 'stale', 1);
+        sleep(2);
+
+        $this->dao->expire('k:expired-before-expire', 120);
+
+        $this->assertNull($this->dao->get('k:expired-before-expire'));
+        $this->assertSame(-2, $this->dao->getTimeout('k:expired-before-expire'));
+    }
+
     public function testGetAndDeleteIsAtomicUnderFlock(): void
     {
         $this->dao->set('k:gd', 'v', 60);
         $this->assertSame('v', $this->dao->getAndDelete('k:gd'));
         $this->assertNull($this->dao->get('k:gd'));
         $this->assertNull($this->dao->getAndDelete('k:gd'));
+    }
+
+    public function testGetAndDeleteFailsClosedWhenRecordCannotBeRemoved(): void
+    {
+        $key = 'k:gd-unlink-failure';
+        $this->dao->set($key, 'one-time-credential', 60);
+        $dao = new class (['path' => $this->basePath]) extends SaTokenDaoFile {
+            protected function removeRecordFile(string $key): void
+            {
+                throw new SaTokenException('simulated unlink failure');
+            }
+        };
+
+        try {
+            $dao->getAndDelete($key);
+            self::fail('A one-time credential must not be returned when deletion fails');
+        } catch (SaTokenException $exception) {
+            self::assertSame('simulated unlink failure', $exception->getMessage());
+        }
+
+        self::assertSame('one-time-credential', $this->dao->get($key));
+    }
+
+    public function testCompareAndSetDeleteFailsWhenRecordCannotBeRemoved(): void
+    {
+        $key = 'k:cas-delete-unlink-failure';
+        $this->dao->set($key, 'active-marker', 60);
+        $dao = new class (['path' => $this->basePath]) extends SaTokenDaoFile {
+            protected function removeRecordFile(string $key): void
+            {
+                throw new SaTokenException('simulated unlink failure');
+            }
+        };
+
+        try {
+            $dao->compareAndSet($key, 'active-marker', null);
+            self::fail('CAS deletion must not report success when unlink fails');
+        } catch (SaTokenException $exception) {
+            self::assertSame('simulated unlink failure', $exception->getMessage());
+        }
+
+        self::assertSame('active-marker', $this->dao->get($key));
+    }
+
+    public function testCompareAndSetMissingValueToMissingValueIsSuccessfulNoOp(): void
+    {
+        self::assertTrue($this->dao->compareAndSet('k:cas-empty-delete', null, null));
+        self::assertNull($this->dao->get('k:cas-empty-delete'));
+    }
+
+    public function testExecuteAtomicallyHoldsLockUntilCallbackReturns(): void
+    {
+        if (!function_exists('pcntl_fork')) {
+            $this->markTestSkipped('pcntl is required for the multi-process lock test');
+        }
+
+        $signalPath = $this->basePath . '/lock-held';
+        $eventsPath = $this->basePath . '/lock-events';
+        $key = 'psr16-atomic:long-operation';
+        $path = $this->basePath;
+        $pid = pcntl_fork();
+        if ($pid === -1) {
+            $this->fail('Could not fork worker process');
+        }
+
+        if ($pid === 0) {
+            while (!is_file($signalPath)) {
+                usleep(1000);
+            }
+            $childDao = new SaTokenDaoFile(['path' => $path]);
+            $childDao->executeAtomically($key, static function () use ($eventsPath): void {
+                file_put_contents($eventsPath, "child-entered\n", FILE_APPEND | LOCK_EX);
+            });
+            exit(0);
+        }
+
+        $this->dao->executeAtomically($key, static function () use ($signalPath, $eventsPath): void {
+            file_put_contents($eventsPath, "parent-entered\n", FILE_APPEND | LOCK_EX);
+            touch($signalPath);
+            usleep(250_000);
+            file_put_contents($eventsPath, "parent-leaving\n", FILE_APPEND | LOCK_EX);
+        });
+
+        $status = 0;
+        $this->assertSame($pid, pcntl_waitpid($pid, $status));
+        if (!is_int($status)) {
+            throw new \RuntimeException('Child process returned an invalid status');
+        }
+        $this->assertTrue(pcntl_wifexited($status));
+        $this->assertSame(0, pcntl_wexitstatus($status));
+        $this->assertSame("parent-entered\nparent-leaving\nchild-entered\n", file_get_contents($eventsPath));
+    }
+
+    public function testSetWaitsForAtomicReadModifyWriteLock(): void
+    {
+        if (!function_exists('pcntl_fork')) {
+            $this->markTestSkipped('pcntl is required for the multi-process lock test');
+        }
+
+        $key = 'k:atomic-set';
+        $resultPath = $this->basePath . '/set-result';
+        $lockPath = $this->getLockPath($key);
+        $lock = fopen($lockPath, 'c');
+        $this->assertNotFalse($lock);
+        flock($lock, LOCK_EX);
+
+        $dao = $this->dao;
+        $pid = pcntl_fork();
+        if ($pid === -1) {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+            $this->fail('Could not fork worker process');
+        }
+        if ($pid === 0) {
+            fclose($lock);
+            file_put_contents($resultPath, 'started');
+            $dao->set($key, 'fresh-value');
+            file_put_contents($resultPath, 'done');
+            exit(0);
+        }
+
+        $deadline = microtime(true) + 1.0;
+        while (!is_file($resultPath) && microtime(true) < $deadline) {
+            usleep(10000);
+        }
+        $this->assertSame('started', file_get_contents($resultPath));
+        usleep(100000);
+        $this->assertSame('started', file_get_contents($resultPath), 'set must block while the key lock is held');
+
+        flock($lock, LOCK_UN);
+        fclose($lock);
+        $status = 0;
+        $this->assertSame($pid, pcntl_waitpid($pid, $status));
+        $this->assertSame('done', file_get_contents($resultPath));
+        $this->assertSame('fresh-value', $this->dao->get($key));
+    }
+
+    public function testCompareAndDeletePreservesAReplacementLock(): void
+    {
+        $this->dao->set('k:lock', 'new-owner', 60);
+
+        $this->assertFalse($this->dao->compareAndDelete('k:lock', 'old-owner'));
+        $this->assertSame('new-owner', $this->dao->get('k:lock'));
+        $this->assertTrue($this->dao->compareAndDelete('k:lock', 'new-owner'));
+        $this->assertNull($this->dao->get('k:lock'));
+    }
+
+    public function testCompareAndExpirePreservesAReplacementLock(): void
+    {
+        $this->dao->set('k:lock', 'new-owner', 60);
+
+        self::assertFalse($this->dao->compareAndExpire('k:lock', 'old-owner', 120));
+        self::assertSame('new-owner', $this->dao->get('k:lock'));
+        self::assertTrue($this->dao->compareAndExpire('k:lock', 'new-owner', 120));
+        self::assertGreaterThan(0, $this->dao->getTimeout('k:lock'));
+        self::assertLessThanOrEqual(120, $this->dao->getTimeout('k:lock'));
+    }
+
+    public function testCompareAndExpireNeverShortensAndCanMakeAKeyPermanent(): void
+    {
+        $this->dao->set('k:session-index', 'value', 120);
+
+        self::assertTrue($this->dao->compareAndExpire('k:session-index', 'value', 30));
+        self::assertGreaterThan(30, $this->dao->getTimeout('k:session-index'));
+        self::assertTrue($this->dao->compareAndExpire('k:session-index', 'value', -1));
+        self::assertSame(-1, $this->dao->getTimeout('k:session-index'));
+    }
+
+    public function testCompareAndUpdatePreservesValueAndTtlOnMismatch(): void
+    {
+        $this->dao->set('k:session', 'old-record', 60);
+        $ttl = $this->dao->getTimeout('k:session');
+        self::assertFalse($this->dao->compareAndUpdate('k:session', 'stale-record', 'wrong'));
+        self::assertSame('old-record', $this->dao->get('k:session'));
+        self::assertTrue($this->dao->compareAndUpdate('k:session', 'old-record', 'new-record'));
+        self::assertSame('new-record', $this->dao->get('k:session'));
+        self::assertLessThanOrEqual($ttl, $this->dao->getTimeout('k:session'));
     }
 
     public function testSetIfNotExistsUnderFlock(): void
@@ -142,6 +486,24 @@ class SaTokenDaoFileTest extends TestCase
         $this->assertNull($this->dao->get('satoken:login:token:dead'));
     }
 
+    public function testScanLimitBoundsResultsAndPreservesSortedOrder(): void
+    {
+        $limitedDao = new SaTokenDaoFile(['path' => $this->basePath, 'scanLimit' => 2]);
+        $keys = ['scan:key:a', 'scan:key:b', 'scan:key:c', 'scan:key:d', 'scan:key:e'];
+        foreach ($keys as $key) {
+            $limitedDao->set($key, $key);
+        }
+
+        $expected = $keys;
+        usort($expected, static fn (string $left, string $right): int => strcmp(
+            hash('sha256', $left) . '.dat',
+            hash('sha256', $right) . '.dat',
+        ));
+
+        self::assertSame(array_slice($expected, 0, 2), $limitedDao->searchKeys('scan:key:', '', 0, 10));
+        self::assertSame(5, $limitedDao->size());
+    }
+
     public function testPersistenceAcrossInstances(): void
     {
         $this->dao->set('k:persist', 'survives', 60);
@@ -163,6 +525,21 @@ class SaTokenDaoFileTest extends TestCase
         $this->assertFalse($this->dao->exists('k:corrupt'));
     }
 
+    public function testCorruptedExpiryAndMismatchedKeyAreTreatedAsMissing(): void
+    {
+        foreach ([
+            'k:corrupt-expiry' => ['key' => 'k:corrupt-expiry', 'v' => base64_encode('value'), 'e' => 'invalid'],
+            'k:mismatched-key' => ['key' => 'another-key', 'v' => base64_encode('value'), 'e' => null],
+            'k:missing-expiry' => ['key' => 'k:missing-expiry', 'v' => base64_encode('value')],
+        ] as $key => $record) {
+            $path = $this->basePath . '/data/' . hash('sha256', $key) . '.dat';
+            file_put_contents($path, json_encode($record) ?: '{}');
+
+            $this->assertNull($this->dao->get($key));
+            $this->assertFileDoesNotExist($path);
+        }
+    }
+
     public function testSizeAndDeleteMultiple(): void
     {
         $this->dao->set('k:m1', '1', 60);
@@ -181,6 +558,7 @@ class SaTokenDaoFileTest extends TestCase
     {
         // storage.type=file 配置驱动装配：init 后无需手动 setDao
         SaToken::reset();
+        SaToken::getDao(); // A prior lazy default must not override configured storage.
         $path = $this->basePath . '-cfg';
         SaToken::init([
             'tokenName' => 'satoken',
@@ -220,5 +598,71 @@ class SaTokenDaoFileTest extends TestCase
         $this->assertFalse(StpUtil::isLogin());
 
         SaToken::reset();
+    }
+
+    public function testUnknownStorageTypeFailsClosedInsteadOfFallingBackToMemory(): void
+    {
+        SaToken::reset();
+
+        foreach (['redsi', ['redis'], 42] as $invalidType) {
+            // A DAO requested before init is only a default, not an explicit
+            // override of the storage configured by the application.
+            SaToken::getDao();
+            try {
+                SaToken::init(['storage' => ['type' => $invalidType]]);
+                self::fail('未知存储类型不能静默退回进程内存储');
+            } catch (SaTokenException $exception) {
+                self::assertStringContainsString('storage.type', $exception->getMessage());
+            } finally {
+                try {
+                    SaToken::getDao();
+                    self::fail('存储装配失败后也不能在延迟读取时退回进程内存储');
+                } catch (SaTokenException $exception) {
+                    self::assertStringContainsString('storage.type', $exception->getMessage());
+                } finally {
+                    SaToken::reset();
+                }
+            }
+        }
+    }
+
+    public function testSetConfigReassemblesAutoManagedStorage(): void
+    {
+        SaToken::reset();
+        try {
+            SaToken::init(['storage' => ['type' => 'memory']]);
+            self::assertInstanceOf(\SaToken\Dao\SaTokenDaoMemory::class, SaToken::getDao());
+
+            SaToken::setConfig(new SaTokenConfig([
+                'storage' => ['type' => 'file', 'path' => $this->basePath],
+            ]));
+
+            self::assertInstanceOf(SaTokenDaoFile::class, SaToken::getDao());
+        } finally {
+            SaToken::reset();
+        }
+    }
+
+    public function testFailedStorageReconfigurationCannotKeepUsingPreviousDao(): void
+    {
+        SaToken::reset();
+        try {
+            SaToken::init(['storage' => ['type' => 'memory']]);
+            try {
+                SaToken::setConfig(new SaTokenConfig(['storage' => ['type' => 'invalid']]));
+                self::fail('无效的存储重配置必须失败');
+            } catch (SaTokenException $exception) {
+                self::assertStringContainsString('storage.type', $exception->getMessage());
+            }
+
+            try {
+                SaToken::getDao();
+                self::fail('存储重配置失败后不能继续使用旧 DAO');
+            } catch (SaTokenException $exception) {
+                self::assertStringContainsString('storage.type', $exception->getMessage());
+            }
+        } finally {
+            SaToken::reset();
+        }
     }
 }

@@ -43,6 +43,9 @@ class SaToken
      */
     protected static ?SaTokenDaoInterface $dao = null;
 
+    /** Whether the active DAO was explicitly supplied by the application. */
+    protected static bool $daoExplicitlySet = false;
+
     /**
      * 事件分发器
      * @var SaTokenEvent|null
@@ -73,6 +76,8 @@ class SaToken
 
     protected static ?SaSign $sign = null;
 
+    protected static ?string $signConfigFingerprint = null;
+
     protected static ?Middleware\SaGlobalFilter $globalFilter = null;
 
     /**
@@ -100,21 +105,20 @@ class SaToken
         \SaToken\Security\SaAuditLog::setMaxEntries($config->getAuditLogMaxEntries());
         \SaToken\Security\SaAuditLog::setTtlDays($config->getAuditLogTtlDays());
 
+        self::invalidateConfigDependentCaches();
         self::$stpLogicMap = [];
-
-        // storage 配置自动装配存储层：仅在未显式 setDao 时生效，
-        // 保证代码内 setDao(new RedisDao(...)) 的优先级高于配置文件
-        if (self::$dao === null) {
-            self::$dao = self::buildDaoFromStorageConfig($config);
-        }
-
-        // 配置热更新时必须同步废弃已固化的单例：
-        // getSign()/getApiKey() 等在首次调用时把当时的密钥/头名固定进实例，
-        // 不清理的话轮换 signKey 后旧密钥仍然有效（泄露的密钥无法通过 init 轮换）
-        self::$sign = null;
         self::$apiKey = null;
         self::$globalFilter = null;
         self::$httpAuth = null;
+
+        // storage 配置自动装配存储层：仅在未显式 setDao 时生效，
+        // 保证代码内 setDao(new RedisDao(...)) 的优先级高于配置文件
+        if (!self::$daoExplicitlySet) {
+            // A lazily-created default DAO must not mask the storage adapter
+            // selected by the explicit application configuration.
+            self::$dao = null;
+            self::$dao = self::buildDaoFromStorageConfig($config);
+        }
 
         self::$initialized = true;
     }
@@ -129,7 +133,10 @@ class SaToken
     {
         $storage = $config->getStorage();
         $type = $storage['type'] ?? 'memory';
-        $type = is_string($type) ? strtolower($type) : 'memory';
+        if (!is_string($type)) {
+            throw new SaTokenException('storage.type 必须是 memory、file 或 redis 字符串');
+        }
+        $type = strtolower($type);
 
         switch ($type) {
             case 'file':
@@ -146,11 +153,10 @@ class SaToken
                 return new \SaToken\Dao\SaTokenDaoRedis($redisConfig);
 
             case 'memory':
-            default:
-                if ($type !== 'memory') {
-                    trigger_error("Sa-Token: 未知的 storage.type '{$type}'，已回退为 memory 存储", E_USER_WARNING);
-                }
                 return new SaTokenDaoMemory();
+
+            default:
+                throw new SaTokenException("未知的 storage.type '{$type}'，拒绝回退为 memory 存储");
         }
     }
 
@@ -228,7 +234,32 @@ class SaToken
      */
     public static function setConfig(SaTokenConfig $config): void
     {
+        $previousStorage = self::$config?->getStorage() ?? ['type' => 'memory'];
+        $storageChanged = $previousStorage !== $config->getStorage();
         self::$config = $config;
+        self::invalidateConfigDependentCaches();
+        if (!self::$daoExplicitlySet && (self::$dao === null || $storageChanged)) {
+            // Do not leave authentication state on an old auto-managed DAO
+            // after the application changes its storage configuration.
+            self::$dao = null;
+            self::$dao = self::buildDaoFromStorageConfig($config);
+        }
+        self::$apiKey?->setHeaderNames($config->getApiKeyHeader(), $config->getApiSecretHeader());
+    }
+
+    /**
+     * Drop cached instances that retain configuration secrets or security
+     * settings. Reset existing token managers before replacing the logic map so
+     * callers holding a StpLogic reference also pick up rotated crypto keys.
+     */
+    protected static function invalidateConfigDependentCaches(): void
+    {
+        foreach (self::$stpLogicMap as $stpLogic) {
+            $stpLogic->getTokenManager()->resetEncryptor();
+        }
+
+        self::$sign = null;
+        self::$signConfigFingerprint = null;
     }
 
     /**
@@ -241,6 +272,14 @@ class SaToken
         if (self::$dao !== null) {
             return self::$dao;
         }
+        if (self::$config !== null) {
+            self::$dao = self::buildDaoFromStorageConfig(self::$config);
+            return self::$dao;
+        }
+
+        // Before explicit initialization, preserve the documented default.
+        // Once a storage config exists, never mask failed adapter assembly by
+        // silently creating process-local authentication state.
         self::$dao = new SaTokenDaoMemory();
         return self::$dao;
     }
@@ -254,6 +293,7 @@ class SaToken
     public static function setDao(SaTokenDaoInterface $dao): void
     {
         self::$dao = $dao;
+        self::$daoExplicitlySet = true;
     }
 
     /**
@@ -331,13 +371,19 @@ class SaToken
 
     public static function getSign(): SaSign
     {
-        if (self::$sign === null) {
-            $config = self::getConfig();
+        $config = self::getConfig();
+        $fingerprint = hash('sha256', serialize([
+            $config->getSignKey(),
+            $config->getSignTimestampGap(),
+            $config->getSignAlg(),
+        ]));
+        if (self::$sign === null || self::$signConfigFingerprint !== $fingerprint) {
             self::$sign = new SaSign([
                 'key'          => $config->getSignKey(),
                 'timestampGap' => $config->getSignTimestampGap(),
                 'signAlg'      => $config->getSignAlg(),
             ]);
+            self::$signConfigFingerprint = $fingerprint;
         }
         return self::$sign;
     }
@@ -350,15 +396,29 @@ class SaToken
      */
     public static function getStpLogic(string $type = 'login'): StpLogic
     {
-        // loginType 会成为注册表键与存储键的一部分：RPC 透传通道中该值
-        // 来自请求头（攻击者可控），不加约束会让长驻进程的注册表无界增长
-        if (!preg_match('/^[A-Za-z0-9_-]{1,32}$/', $type)) {
-            throw new \SaToken\Exception\SaTokenException('非法的 loginType（仅允许字母/数字/下划线/中划线，最长 32 字符）');
-        }
+        self::validateLoginType($type);
         if (!isset(self::$stpLogicMap[$type])) {
             self::$stpLogicMap[$type] = new StpLogic($type);
         }
         return self::$stpLogicMap[$type];
+    }
+
+    /**
+     * Validate login types used as registry and storage namespace components.
+     */
+    protected static function validateLoginType(string $type): void
+    {
+        // loginType 会成为注册表键与存储键的一部分：RPC 透传通道中该值
+        // 来自请求头（攻击者可控），不加约束会让长驻进程的注册表无界增长。
+        if (!preg_match('/\A[A-Za-z0-9_-]{1,32}\z/', $type)) {
+            throw new \SaToken\Exception\SaTokenException('非法的 loginType（仅允许字母/数字/下划线/中划线，最长 32 字符）');
+        }
+    }
+
+    /** Check whether a login type has already been registered in this process. */
+    public static function hasStpLogic(string $type): bool
+    {
+        return isset(self::$stpLogicMap[$type]);
     }
 
     /**
@@ -369,7 +429,9 @@ class SaToken
      */
     public static function registerStpLogic(StpLogic $stpLogic): void
     {
-        self::$stpLogicMap[$stpLogic->getLoginType()] = $stpLogic;
+        $type = $stpLogic->getLoginType();
+        self::validateLoginType($type);
+        self::$stpLogicMap[$type] = $stpLogic;
     }
 
     /**
@@ -391,6 +453,7 @@ class SaToken
     {
         self::$config = null;
         self::$dao = null;
+        self::$daoExplicitlySet = false;
         self::$event = null;
         self::$stpLogicMap = [];
         self::$action = null;

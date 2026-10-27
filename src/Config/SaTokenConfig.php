@@ -4,6 +4,10 @@ declare(strict_types=1);
 
 namespace SaToken\Config;
 
+use SaToken\Exception\SaTokenException;
+use SaToken\Util\SaTokenCryptoType;
+use SaToken\Util\SaTokenTimeout;
+
 /**
  * Sa-Token 核心配置类
  *
@@ -102,7 +106,7 @@ class SaTokenConfig
     // JWT 无状态模式
     protected bool $jwtStateless = false;
 
-    // JWT 模式（simple / mixed / stateless）
+    // 有状态 JWT 模式（simple / mixed）；无状态模式由 jwtStateless 单独控制
     protected string $jwtMode = 'simple';
 
     // 是否开启 Token 内容加密
@@ -136,6 +140,9 @@ class SaTokenConfig
 
     // 登录失败锁定时长（秒）
     protected int $antiBruteLockDuration = 600;
+
+    // 单来源累计失败最大次数，限制通过随机账号名制造无界计数键；0 表示关闭
+    protected int $antiBruteIpMaxFailures = 100;
 
     protected bool $deviceManagement = false;
 
@@ -294,6 +301,7 @@ class SaTokenConfig
             'signAlg'                => $this->signAlg,
             'antiBruteMaxFailures'   => $this->antiBruteMaxFailures,
             'antiBruteLockDuration'   => $this->antiBruteLockDuration,
+            'antiBruteIpMaxFailures'  => $this->antiBruteIpMaxFailures,
             'ipAnomalyDetection'      => $this->ipAnomalyDetection,
             'ipAnomalySensitivity'    => $this->ipAnomalySensitivity,
             'auditLog'                => $this->auditLog,
@@ -352,6 +360,7 @@ class SaTokenConfig
 
     public function setTimeout(int $timeout): static
     {
+        SaTokenTimeout::validate($timeout);
         $this->timeout = $timeout;
         return $this;
     }
@@ -363,6 +372,7 @@ class SaTokenConfig
 
     public function setActivityTimeout(int $activityTimeout): static
     {
+        SaTokenTimeout::validate($activityTimeout, '活动超时');
         $this->activityTimeout = $activityTimeout;
         return $this;
     }
@@ -396,6 +406,9 @@ class SaTokenConfig
 
     public function setMaxLoginCount(int $maxLoginCount): static
     {
+        if ($maxLoginCount === 0 || $maxLoginCount < -1) {
+            throw new SaTokenException('最大登录数必须是正整数，或使用 -1 表示不限制');
+        }
         $this->maxLoginCount = $maxLoginCount;
         return $this;
     }
@@ -528,7 +541,7 @@ class SaTokenConfig
 
     public function setCryptoType(string $cryptoType): static
     {
-        $this->cryptoType = $cryptoType;
+        $this->cryptoType = SaTokenCryptoType::validate($cryptoType);
         return $this;
     }
 
@@ -710,6 +723,9 @@ class SaTokenConfig
 
     public function setSignKey(string $signKey): static
     {
+        if ($signKey !== '' && strlen($signKey) < 32) {
+            throw new SaTokenException('签名密钥长度不足，至少需要 32 字节');
+        }
         $this->signKey = $signKey;
         return $this;
     }
@@ -847,6 +863,9 @@ class SaTokenConfig
 
     public function setAntiBruteMaxFailures(int $antiBruteMaxFailures): static
     {
+        if ($antiBruteMaxFailures < 0) {
+            throw new SaTokenException('防暴力破解失败阈值必须是非负整数，0 表示不限');
+        }
         $this->antiBruteMaxFailures = $antiBruteMaxFailures;
         return $this;
     }
@@ -858,7 +877,25 @@ class SaTokenConfig
 
     public function setAntiBruteLockDuration(int $antiBruteLockDuration): static
     {
+        if ($antiBruteLockDuration === -1) {
+            throw new SaTokenException('防暴力破解锁定时长必须是正整数');
+        }
+        SaTokenTimeout::validate($antiBruteLockDuration, '防暴力破解锁定时长');
         $this->antiBruteLockDuration = $antiBruteLockDuration;
+        return $this;
+    }
+
+    public function getAntiBruteIpMaxFailures(): int
+    {
+        return $this->antiBruteIpMaxFailures;
+    }
+
+    public function setAntiBruteIpMaxFailures(int $antiBruteIpMaxFailures): static
+    {
+        if ($antiBruteIpMaxFailures < 0) {
+            throw new SaTokenException('单来源防暴力破解失败阈值必须是非负整数，0 表示关闭');
+        }
+        $this->antiBruteIpMaxFailures = $antiBruteIpMaxFailures;
         return $this;
     }
 
@@ -957,6 +994,7 @@ class SaTokenConfig
 
     public function setRefreshTokenTimeout(int $refreshTokenTimeout): static
     {
+        SaTokenTimeout::validate($refreshTokenTimeout, 'Refresh Token');
         $this->refreshTokenTimeout = $refreshTokenTimeout;
         return $this;
     }

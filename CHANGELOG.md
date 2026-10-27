@@ -1,5 +1,30 @@
 # 变更日志
 
+## 未发布
+
+### 安全修复
+- (security) API Key 请求探测现在将部分或重复凭据 Header 识别为认证尝试，避免调用方按完整性探测结果跳过 API Key 校验并回退到 bearer 认证。
+- (crypto) 将加密的 token 与 session 记录认证绑定到 DAO key，拒绝跨 key 密文替换；OAuth2 access token 同时校验记录令牌与查询令牌一致。升级后旧版未绑定的加密 token/session 记录会失效，需要重新登录或授权。
+- (oauth2) 校验客户端与刷新令牌记录中的凭据标识是否匹配 DAO key，拒绝跨 key 记录替换导致的客户端冒用或受害者身份刷新。
+- (security) 将 RefreshToken 标识写入凭据记录并校验其与 DAO key 一致，拒绝跨 key 密文替换导致的受害者身份刷新；升级后旧格式 RefreshToken 需要重新签发。
+- (oauth2) 为消费后的刷新令牌 tombstone 写入凭据哈希并在重放路径校验，阻断跨 key 复制 tombstone 造成的其他令牌家族误撤销。
+- (security) 将身份切换、安全认证窗口、活动时间和设备指纹密文绑定到 bearer key，阻断跨 token 身份冒用、二次认证绕过及活动状态迁移。旧版未绑定的加密状态升级后失效。
+- (jwt) 将启用加密时的无状态账号版本与撤销水位认证绑定到账号 key，防止存储篡改回退撤销版本而复活已注销 JWT。
+- (security) 验证 RefreshToken 索引目标与查询账号、登录类型及 AccessToken 的绑定关系，拒绝返回其他账号的刷新凭据。
+- (security) 将 OAuth2 access-token 家族索引和家族标记绑定到各自 DAO key，阻止复制索引后跨家族撤销。
+- (security) 将 OAuth2 授权码记录绑定到 code 对应的 DAO key，拒绝跨 key 复制记录。
+- (security) 将 RefreshToken 消费索引绑定到令牌哈希 key，防止复制索引触发其他家族撤销。
+
+### 修复
+- 文件 DAO 对缺失记录执行 `compareAndSet(key, null, null)` 时按接口约定成功返回，不再因尝试删除不存在的文件而抛错。
+- PSR-16 DAO 对缺失记录执行 `compareAndSet(key, null, null)` 时成功返回，不依赖缓存实现对不存在键的删除返回值。
+
+### 升级提示
+- 运行环境最低要求为 PHP 8.2。
+- 使用自定义 DAO 时，请补齐并正确实现本版本使用到的原子扩展接口；OAuth2 刷新家族状态更新和锁续期需要 `SaTokenDaoCompareAndExpireInterface`。
+- 启用防暴力破解并部署在反向代理后时，需将真实代理 IP 配置到 `SaTokenContext::setTrustedProxies()`；未能解析来源 IP 的认证会失败关闭。
+- 加密存储数据绑定 DAO key，升级后旧版未绑定的加密状态按上文说明重新登录、授权或重建。
+
 本文件由脚本自动生成，基于 git tag 和 commit 记录。
 
 ## [v0.2.0] - 2026-08-31

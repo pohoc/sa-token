@@ -6,9 +6,15 @@ namespace SaToken\Plugin;
 
 use CryptoSm\SM3\HmacSm3;
 use SaToken\Exception\SaTokenException;
+use SaToken\TokenManager;
+use SaToken\Util\SaTokenCryptoType;
+use SaToken\Util\SaTokenTimeout;
 
 class SaTokenJwt
 {
+    /** Bound JWT parsing and claim payloads at all authentication entry points. */
+    private const MAX_TOKEN_BYTES = 65536;
+
     protected string $secretKey = '';
 
     protected string $cryptoType = 'intl';
@@ -21,28 +27,52 @@ class SaTokenJwt
         $secretKey = $config['jwtSecretKey'] ?? '';
         $this->secretKey = is_string($secretKey) ? $secretKey : '';
         $cryptoType = $config['cryptoType'] ?? 'intl';
-        $this->cryptoType = is_string($cryptoType) ? $cryptoType : 'intl';
+        if (!is_string($cryptoType)) {
+            throw new SaTokenException('JWT 加密类型必须为 intl 或 sm');
+        }
+        $this->cryptoType = SaTokenCryptoType::validate($cryptoType);
     }
 
     /**
      * @param array<string, mixed> $extraClaims
      */
-    public function createToken(mixed $loginId, string $loginType, ?int $timeout = null, array $extraClaims = []): string
-    {
+    public function createToken(
+        mixed $loginId,
+        string $loginType,
+        ?int $timeout = null,
+        array $extraClaims = [],
+        ?int $statelessGeneration = null
+    ): string {
+        if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
+            throw new SaTokenException('loginId 不能为空且必须是非布尔标量');
+        }
+        TokenManager::validateLoginIdLength($loginId);
+
+        if ($timeout !== null) {
+            SaTokenTimeout::validate($timeout, 'JWT');
+        }
+
         if ($this->secretKey === '') {
             throw new SaTokenException('JWT 密钥未配置');
         }
+        if (strlen($this->secretKey) < 32) {
+            throw new SaTokenException('JWT 密钥长度不足，至少需要 32 字节');
+        }
 
         $now = time();
+        // Fractional NumericDate lets account-wide revocation distinguish a
+        // token issued immediately after logout from an older token minted in
+        // the same wall-clock second.
+        $issuedAt = microtime(true);
         $header = [
             'typ' => 'JWT',
             'alg' => $this->cryptoType === 'sm' ? 'SM3' : 'HS256',
         ];
 
         $payload = [
-            'iat'  => $now,
+            'iat'  => $issuedAt,
             'jti'  => bin2hex(random_bytes(16)),
-            'sub'  => is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : ''),
+            'sub'  => (string) $loginId,
             'type' => $loginType,
         ];
 
@@ -50,20 +80,32 @@ class SaTokenJwt
             $payload['exp'] = $now + $timeout;
         }
 
-        $payload = array_merge($payload, $extraClaims);
+        // 身份与有效期声明只能由签发器生成；调用方扩展数据不得改变主体、
+        // 登录类型、有效期或令牌唯一标识，避免 session/业务数据覆盖安全声明。
+        $reservedClaims = ['sub', 'type', 'exp', 'iat', 'jti', 'nbf', 'iss', 'aud', 'satoken_gen'];
+        $safeExtraClaims = array_diff_key($extraClaims, array_flip($reservedClaims));
+        $payload = array_merge($payload, $safeExtraClaims);
+        if ($statelessGeneration !== null) {
+            if ($statelessGeneration < 0) {
+                throw new SaTokenException('无状态 JWT 账号会话版本无效');
+            }
+            $payload['satoken_gen'] = $statelessGeneration;
+        }
 
-        $headerJson = json_encode($header, JSON_UNESCAPED_UNICODE);
-        $payloadJson = json_encode($payload, JSON_UNESCAPED_UNICODE);
-        $headerB64 = $this->base64UrlEncode(is_string($headerJson) ? $headerJson : '');
-        $payloadB64 = $this->base64UrlEncode(is_string($payloadJson) ? $payloadJson : '');
+        try {
+            $headerJson = json_encode($header, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+            $payloadJson = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        } catch (\JsonException $exception) {
+            throw new SaTokenException('JWT Header 或 Payload 无法编码为 JSON', 0, $exception);
+        }
+
+        $headerB64 = $this->base64UrlEncode($headerJson);
+        $payloadB64 = $this->base64UrlEncode($payloadJson);
         $signingInput = $headerB64 . '.' . $payloadB64;
 
         if ($this->cryptoType === 'sm') {
             $signature = HmacSm3::hmac($this->secretKey, $signingInput);
         } else {
-            if (strlen($this->secretKey) < 32) {
-                throw new SaTokenException('JWT 密钥长度不足，HS256 至少需要 32 字节');
-            }
             $signature = hash_hmac('sha256', $signingInput, $this->secretKey);
         }
 
@@ -72,7 +114,12 @@ class SaTokenJwt
             throw new SaTokenException('JWT 签名失败');
         }
 
-        return $signingInput . '.' . $this->base64UrlEncode($signatureBin);
+        $token = $signingInput . '.' . $this->base64UrlEncode($signatureBin);
+        if (strlen($token) > self::MAX_TOKEN_BYTES) {
+            throw new SaTokenException('JWT Token 超过最大允许长度');
+        }
+
+        return $token;
     }
 
     /**
@@ -94,10 +141,15 @@ class SaTokenJwt
     }
 
     /**
+     * @param  bool                 $allowExpired Allow expiry checks to be deferred while retaining signature and claim validation.
      * @return array<string, mixed>
      */
-    public function parseToken(string $token): array
+    public function parseToken(string $token, bool $allowExpired = false): array
     {
+        if ($token === '' || strlen($token) > self::MAX_TOKEN_BYTES) {
+            throw new SaTokenException('JWT Token 长度无效');
+        }
+
         if ($this->secretKey === '') {
             throw new SaTokenException('JWT 密钥未配置');
         }
@@ -114,13 +166,16 @@ class SaTokenJwt
             throw new SaTokenException('JWT Token Header 无效');
         }
 
-        $alg = $header['alg'] ?? 'HS256';
-        if (!is_string($alg)) {
+        if (!array_key_exists('alg', $header) || !is_string($header['alg'])) {
             throw new SaTokenException('JWT Header alg 字段必须为字符串');
         }
-        $allowedAlgs = ['HS256', 'SM3'];
-        if (!in_array($alg, $allowedAlgs, true)) {
-            throw new SaTokenException('JWT 不支持的算法：' . $alg . '，仅允许：' . implode(', ', $allowedAlgs));
+        $alg = $header['alg'];
+        $expectedAlg = $this->cryptoType === 'sm' ? 'SM3' : 'HS256';
+        if ($alg !== $expectedAlg) {
+            throw new SaTokenException('JWT 算法与当前 cryptoType 配置不匹配');
+        }
+        if (strlen($this->secretKey) < 32) {
+            throw new SaTokenException('JWT 密钥长度不足，至少需要 32 字节');
         }
 
         $signingInput = $headerB64 . '.' . $payloadB64;
@@ -130,9 +185,6 @@ class SaTokenJwt
         if ($alg === 'SM3') {
             $expected = HmacSm3::hmac($this->secretKey, $signingInput);
         } else {
-            if (strlen($this->secretKey) < 32) {
-                throw new SaTokenException('JWT 密钥长度不足，HS256 至少需要 32 字节');
-            }
             $expected = hash_hmac('sha256', $signingInput, $this->secretKey);
         }
 
@@ -145,8 +197,24 @@ class SaTokenJwt
             throw new SaTokenException('JWT Token Payload 无效');
         }
 
-        if (isset($payload['exp']) && $payload['exp'] < time()) {
-            throw new SaTokenException('JWT Token 已过期');
+        if (array_key_exists('exp', $payload)) {
+            $expiresAt = $payload['exp'];
+            if ((!is_int($expiresAt) && !is_float($expiresAt)) || !is_finite((float) $expiresAt)) {
+                throw new SaTokenException('JWT Token exp 字段无效');
+            }
+            if (!$allowExpired && $expiresAt <= time()) {
+                throw new SaTokenException('JWT Token 已过期');
+            }
+        }
+
+        if (array_key_exists('nbf', $payload)) {
+            $notBefore = $payload['nbf'];
+            if ((!is_int($notBefore) && !is_float($notBefore)) || !is_finite((float) $notBefore)) {
+                throw new SaTokenException('JWT Token nbf 字段无效');
+            }
+            if ($notBefore > time()) {
+                throw new SaTokenException('JWT Token 尚未生效');
+            }
         }
 
         /** @var array<string, mixed> $payload */
@@ -181,7 +249,7 @@ class SaTokenJwt
     public function getExtraClaims(string $token): array
     {
         $payload = $this->parseToken($token);
-        $standardKeys = ['iat', 'jti', 'sub', 'type', 'exp'];
+        $standardKeys = ['iat', 'jti', 'sub', 'type', 'exp', 'satoken_gen'];
         return array_diff_key($payload, array_flip($standardKeys));
     }
 
@@ -190,25 +258,18 @@ class SaTokenJwt
      */
     public function createStatelessToken(mixed $loginId, string $loginType, ?int $timeout = null, array $extraClaims = []): string
     {
-        $sessionData = [];
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-        $sessionId = \SaToken\TokenManager::SESSION_PREFIX . $loginType . ':' . $loginIdStr;
-        $session = \SaToken\SaSession::getBySessionId($sessionId);
-        if ($session !== null) {
-            $sessionData = $session->getDataMap();
-        }
 
-        // 剥离 session 数据中的保留 claims（sub/exp/iat/type/jti 等）：
-        // 保留字段是身份与有效性的权威来源，一旦可被 session 数据覆盖，
-        // 任何能写 session 顶层键的输入都能伪造登录身份或延长有效期。
-        // 额外参数同样不允许碰保留字段
-        $reservedKeys = ['sub', 'exp', 'iat', 'nbf', 'jti', 'iss', 'aud', 'type'];
-        $safeSessionData = array_diff_key($sessionData, array_flip($reservedKeys));
+        // JWT payload is readable by its holder, so never copy the server-side
+        // login Session wholesale into a bearer. Only explicitly selected
+        // claims may leave the server; reserved identity and lifecycle claims
+        // remain controlled by the signer.
+        $reservedKeys = ['sub', 'exp', 'iat', 'nbf', 'jti', 'iss', 'aud', 'type', 'satoken_gen'];
         $safeExtraClaims = array_diff_key($extraClaims, array_flip($reservedKeys));
 
-        $statelessClaims = array_merge($safeSessionData, $safeExtraClaims);
+        $generation = (new TokenManager())->getStatelessTokenGeneration($loginIdStr, $loginType);
 
-        return $this->createToken($loginId, $loginType, $timeout, $statelessClaims);
+        return $this->createToken($loginId, $loginType, $timeout, $safeExtraClaims, $generation);
     }
 
     /**
@@ -231,11 +292,23 @@ class SaTokenJwt
 
     protected function base64UrlDecode(string $data): string
     {
+        // JWT compact serialization uses the unpadded, canonical Base64URL
+        // alphabet. Non-canonical final pad bits can decode to the same
+        // signature bytes while changing the token string, bypassing
+        // string-keyed revocation lists.
+        if (preg_match('/^[A-Za-z0-9_-]*$/D', $data) !== 1) {
+            return '';
+        }
+
         $remainder = strlen($data) % 4;
         if ($remainder !== 0) {
             $data .= str_repeat('=', 4 - $remainder);
         }
         $decoded = base64_decode(strtr($data, '-_', '+/'), true);
-        return $decoded !== false ? $decoded : '';
+        if ($decoded === false || $this->base64UrlEncode($decoded) !== rtrim($data, '=')) {
+            return '';
+        }
+
+        return $decoded;
     }
 }

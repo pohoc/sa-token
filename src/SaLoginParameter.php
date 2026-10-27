@@ -5,12 +5,17 @@ declare(strict_types=1);
 namespace SaToken;
 
 use SaToken\Data\SaLoginDevice;
+use SaToken\Exception\SaTokenException;
+use SaToken\Util\SaTokenTimeout;
 
 class SaLoginParameter
 {
     protected string $deviceType = '';
 
     protected bool $isLastingCookie = true;
+
+    /** Whether this login may issue credentials through the current response. */
+    protected bool $writeResponseCredentials = true;
 
     protected ?int $timeout = null;
 
@@ -55,6 +60,17 @@ class SaLoginParameter
         return $this;
     }
 
+    public function shouldWriteResponseCredentials(): bool
+    {
+        return $this->writeResponseCredentials;
+    }
+
+    public function setWriteResponseCredentials(bool $writeResponseCredentials): static
+    {
+        $this->writeResponseCredentials = $writeResponseCredentials;
+        return $this;
+    }
+
     public function getTimeout(): ?int
     {
         return $this->timeout;
@@ -62,6 +78,9 @@ class SaLoginParameter
 
     public function setTimeout(?int $timeout): static
     {
+        if ($timeout !== null) {
+            SaTokenTimeout::validate($timeout);
+        }
         $this->timeout = $timeout;
         return $this;
     }
@@ -73,6 +92,9 @@ class SaLoginParameter
 
     public function setMaxLoginCount(?int $maxLoginCount): static
     {
+        if ($maxLoginCount !== null && ($maxLoginCount === 0 || $maxLoginCount < -1)) {
+            throw new SaTokenException('最大登录数必须是正整数，或使用 -1 表示不限制');
+        }
         $this->maxLoginCount = $maxLoginCount;
         return $this;
     }

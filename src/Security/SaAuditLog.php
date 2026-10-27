@@ -26,12 +26,13 @@ class SaAuditLog
 
     public static function setMaxEntries(int $max): void
     {
-        self::$maxEntries = $max;
+        self::$maxEntries = max(0, $max);
     }
 
     public static function setTtlDays(int $days): void
     {
-        self::$ttlDays = $days;
+        // A non-positive TTL is otherwise interpreted by DAO adapters as no expiry.
+        self::$ttlDays = max(1, $days);
     }
 
     /**
@@ -61,7 +62,9 @@ class SaAuditLog
             'loginId' => $loginId !== null ? (is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '')) : null,
             'loginType' => $loginType,
             'action' => $action,
-            'tokenValue' => $tokenValue !== null ? substr($tokenValue, 0, 32) . '...' : null,
+            // Token 风格/自定义生成器允许短于 32 字符；固定长度截断仍可能完整记录
+            // bearer 凭据，因此审计记录只保留字段存在性，不保留任何可复用 token 内容。
+            'tokenValue' => $tokenValue !== null ? '[redacted]' : null,
             'ip' => $ip ?? self::getClientIp(),
             'userAgent' => $userAgent ?? SaTokenContext::getHeader('User-Agent'),
             'extra' => $extra,
@@ -70,7 +73,10 @@ class SaAuditLog
         ];
 
         $key = self::$keyPrefix . $loginType . ':' . $id;
-        $jsonStr = json_encode($entry);
+        // User-Agent, reasons, and extension data can contain byte sequences
+        // that are not valid UTF-8. Never replace the whole security event
+        // with `{}` because one such field failed JSON encoding.
+        $jsonStr = json_encode($entry, JSON_INVALID_UTF8_SUBSTITUTE | JSON_PARTIAL_OUTPUT_ON_ERROR);
         $dao->set($key, $jsonStr !== false ? $jsonStr : '{}', self::$ttlDays * 86400);
 
         self::trimOldEntries($loginType);
@@ -131,6 +137,9 @@ class SaAuditLog
         if (!is_array($result)) {
             return null;
         }
+        if (($result['loginType'] ?? null) !== $loginType || ($result['id'] ?? null) !== $id) {
+            return null;
+        }
         /** @var array<string, mixed> $result */
         return $result;
     }
@@ -140,6 +149,11 @@ class SaAuditLog
      */
     public static function getRecentLogs(string $loginType = 'login', int $limit = 50): array
     {
+        $limit = self::normalizeLimit($limit);
+        if ($limit === 0) {
+            return [];
+        }
+
         $dao = SaToken::getDao();
         $pattern = self::$keyPrefix . $loginType . ':';
         $results = $dao->search($pattern, '', 0, $limit);
@@ -150,7 +164,7 @@ class SaAuditLog
                 continue;
             }
             $decoded = @json_decode($value, true);
-            if (is_array($decoded)) {
+            if (is_array($decoded) && ($decoded['loginType'] ?? null) === $loginType) {
                 $logs[] = $decoded;
             }
         }
@@ -169,6 +183,10 @@ class SaAuditLog
      */
     public static function getLogsByLoginId(mixed $loginId, string $loginType = 'login', int $limit = 50): array
     {
+        $limit = self::normalizeLimit($limit);
+        if ($limit === 0) {
+            return [];
+        }
         $logs = self::getRecentLogs($loginType, $limit * 2);
         $result = [];
 
@@ -190,6 +208,10 @@ class SaAuditLog
      */
     public static function getLogsByEvent(string $event, string $loginType = 'login', int $limit = 50): array
     {
+        $limit = self::normalizeLimit($limit);
+        if ($limit === 0) {
+            return [];
+        }
         $logs = self::getRecentLogs($loginType, $limit * 2);
         $result = [];
 
@@ -210,6 +232,10 @@ class SaAuditLog
      */
     public static function getLogsByIp(string $ip, string $loginType = 'login', int $limit = 50): array
     {
+        $limit = self::normalizeLimit($limit);
+        if ($limit === 0) {
+            return [];
+        }
         $dao = SaToken::getDao();
         $pattern = self::$keyPrefix . $loginType . ':';
         $results = $dao->search($pattern, '', 0, $limit * 2);
@@ -221,6 +247,9 @@ class SaAuditLog
             }
             $decoded = @json_decode($value, true);
             if (!is_array($decoded)) {
+                continue;
+            }
+            if (($decoded['loginType'] ?? null) !== $loginType) {
                 continue;
             }
             if (($decoded['ip'] ?? '') === $ip) {
@@ -240,26 +269,50 @@ class SaAuditLog
         $dao = SaToken::getDao();
 
         if ($loginType === null) {
-            foreach (['login', 'admin'] as $type) {
-                self::clearLogs($type);
+            // Take one stable snapshot: deleting while offset-paginating can
+            // shift later keys and leave part of a large log set behind.
+            $keys = $dao->searchKeys(self::$keyPrefix, '', 0, PHP_INT_MAX);
+            foreach ($keys as $key) {
+                if (!is_string($key) || !str_starts_with($key, self::$keyPrefix)) {
+                    continue;
+                }
+                $value = $dao->get($key);
+                if ($value === null || $value === '') {
+                    continue;
+                }
+                $decoded = @json_decode($value, true);
+                if (!is_array($decoded) || !is_string($decoded['loginType'] ?? null) || !is_string($decoded['id'] ?? null)) {
+                    continue;
+                }
+                $ownedKey = self::$keyPrefix . $decoded['loginType'] . ':' . $decoded['id'];
+                if ($key === $ownedKey) {
+                    $dao->delete($key);
+                }
             }
             return;
         }
 
         $pattern = self::$keyPrefix . $loginType . ':';
-        $results = $dao->search($pattern, '', 0, self::$maxEntries * 10);
+        $keys = $dao->searchKeys($pattern, '', 0, PHP_INT_MAX);
 
-        foreach ($results as $value) {
-            if ($value === '') {
+        foreach ($keys as $key) {
+            if (!is_string($key) || !str_starts_with($key, $pattern)) {
+                continue;
+            }
+            $value = $dao->get($key);
+            if ($value === null || $value === '') {
                 continue;
             }
             $decoded = @json_decode($value, true);
             if (!is_array($decoded)) {
                 continue;
             }
+            if (($decoded['loginType'] ?? null) !== $loginType) {
+                continue;
+            }
             $id = $decoded['id'] ?? '';
-            if ($id !== '' && is_string($id)) {
-                $dao->delete(self::$keyPrefix . $loginType . ':' . $id);
+            if ($id !== '' && is_string($id) && $key === self::$keyPrefix . $loginType . ':' . $id) {
+                $dao->delete($key);
             }
         }
     }
@@ -281,6 +334,9 @@ class SaAuditLog
             }
             $decoded = @json_decode($value, true);
             if (!is_array($decoded)) {
+                continue;
+            }
+            if (($decoded['loginType'] ?? null) !== $loginType) {
                 continue;
             }
             $entries[] = $decoded;
@@ -307,6 +363,12 @@ class SaAuditLog
         // 这里自行解析 X-Forwarded-For 首段会信任客户端可伪造的头，
         // 使审计记录的 IP 全部失真（可嫁祸他人、破坏取证）
         return SaTokenContext::getClientIp();
+    }
+
+    /** Keep user-controlled query sizes bounded across all DAO implementations. */
+    protected static function normalizeLimit(int $limit): int
+    {
+        return min(1000, max(0, $limit));
     }
 
     public static function reset(): void

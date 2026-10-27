@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace SaToken\Dao;
 
-class SaTokenDaoRedis implements SaTokenDaoInterface
+use SaToken\Exception\SaTokenException;
+
+class SaTokenDaoRedis implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface, SaTokenDaoCompareAndExpireInterface, SaTokenDaoCompareAndSetInterface, SaTokenDaoCompareAndUpdateInterface, SaTokenDaoDeleteIfExpiredInterface
 {
     protected \Redis $client;
 
@@ -13,39 +15,136 @@ class SaTokenDaoRedis implements SaTokenDaoInterface
     protected int $database = 0;
 
     /**
-     * @param array<string, mixed>|string $config
+     * @param array<string, mixed>|string|\Redis $config
      */
-    public function __construct(array|string $config = [], ?\Redis $client = null)
+    public function __construct(array|string|\Redis $config = [], ?\Redis $client = null)
     {
+        if ($config instanceof \Redis) {
+            if ($client !== null) {
+                throw new SaTokenException('Redis 客户端只能通过一个参数注入');
+            }
+            $this->assertRawRedisEncoding($config);
+            $this->client = $config;
+            return;
+        }
+
         if ($client !== null) {
+            $this->assertRawRedisEncoding($client);
             $this->client = $client;
             return;
         }
 
-        $config = is_string($config) ? ['url' => $config] : $config;
+        $config = $this->normalizeConfig($config);
         $database = $config['database'] ?? 0;
         $this->database = is_int($database) ? $database : (is_numeric($database) ? (int) $database : 0);
+        $this->client = $this->connectClient($config);
+    }
 
-        $this->client = new \Redis();
+    /** @param array<string, mixed> $config */
+    protected function connectClient(array $config): \Redis
+    {
+        $client = new \Redis();
         $host = $config['host'] ?? '127.0.0.1';
         $port = $config['port'] ?? 6379;
         $timeout = $config['timeout'] ?? 0;
 
-        $this->client->connect(is_string($host) ? $host : '127.0.0.1', is_int($port) ? $port : (is_numeric($port) ? (int) $port : 6379), is_numeric($timeout) ? (float) $timeout : 0.0);
+        $connected = $client->connect(
+            is_string($host) ? $host : '127.0.0.1',
+            is_int($port) ? $port : (is_numeric($port) ? (int) $port : 6379),
+            is_numeric($timeout) ? (float) $timeout : 0.0
+        );
+        if ($connected !== true) {
+            throw new SaTokenException('Redis 连接失败');
+        }
 
-        if (!empty($config['password'])) {
-            $password = $config['password'];
-            if (is_string($password)) {
-                $this->client->auth($password);
+        $password = $config['password'] ?? null;
+        if ($password !== null && $password !== '') {
+            if (isset($config['username']) && is_string($config['username']) && is_string($password)) {
+                $authenticated = $client->auth([$config['username'], $password]);
+            } elseif (is_string($password)) {
+                $authenticated = $client->auth($password);
             } elseif (is_array($password)) {
                 /** @var array<string> $password */
-                $this->client->auth($password);
+                $authenticated = $client->auth($password);
+            } else {
+                $authenticated = false;
+            }
+            if ($authenticated !== true) {
+                throw new SaTokenException('Redis 身份验证失败');
             }
         }
         if (isset($config['database'])) {
             $db = $config['database'];
-            $this->client->select(is_int($db) ? $db : (is_numeric($db) ? (int) $db : 0));
+            $selected = $client->select(is_int($db) ? $db : (is_numeric($db) ? (int) $db : 0));
+            if ($selected !== true) {
+                throw new SaTokenException('Redis 数据库选择失败');
+            }
         }
+
+        return $client;
+    }
+
+    /**
+     * @param  array<string, mixed>|string $config
+     * @return array<string, mixed>
+     */
+    protected function normalizeConfig(array|string $config): array
+    {
+        $config = is_string($config) ? ['url' => $config] : $config;
+        if (isset($config['url'])) {
+            if (!is_string($config['url'])) {
+                throw new SaTokenException('Redis URL 必须是字符串');
+            }
+            $config = array_merge($this->parseUrl($config['url']), $config);
+            unset($config['url']);
+        }
+        if (!isset($config['database']) && isset($config['db'])) {
+            $config['database'] = $config['db'];
+        }
+
+        return $config;
+    }
+
+    /** @return array<string, mixed> */
+    protected function parseUrl(string $url): array
+    {
+        $parts = parse_url($url);
+        if (!is_array($parts) || !isset($parts['scheme'], $parts['host'])) {
+            throw new SaTokenException('Redis URL 格式无效');
+        }
+
+        $scheme = strtolower($parts['scheme']);
+        if (!in_array($scheme, ['redis', 'rediss'], true)) {
+            throw new SaTokenException('Redis URL 仅支持 redis:// 或 rediss://');
+        }
+
+        $host = $scheme === 'rediss' ? 'tls://' . $parts['host'] : $parts['host'];
+        $config = [
+            'host' => $host,
+            'port' => $parts['port'] ?? 6379,
+        ];
+
+        if (isset($parts['user'])) {
+            $config['username'] = rawurldecode($parts['user']);
+        }
+        if (isset($parts['pass'])) {
+            $config['password'] = rawurldecode($parts['pass']);
+        }
+        if (isset($parts['path']) && $parts['path'] !== '' && $parts['path'] !== '/') {
+            $database = substr($parts['path'], 1);
+            if (!ctype_digit($database)) {
+                throw new SaTokenException('Redis URL 中的数据库编号必须是非负整数');
+            }
+            $config['database'] = (int) $database;
+        }
+        if (isset($parts['query'])) {
+            parse_str($parts['query'], $query);
+            if (isset($query['timeout']) && is_numeric($query['timeout'])) {
+                $config['timeout'] = (float) $query['timeout'];
+            }
+        }
+
+        return $config;
     }
 
     public function get(string $key): ?string
@@ -67,20 +166,41 @@ class SaTokenDaoRedis implements SaTokenDaoInterface
     {
         $client = $this->saRedis ?? $this->client;
         if ($timeout !== null && $timeout > 0) {
-            $client->setex($key, $timeout, $value);
+            $result = $client->setex($key, $timeout, $value);
         } else {
-            $client->set($key, $value);
+            $result = $client->set($key, $value);
+        }
+        if ($result !== true && $result !== 'OK') {
+            throw new SaTokenException('Redis 写入失败');
         }
     }
 
     public function update(string $key, string $value): void
     {
-        ($this->saRedis ?? $this->client)->set($key, $value, ['XX' => true]);
+        $script = <<<'LUA'
+local ttl = redis.call('PTTL', KEYS[1])
+if ttl == -2 or ttl == 0 then
+    return 0
+end
+if ttl == -1 then
+    redis.call('SET', KEYS[1], ARGV[1])
+else
+    redis.call('SET', KEYS[1], ARGV[1], 'PX', ttl)
+end
+return 1
+LUA;
+        $result = ($this->saRedis ?? $this->client)->eval($script, [$key, $value], 1);
+        if ($result !== 0 && $result !== 1) {
+            throw new SaTokenException('Redis 更新失败');
+        }
     }
 
     public function delete(string $key): void
     {
-        ($this->saRedis ?? $this->client)->del([$key]);
+        $result = ($this->saRedis ?? $this->client)->del([$key]);
+        if ($result === false) {
+            throw new SaTokenException('Redis 删除失败');
+        }
     }
 
     public function getTimeout(string $key): int
@@ -110,7 +230,12 @@ class SaTokenDaoRedis implements SaTokenDaoInterface
         $script = <<<'LUA'
 local value = redis.call('GET', KEYS[1])
 if value then
-    redis.call('EXPIRE', KEYS[1], ARGV[1])
+    local timeout = tonumber(ARGV[1])
+    if timeout and timeout > 0 then
+        redis.call('EXPIRE', KEYS[1], timeout)
+    else
+        redis.call('PERSIST', KEYS[1])
+    end
 end
 return value
 LUA;
@@ -149,6 +274,103 @@ LUA;
         return null;
     }
 
+    public function compareAndDelete(string $key, string $expectedValue): bool
+    {
+        $script = <<<'LUA'
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+end
+return 0
+LUA;
+        $result = ($this->saRedis ?? $this->client)->eval($script, [$key, $expectedValue], 1);
+        return $result === 1;
+    }
+
+    public function compareAndExpire(string $key, string $expectedValue, int $timeout): bool
+    {
+        if ($timeout !== -1 && $timeout <= 0) {
+            return false;
+        }
+        $script = <<<'LUA'
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then
+    return 0
+end
+local ttl = redis.call('TTL', KEYS[1])
+if ttl == -1 then
+    return 1
+end
+local timeout = tonumber(ARGV[2])
+if timeout == -1 then
+    return redis.call('PERSIST', KEYS[1])
+end
+if ttl < timeout then
+    return redis.call('EXPIRE', KEYS[1], timeout)
+end
+return 1
+LUA;
+        $result = ($this->saRedis ?? $this->client)->eval($script, [$key, $expectedValue, (string) $timeout], 1);
+        return $result === 1;
+    }
+
+    public function compareAndSet(string $key, ?string $expectedValue, ?string $newValue, ?int $timeout = null): bool
+    {
+        $script = <<<'LUA'
+local current = redis.call('GET', KEYS[1])
+if ARGV[1] == '1' then
+    if current ~= ARGV[2] then return 0 end
+else
+    if current then return 0 end
+end
+if ARGV[3] == '1' then
+    if tonumber(ARGV[5]) and tonumber(ARGV[5]) > 0 then
+        redis.call('SET', KEYS[1], ARGV[4], 'EX', ARGV[5])
+    else
+        redis.call('SET', KEYS[1], ARGV[4])
+    end
+else
+    redis.call('DEL', KEYS[1])
+end
+return 1
+LUA;
+        $result = ($this->saRedis ?? $this->client)->eval($script, [
+            $key, $expectedValue !== null ? '1' : '0', $expectedValue ?? '',
+            $newValue !== null ? '1' : '0', $newValue ?? '', (string) ($timeout ?? 0),
+        ], 1);
+        return $result === 1;
+    }
+
+    public function compareAndUpdate(string $key, string $expectedValue, string $newValue): bool
+    {
+        $script = <<<'LUA'
+local current = redis.call('GET', KEYS[1])
+if current ~= ARGV[1] then return 0 end
+local ttl = redis.call('PTTL', KEYS[1])
+if ttl == -1 then
+    redis.call('SET', KEYS[1], ARGV[2])
+elseif ttl > 0 then
+    redis.call('SET', KEYS[1], ARGV[2], 'PX', ttl)
+else
+    return 0
+end
+return 1
+LUA;
+        $result = ($this->saRedis ?? $this->client)->eval($script, [$key, $expectedValue, $newValue], 1);
+        return $result === 1;
+    }
+
+    public function deleteIfExpired(string $key): bool
+    {
+        $script = <<<'LUA'
+local ttl = redis.call('PTTL', KEYS[1])
+if ttl == -2 or ttl == -1 or ttl > 0 then
+    return 0
+end
+return redis.call('DEL', KEYS[1])
+LUA;
+        $result = ($this->saRedis ?? $this->client)->eval($script, [$key], 1);
+        return $result === 1;
+    }
+
     public function exists(string $key): bool
     {
         return (bool) ($this->saRedis ?? $this->client)->exists($key);
@@ -181,22 +403,8 @@ LUA;
     public function search(string $prefix, string $keyword, int $start, int $size): array
     {
         $client = $this->saRedis ?? $this->client;
-        $escapedKeyword = str_replace(['\\', '*', '?', '[', ']'], ['\\\\', '\\*', '\\?', '\\[', '\\]'], $keyword);
-        $pattern = $prefix . '*' . $escapedKeyword . '*';
-        $keys = [];
-        $iterator = null;
-        $maxIterations = 100;
-        $iterations = 0;
-
-        while (($scanResult = $client->scan($iterator, $pattern, 100)) !== false) {
-            $keys = array_merge($keys, $scanResult);
-            $iterations++;
-            if ($iterations >= $maxIterations || $iterator === 0) {
-                break;
-            }
-        }
-
-        $keys = array_unique($keys);
+        $pattern = self::escapeGlobPattern($prefix) . '*' . self::escapeGlobPattern($keyword) . '*';
+        $keys = $this->scanKeys($client, $pattern);
 
         if (empty($keys)) {
             return [];
@@ -225,23 +433,41 @@ LUA;
     public function searchKeys(string $prefix, string $keyword, int $start, int $size): array
     {
         $client = $this->saRedis ?? $this->client;
-        $escapedKeyword = str_replace(['\\', '*', '?', '[', ']'], ['\\\\', '\\*', '\\?', '\\[', '\\]'], $keyword);
-        $pattern = $prefix . '*' . $escapedKeyword . '*';
+        $pattern = self::escapeGlobPattern($prefix) . '*' . self::escapeGlobPattern($keyword) . '*';
+        $keys = $this->scanKeys($client, $pattern);
+        return array_slice($keys, $start, $size);
+    }
+
+    /** @return array<string> */
+    protected function scanKeys(\Redis $client, string $pattern): array
+    {
         $keys = [];
         $iterator = null;
-        $maxIterations = 100;
-        $iterations = 0;
 
-        while (($scanResult = $client->scan($iterator, $pattern, 100)) !== false) {
-            $keys = array_merge($keys, $scanResult);
-            $iterations++;
-            if ($iterations >= $maxIterations || $iterator === 0) {
-                break;
+        do {
+            $previousIterator = $iterator;
+            $scanResult = $client->scan($iterator, $pattern, 100);
+            if ($scanResult === false) {
+                // SCAN may return an empty batch while its cursor is still moving.
+                // A false result without cursor progress signals a failed scan;
+                // do not silently return a partial result or loop forever.
+                if ($iterator === $previousIterator) {
+                    throw new SaTokenException('Redis 键扫描失败');
+                }
+            } else {
+                foreach ($scanResult as $key) {
+                    $keys[] = $key;
+                }
             }
-        }
+        } while ($iterator !== 0);
 
-        $keys = array_values(array_unique($keys));
-        return array_slice($keys, $start, $size);
+        return array_values(array_unique($keys));
+    }
+
+    /** Escape Redis glob metacharacters so DAO prefixes retain literal semantics. */
+    protected static function escapeGlobPattern(string $value): string
+    {
+        return str_replace(['\\', '*', '?', '[', ']'], ['\\\\', '\\*', '\\?', '\\[', '\\]'], $value);
     }
 
     public function deleteMultiple(array $keys): void
@@ -250,7 +476,9 @@ LUA;
             return;
         }
         $client = $this->saRedis ?? $this->client;
-        $client->del($keys);
+        if ($client->del($keys) === false) {
+            throw new SaTokenException('Redis 批量删除失败');
+        }
     }
 
     public function setIfNotExists(string $key, string $value, ?int $timeout = null): bool
@@ -267,21 +495,30 @@ LUA;
     public function increment(string $key, int $amount = 1, ?int $timeout = null): int
     {
         $client = $this->saRedis ?? $this->client;
-        if ($timeout !== null && $timeout > 0) {
-            // 仅在 key 首次创建时设置 TTL，保证"计数 + 过期"原子生效
-            $script = <<<'LUA'
+        // 仅在 key 首次创建时设置 TTL，并与计数和非负下限原子执行。
+        $script = <<<'LUA'
+local existed = redis.call('EXISTS', KEYS[1]) == 1
 local value = redis.call('INCRBY', KEYS[1], ARGV[1])
-if redis.call('TTL', KEYS[1]) == -1 then
+if value < 0 then
+    local ttl = redis.call('PTTL', KEYS[1])
+    if ttl >= 0 then
+        redis.call('SET', KEYS[1], '0', 'PX', math.max(1, ttl))
+    else
+        redis.call('SET', KEYS[1], '0')
+    end
+    value = 0
+end
+local timeout = tonumber(ARGV[2])
+if not existed and timeout and timeout > 0 then
     redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
 end
 return value
 LUA;
-            $result = $client->eval($script, [$key, (string) $amount, (string) $timeout], 1);
-            return is_int($result) ? $result : 0;
+        $result = $client->eval($script, [$key, (string) $amount, (string) ($timeout ?? 0)], 1);
+        if (!is_int($result)) {
+            throw new SaTokenException('Redis 原子计数失败');
         }
-
-        $result = $client->incrBy($key, $amount);
-        return is_int($result) ? $result : 0;
+        return $result;
     }
 
     public function getClient(): \Redis
@@ -291,7 +528,26 @@ LUA;
 
     public function setSaRedis(\Redis $redis): void
     {
+        $this->assertRawRedisEncoding($redis);
         $this->saRedis = $redis;
+    }
+
+    /**
+     * Lua scripts compare and return the raw bytes stored by Redis. PhpRedis
+     * applies serializers/compressors to ordinary GET/SET calls, but not to
+     * EVAL arguments or results, which would make the DAO's atomic operations
+     * disagree with its regular reads and writes.
+     */
+    protected function assertRawRedisEncoding(\Redis $redis): void
+    {
+        if ($redis->getOption(\Redis::OPT_SERIALIZER) !== \Redis::SERIALIZER_NONE) {
+            throw new SaTokenException('SaTokenDaoRedis 要求 Redis 客户端关闭 serializer，以保证 Lua 原子操作与普通读写一致');
+        }
+
+        if (defined('Redis::OPT_COMPRESSION') && defined('Redis::COMPRESSION_NONE')
+            && $redis->getOption(\Redis::OPT_COMPRESSION) !== \Redis::COMPRESSION_NONE) {
+            throw new SaTokenException('SaTokenDaoRedis 要求 Redis 客户端关闭 compression，以保证 Lua 原子操作与普通读写一致');
+        }
     }
 
     /**
@@ -301,29 +557,7 @@ LUA;
     public static function createWithSeparateRedis(array $mainConfig, array $separateConfig): self
     {
         $instance = new self($mainConfig);
-
-        $saRedis = new \Redis();
-        $host = $separateConfig['host'] ?? '127.0.0.1';
-        $port = $separateConfig['port'] ?? 6379;
-        $timeout = $separateConfig['timeout'] ?? 0;
-
-        $saRedis->connect(is_string($host) ? $host : '127.0.0.1', is_int($port) ? $port : (is_numeric($port) ? (int) $port : 6379), is_numeric($timeout) ? (float) $timeout : 0.0);
-
-        if (!empty($separateConfig['password'])) {
-            $password = $separateConfig['password'];
-            if (is_string($password)) {
-                $saRedis->auth($password);
-            } elseif (is_array($password)) {
-                /** @var array<string> $password */
-                $saRedis->auth($password);
-            }
-        }
-        if (isset($separateConfig['db'])) {
-            $db = $separateConfig['db'];
-            $saRedis->select(is_int($db) ? $db : (is_numeric($db) ? (int) $db : 0));
-        }
-
-        $instance->setSaRedis($saRedis);
+        $instance->setSaRedis($instance->connectClient($instance->normalizeConfig($separateConfig)));
 
         return $instance;
     }

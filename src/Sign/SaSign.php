@@ -15,6 +15,13 @@ class SaSign
      */
     private const ALLOWED_ALGORITHMS = ['sha256'];
 
+    /** Prevent oversized signed values from consuming unbounded CPU/memory or DAO work. */
+    private const MAX_SIGNED_VALUE_BYTES = 65536;
+
+    private const MAX_NONCE_BYTES = 256;
+
+    private const MAX_SIGNED_PARAMS = 128;
+
     protected string $key = '';
 
     protected int $timestampGap = 600;
@@ -23,7 +30,7 @@ class SaSign
 
     /**
      * 是否启用内置 nonce 防重放存储（默认开启）。
-     * 关闭后防重放完全依赖外部 nonceValidator
+     * 关闭后必须配置外部 nonceValidator，否则校验 fail-closed
      */
     protected bool $nonceStoreEnabled = true;
 
@@ -39,6 +46,9 @@ class SaSign
         $this->key = is_string($key) ? $key : '';
         if ($this->key === '') {
             throw new SaTokenException('签名密钥未配置');
+        }
+        if (strlen($this->key) < 32) {
+            throw new SaTokenException('签名密钥长度不足，至少需要 32 字节');
         }
         $timestampGap = $config['timestampGap'] ?? 600;
         $this->timestampGap = is_int($timestampGap) ? $timestampGap : 600;
@@ -78,6 +88,16 @@ class SaSign
      */
     public function verifySign(array $params, ?string $method = null, ?string $path = null): bool
     {
+        if (count($params) > self::MAX_SIGNED_PARAMS) {
+            return false;
+        }
+
+        foreach ($params as $value) {
+            if ((!is_string($value) && !is_int($value)) || strlen((string) $value) > self::MAX_SIGNED_VALUE_BYTES) {
+                return false;
+            }
+        }
+
         $sign = $params['sign'] ?? null;
         if ($sign === null || $sign === '') {
             return false;
@@ -92,7 +112,7 @@ class SaSign
         }
 
         $nonce = $params['nonce'] ?? null;
-        if (!is_string($nonce) || $nonce === '') {
+        if (!is_string($nonce) || $nonce === '' || strlen($nonce) > self::MAX_NONCE_BYTES) {
             return false;
         }
 
@@ -110,6 +130,10 @@ class SaSign
             if (!$this->recordNonce($nonce)) {
                 return false;
             }
+        } else {
+            // 关闭内置存储代表调用方承诺接入外部防重放校验；没有 validator 时
+            // 不能把“未做防重放”当成验证通过，否则 nonce 可在有效期内无限重放。
+            return false;
         }
 
         return true;
@@ -121,7 +145,16 @@ class SaSign
     protected function recordNonce(string $nonce): bool
     {
         $dao = SaToken::getDao();
-        $key = 'satoken:sign:nonce:' . hash('sha256', $nonce);
+        // Keep rejecting nonces consumed before key-scoped storage was introduced.
+        // Legacy records expire naturally; new requests never write this global key.
+        $legacyKey = 'satoken:sign:nonce:' . hash('sha256', $nonce);
+        if ($dao->get($legacyKey) !== null) {
+            return false;
+        }
+
+        // Isolate replay state by signing key: in a shared DAO, one client must
+        // not be able to reserve another client's chosen nonce and deny its request.
+        $key = 'satoken:sign:nonce:' . hash_hmac('sha256', $nonce, $this->key);
         $ttl = $this->timestampGap * 2 + 60;
         return $dao->setIfNotExists($key, '1', $ttl);
     }
