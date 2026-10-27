@@ -579,6 +579,8 @@ $token = StpUtil::loginStateless(10001);
 
 无状态 JWT 若启用正值 `activityTimeout`，会额外在 DAO 保存短期活动标记；标记缺失或超过活动窗口会使 Token 失效。
 
+JWT Payload 仅签名、不加密，持有者可以解码读取其中的声明。不要把密码、密钥或其他机密写入 JWT；无状态 Token 不会自动携带服务端登录 Session 数据，需传入 `createStatelessToken()` 的显式 claims 也应仅包含可公开的数据。
+
 ### SM3 签名
 
 ```php

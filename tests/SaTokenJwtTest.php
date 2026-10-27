@@ -5,8 +5,12 @@ declare(strict_types=1);
 namespace SaToken\Tests;
 
 use PHPUnit\Framework\TestCase;
+use SaToken\Dao\SaTokenDaoMemory;
 use SaToken\Exception\SaTokenException;
 use SaToken\Plugin\SaTokenJwt;
+use SaToken\SaSession;
+use SaToken\SaToken;
+use SaToken\TokenManager;
 
 class SaTokenJwtTest extends TestCase
 {
@@ -25,6 +29,23 @@ class SaTokenJwtTest extends TestCase
         $token = $this->jwt->createToken(10001, 'login');
         $this->assertNotEmpty($token);
         $this->assertStringContainsString('.', $token); // JWT 格式：header.payload.signature
+    }
+
+    public function testStatelessJwtDoesNotExposeLoginSessionData(): void
+    {
+        SaToken::setDao(new SaTokenDaoMemory());
+        try {
+            $session = SaSession::forLoginSession(TokenManager::buildSessionId('login', 'jwt-session-leak'));
+            $session->set('passwordResetSecret', 'private-session-secret');
+
+            $token = $this->jwt->createStatelessToken('jwt-session-leak', 'login', 3600, ['role' => 'admin']);
+            $claims = $this->jwt->parseToken($token);
+
+            self::assertArrayNotHasKey('passwordResetSecret', $claims);
+            self::assertSame('admin', $claims['role']);
+        } finally {
+            SaToken::reset();
+        }
     }
 
     public function testUnknownCryptoTypeIsRejected(): void

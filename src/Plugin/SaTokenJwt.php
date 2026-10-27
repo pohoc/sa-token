@@ -257,26 +257,18 @@ class SaTokenJwt
      */
     public function createStatelessToken(mixed $loginId, string $loginType, ?int $timeout = null, array $extraClaims = []): string
     {
-        $sessionData = [];
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
-        $sessionId = \SaToken\TokenManager::buildSessionId($loginType, $loginIdStr);
-        $session = \SaToken\SaSession::getLoginSessionById($sessionId);
-        if ($session !== null) {
-            $sessionData = $session->getDataMap();
-        }
 
-        // 剥离 session 数据中的保留 claims（sub/exp/iat/type/jti 等）：
-        // 保留字段是身份与有效性的权威来源，一旦可被 session 数据覆盖，
-        // 任何能写 session 顶层键的输入都能伪造登录身份或延长有效期。
-        // 额外参数同样不允许碰保留字段
+        // JWT payload is readable by its holder, so never copy the server-side
+        // login Session wholesale into a bearer. Only explicitly selected
+        // claims may leave the server; reserved identity and lifecycle claims
+        // remain controlled by the signer.
         $reservedKeys = ['sub', 'exp', 'iat', 'nbf', 'jti', 'iss', 'aud', 'type', 'satoken_gen'];
-        $safeSessionData = array_diff_key($sessionData, array_flip($reservedKeys));
         $safeExtraClaims = array_diff_key($extraClaims, array_flip($reservedKeys));
 
-        $statelessClaims = array_merge($safeSessionData, $safeExtraClaims);
         $generation = (new TokenManager())->getStatelessTokenGeneration($loginIdStr, $loginType);
 
-        return $this->createToken($loginId, $loginType, $timeout, $statelessClaims, $generation);
+        return $this->createToken($loginId, $loginType, $timeout, $safeExtraClaims, $generation);
     }
 
     /**
