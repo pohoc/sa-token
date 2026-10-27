@@ -85,19 +85,41 @@ class SaAntiBruteUtil
         return self::$keyPrefix . 'source-epoch:' . $identity;
     }
 
-    protected static function getSourceEpoch(string $identity): int
+    protected static function getSourceEpoch(string $identity): string
     {
-        $epoch = SaToken::getDao()->get(self::getSourceEpochKey($identity));
-        return $epoch !== null && ctype_digit($epoch) ? (int) $epoch : 0;
+        $dao = SaToken::getDao();
+        $key = self::getSourceEpochKey($identity);
+        $epoch = $dao->get($key);
+        if ($epoch !== null && preg_match('/^[a-f0-9]{32}$/D', $epoch) === 1) {
+            return $epoch;
+        }
+
+        $epoch = bin2hex(random_bytes(16));
+        $timeout = SaToken::getConfig()->getAntiBruteLockDuration();
+        if (!$dao->setIfNotExists($key, $epoch, $timeout > 0 ? $timeout : null)) {
+            $current = $dao->get($key);
+            if ($current !== null && preg_match('/^[a-f0-9]{32}$/D', $current) === 1) {
+                return $current;
+            }
+            throw new SaTokenException('无法初始化来源失败状态代际，请重试');
+        }
+
+        return $epoch;
     }
 
-    protected static function getSourceFailureKey(string $identity, ?int $epoch = null): string
+    protected static function rotateSourceEpoch(string $identity, int $timeout): void
+    {
+        $dao = SaToken::getDao();
+        $dao->set(self::getSourceEpochKey($identity), bin2hex(random_bytes(16)), $timeout > 0 ? $timeout : null);
+    }
+
+    protected static function getSourceFailureKey(string $identity, ?string $epoch = null): string
     {
         $epoch ??= self::getSourceEpoch($identity);
         return self::$keyPrefix . 'source-fail:' . $identity . ':' . $epoch;
     }
 
-    protected static function getSourceLockKey(string $identity, ?int $epoch = null): string
+    protected static function getSourceLockKey(string $identity, ?string $epoch = null): string
     {
         $epoch ??= self::getSourceEpoch($identity);
         return self::$keyPrefix . 'source-lock:' . $identity . ':' . $epoch;
@@ -462,7 +484,10 @@ class SaAntiBruteUtil
             // Successful authentication clears source-level failures too. Use
             // a generation switch so an already-running failed request can
             // only finish writing to the old, now-ignored source state.
-            $dao->increment(self::getSourceEpochKey($sourceIdentity));
+            self::rotateSourceEpoch(
+                $sourceIdentity,
+                SaToken::getConfig()->getAntiBruteLockDuration()
+            );
         }
         $epoch = self::getEpoch($account, $loginType);
         $ipEpoch = self::getIpEpoch($account, $loginType, $epoch);

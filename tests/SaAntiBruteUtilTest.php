@@ -223,6 +223,29 @@ class SaAntiBruteUtilTest extends TestCase
         SaAntiBruteUtil::clearCurrentSourceFailures('next-account');
     }
 
+    public function testSourceGenerationExpiresWithFailureWindow(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'antiBruteMaxFailures' => 0,
+            'antiBruteIpMaxFailures' => 2,
+            'antiBruteLockDuration' => 60,
+        ]));
+        SaTokenContext::setRequest($this->requestFromIp('192.0.2.47'));
+
+        SaAntiBruteUtil::checkAndThrow('valid-user');
+        SaAntiBruteUtil::clearCurrentSourceFailures('valid-user');
+
+        $identity = hash('sha256', "login\0" . '192.0.2.47');
+        $epochKey = 'satoken:security:brute:source-epoch:' . $identity;
+        self::assertGreaterThan(0, $this->daoTimeout($epochKey));
+        self::assertLessThanOrEqual(60, $this->daoTimeout($epochKey));
+    }
+
+    protected function daoTimeout(string $key): int
+    {
+        return SaToken::getDao()->getTimeout($key);
+    }
+
     public function testSourceFailureLimitBoundsCountersAcrossRandomAccounts(): void
     {
         SaToken::setConfig(new SaTokenConfig([
