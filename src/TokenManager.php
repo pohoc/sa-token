@@ -427,7 +427,7 @@ class TokenManager
             || !$dao->compareAndSet(
                 $loginIdKey,
                 $expectedList,
-                $this->encryptValue(SaFoxUtil::toJson($existingTokens)),
+                $this->encryptBoundValue($loginIdKey, SaFoxUtil::toJson($existingTokens)),
                 $listTimeout
             )) {
             throw new SaTokenException('账号会话列表已并发变更或 DAO 不支持原子条件写入，请重试');
@@ -593,34 +593,61 @@ class TokenManager
                 return [];
             }
             $legacyList = SaFoxUtil::fromJson($this->decryptValue($legacyJson));
-            if (!is_array($legacyList)) {
-                return [];
-            }
-            $filtered = [];
-            foreach ($legacyList as $item) {
-                if (!is_array($item)) {
-                    continue;
-                }
-                $normalized = [];
-                foreach ($item as $key => $value) {
-                    if (is_string($key)) {
-                        $normalized[$key] = $value;
-                    }
-                }
-                $tokenValue = $normalized['tokenValue'] ?? null;
-                if (is_string($tokenValue) && $this->getLoginIdByToken($tokenValue) === $loginIdStr) {
-                    $filtered[] = $normalized;
-                }
-            }
-            return $filtered;
+            return is_array($legacyList)
+                ? $this->filterTokenListForOwner($legacyList, $loginIdStr, $loginType)
+                : [];
         }
-        $decrypted = $this->decryptValue($json);
+        // V2 indexes are authenticated to their storage key. Continue reading
+        // authenticated pre-context records during upgrade, but validate every
+        // live bearer against its own authenticated owner before exposing it.
+        $decrypted = $this->getEncryptor()->decryptCheckedForContext($json, $loginIdKey)
+            ?? $this->decryptValue($json);
         $list = SaFoxUtil::fromJson($decrypted);
         if (!is_array($list)) {
             return [];
         }
         /** @var array<array<string, mixed>> $list */
-        return $list;
+        return $this->filterTokenListForOwner($list, $loginIdStr, $loginType);
+    }
+
+    /**
+     * Do not let a transplanted or stale account index disclose a live bearer
+     * owned by another account or login type. Expired/missing bearer entries
+     * remain available for refresh-token cleanup and legacy index migration.
+     *
+     * @param  array<array-key, mixed>     $list
+     * @return array<array<string, mixed>>
+     */
+    protected function filterTokenListForOwner(array $list, string $loginId, string $loginType): array
+    {
+        $filtered = [];
+        foreach ($list as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $normalized = [];
+            foreach ($item as $key => $value) {
+                if (is_string($key)) {
+                    $normalized[$key] = $value;
+                }
+            }
+            $tokenValue = $normalized['tokenValue'] ?? null;
+            if (!is_string($tokenValue) || $tokenValue === '') {
+                continue;
+            }
+            if ($this->getDao()->exists(self::TOKEN_PREFIX . $tokenValue)) {
+                if ($this->getLoginIdByToken($tokenValue) !== $loginId) {
+                    continue;
+                }
+                $recordedLoginType = $this->getTokenSessionLoginType($tokenValue);
+                if ($recordedLoginType !== null && $recordedLoginType !== $loginType) {
+                    continue;
+                }
+            }
+            $filtered[] = $normalized;
+        }
+
+        return $filtered;
     }
 
     /**
@@ -710,10 +737,15 @@ class TokenManager
                 return null;
             }
 
-            $list = SaFoxUtil::fromJson($this->decryptValue($expectedList));
+            $decryptedList = $listKey === $loginIdKey
+                ? ($this->getEncryptor()->decryptCheckedForContext($expectedList, $loginIdKey)
+                    ?? $this->decryptValue($expectedList))
+                : $this->decryptValue($expectedList);
+            $list = SaFoxUtil::fromJson($decryptedList);
             if (!is_array($list)) {
                 return null;
             }
+            $list = $this->filterTokenListForOwner($list, $loginId, $loginType);
 
             $tokenIsListed = false;
             foreach ($list as $item) {
@@ -932,7 +964,7 @@ class TokenManager
             if ($expectedList !== null) {
                 $timeout = $dao->getTimeout($loginIdKey);
                 $effectiveTimeout = ($timeout === -1) ? null : max(1, $timeout);
-                $newList = $newTokens === [] ? null : $this->encryptValue(SaFoxUtil::toJson($newTokens));
+                $newList = $newTokens === [] ? null : $this->encryptBoundValue($loginIdKey, SaFoxUtil::toJson($newTokens));
                 if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface
                     || !$dao->compareAndSet($loginIdKey, $expectedList, $newList, $effectiveTimeout)) {
                     throw new SaTokenException('账号会话列表已并发变更或 DAO 不支持原子条件写入，请重试');
@@ -2122,7 +2154,7 @@ class TokenManager
             $json = SaFoxUtil::toJson($tokens);
             $dao = $this->getDao();
             if ($dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface
-                && $dao->compareAndSet($key, null, $this->encryptValue($json), $listTimeout)) {
+                && $dao->compareAndSet($key, null, $this->encryptBoundValue($key, $json), $listTimeout)) {
                 return;
             }
 

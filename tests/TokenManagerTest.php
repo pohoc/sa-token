@@ -706,6 +706,41 @@ class TokenManagerTest extends TestCase
         self::assertFalse($this->manager->isRefreshTokenValid($refreshToken));
     }
 
+    public function testCopiedEncryptedAccountIndexCannotDiscloseAnotherAccountBearer(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'timeout' => 3600,
+            'tokenEncrypt' => true,
+            'aesKey' => 'account-index-context-test-key-32-bytes',
+        ]));
+
+        $ownerToken = $this->manager->createTokenValue('account-index-owner', 'login');
+        $this->manager->saveToken($ownerToken, 'account-index-owner', 'login');
+        $victimToken = $this->manager->createTokenValue('account-index-victim', 'login');
+        $this->manager->saveToken($victimToken, 'account-index-victim', 'login');
+
+        $ownerKey = TokenManager::buildLoginIdKey('login', 'account-index-owner');
+        $victimKey = TokenManager::buildLoginIdKey('login', 'account-index-victim');
+        $victimIndex = $this->dao->get($victimKey);
+        self::assertNotNull($victimIndex);
+
+        // Simulate a storage record transplant: the writer can copy a valid
+        // encrypted value but cannot forge or decrypt the victim's index.
+        $this->dao->set($ownerKey, $victimIndex);
+
+        try {
+            $this->manager->getTokenListByLoginId('account-index-owner', 'login');
+            self::fail('A context-bound index copied from another account must be rejected');
+        } catch (SaTokenException $exception) {
+            self::assertSame('Token 存储数据完整性校验失败', $exception->getMessage());
+        }
+        self::assertSame(
+            $victimIndex,
+            $this->dao->get($victimKey),
+            'Rejecting a foreign index must not mutate the victim account record'
+        );
+    }
+
     public function testRefreshTokenExtendsLegacyAccountIndexDuringUpgrade(): void
     {
         $loginId = 'legacy:refresh-user';
