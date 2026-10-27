@@ -221,7 +221,7 @@ class SecurityRegressionTest extends TestCase
         $this->assertLessThanOrEqual($originalTimeout, $adminLogic->getTokenTimeout());
     }
 
-    public function testStaleRenewalCannotExtendTokenReissuedToAnotherAccount(): void
+    public function testStaleRenewalCannotReviveRevokedTokenValue(): void
     {
         $token = 'reusable-renewal-token-value';
         $manager = new TokenManager();
@@ -254,14 +254,14 @@ class SecurityRegressionTest extends TestCase
         $this->assertTrue($fiber->isSuspended());
 
         $manager->deleteToken($token, 'old-owner', 'login');
-        $manager->saveToken($token, 'new-owner', 'login', 'PC', 300);
-        $newOwnerTimeout = $manager->getTokenTimeout($token);
+        $replacementToken = $manager->saveToken($token, 'new-owner', 'login', 'PC', 300);
+        $this->assertNotSame($token, $replacementToken, '已吊销的 bearer 值不得重新签发');
 
         $fiber->resume();
 
         $this->assertTrue($fiber->isTerminated());
-        $this->assertSame('new-owner', $manager->getLoginIdByToken($token));
-        $this->assertLessThanOrEqual($newOwnerTimeout, $manager->getTokenTimeout($token));
+        $this->assertNull($manager->getLoginIdByToken($token));
+        $this->assertSame(-2, $manager->getTokenTimeout($token));
     }
 
     public function testLogoutAfterRefreshLockLeaseExpiresCannotReturnNewSession(): void
@@ -1162,7 +1162,7 @@ class SecurityRegressionTest extends TestCase
         StpUtil::checkSafe('payment');
     }
 
-    public function testReissuedTokenDoesNotInheritPreviousSwitchOrSafeState(): void
+    public function testRevokedTokenValueCannotBeReissuedToAnotherAccount(): void
     {
         SaToken::setAction(new class () implements \SaToken\Action\SaTokenActionInterface {
             public function getPermissionList(mixed $loginId, string $loginType): array
@@ -1187,12 +1187,13 @@ class SecurityRegressionTest extends TestCase
         StpUtil::openSafe(300, 'payment');
         StpUtil::logout();
 
-        $newToken = StpUtil::login(20007)->getAccessToken();
-        $this->assertSame($oldToken, $newToken);
-        $this->actAsToken($newToken);
-
-        $this->assertSame('20007', StpUtil::getLoginId());
-        $this->assertFalse(StpUtil::isSafe('payment'));
+        try {
+            StpUtil::login(20007);
+            $this->fail('已注销的 bearer 值不得重新签发给另一账号');
+        } catch (SaTokenException $exception) {
+            $this->assertStringContainsString('Token 值冲突', $exception->getMessage());
+        }
+        $this->assertNull(StpUtil::getStpLogic()->getLoginIdByToken($oldToken));
     }
 
     public function testSwitchedIdentityCannotBypassActivityTimeoutInPermissionChecks(): void

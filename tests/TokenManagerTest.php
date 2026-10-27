@@ -250,8 +250,29 @@ class TokenManagerTest extends TestCase
 
         $this->manager->deleteAllTokenByLoginId($ownerA, 'old-type');
 
-        self::assertSame($ownerB, $this->manager->getLoginIdByToken($token));
-        self::assertSame('new-type', $this->manager->getTokenSessionLoginType($token));
+        // The old logout's bearer is blacklisted, so a concurrent replacement
+        // must receive a fresh value instead of making the old copy valid.
+        self::assertNull($this->manager->getLoginIdByToken($token));
+        self::assertTrue($this->manager->isBlacklisted($token));
+        $replacementTokens = $this->manager->getTokenListByLoginId($ownerB, 'new-type');
+        self::assertCount(1, $replacementTokens);
+        $replacementToken = $replacementTokens[0]['tokenValue'];
+        self::assertIsString($replacementToken);
+        self::assertNotSame($token, $replacementToken);
+        self::assertSame($ownerB, $this->manager->getLoginIdByToken($replacementToken));
+    }
+
+    public function testDeletedRefreshTokenCannotBeReissuedToAnotherAccount(): void
+    {
+        $accessA = $this->manager->saveToken('refresh-owner-a-access', 'refresh-owner-a', 'login', 'PC', 3600);
+        $accessB = $this->manager->saveToken('refresh-owner-b-access', 'refresh-owner-b', 'login', 'PC', 3600);
+        $refresh = 'srt_reused-refresh-bearer-value';
+        $this->manager->saveRefreshToken($refresh, $accessA, 'refresh-owner-a', 'login', 3600);
+        $this->manager->deleteRefreshToken($refresh);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('该凭据已消费');
+        $this->manager->saveRefreshToken($refresh, $accessB, 'refresh-owner-b', 'login', 3600);
     }
 
     public function testCreateTokenValue(): void

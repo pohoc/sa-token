@@ -128,6 +128,59 @@ class StpLogicSecurityTest extends TestCase
         self::assertSame('new-type', $this->manager->getTokenSessionLoginType($token));
     }
 
+    public function testRevokedCustomTokenCannotBeReissuedToAnotherAccount(): void
+    {
+        SaToken::setAction(new class () implements \SaToken\Action\SaTokenActionInterface {
+            public function getPermissionList(mixed $loginId, string $loginType): array
+            {
+                return [];
+            }
+
+            public function getRoleList(mixed $loginId, string $loginType): array
+            {
+                return [];
+            }
+
+            public function generateTokenValue(mixed $loginId, string $loginType): string
+            {
+                return 'custom-reused-token-value';
+            }
+        });
+
+        $oldToken = $this->stp->login('old-account')->getAccessToken();
+        self::assertSame('old-account', $this->stp->getLoginIdByToken($oldToken));
+        $this->stp->kickoutByTokenValue($oldToken);
+
+        try {
+            $this->stp->login('new-account');
+            self::fail('已吊销的 bearer 值不得再次签发');
+        } catch (\SaToken\Exception\SaTokenException $exception) {
+            self::assertStringContainsString('Token 值冲突', $exception->getMessage());
+        }
+        self::assertNull($this->stp->getLoginIdByToken($oldToken), '旧 bearer 不得认证为新账号');
+    }
+
+    public function testReplayingRevokedRefreshTokenDoesNotRevokeCurrentSession(): void
+    {
+        SaToken::getConfig()
+            ->setRefreshToken(true)
+            ->setRefreshTokenRotation(true)
+            ->setRefreshTokenTimeout(3600);
+        $login = $this->stp->login('refresh-revoke-user');
+        $accessToken = $login->getAccessToken();
+        $refreshToken = $login->getRefreshToken();
+        self::assertNotSame('', $refreshToken);
+
+        self::assertTrue($this->stp->revokeRefreshToken($refreshToken));
+        try {
+            $this->stp->refreshToken($refreshToken);
+            self::fail('已撤销的 RefreshToken 必须拒绝刷新');
+        } catch (\SaToken\Exception\SaTokenException) {
+        }
+
+        self::assertSame('refresh-revoke-user', $this->stp->getLoginIdByToken($accessToken));
+    }
+
     public function testOpenSensitiveVerifyCannotMintProofBeforeOtpVerification(): void
     {
         $loginId = 'sensitive-user';

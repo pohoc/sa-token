@@ -967,6 +967,17 @@ class TokenManager
                 $this->advanceStatelessTokenGenerationLocked($loginIdStr, $loginType);
             }
 
+            // Retain revocation state through the credential's original lifetime.
+            // Without this marker, a custom generator can reissue a deleted
+            // bearer to another account and make the previous owner's copy valid
+            // again. Write before deletion so storage failure cannot create a
+            // reuse window; a false-positive revocation is fail-closed.
+            $tokenTimeout = $dao->getTimeout($tokenKey);
+            $this->addToBlacklist(
+                $tokenValue,
+                $tokenTimeout === -1 ? null : ($tokenTimeout > 0 ? $tokenTimeout : null)
+            );
+
             // The bearer record is the authoritative login state. Revoke it
             // before changing the account index, so a storage failure cannot
             // leave a valid token stranded outside the index and impossible to
@@ -1096,6 +1107,7 @@ class TokenManager
                 }
                 $tokenSnapshots[$tokenValue] = [
                     'record' => $tokenRecord,
+                    'timeout' => $this->getDao()->getTimeout($tokenKey),
                     'boundState' => $this->captureTokenBoundState(
                         $this->getTokenBoundStateKeys($tokenValue, $loginType)
                     ),
@@ -1119,6 +1131,11 @@ class TokenManager
 
             foreach ($tokenSnapshots as $tokenValue => $snapshot) {
                 $renewLocks();
+                $tokenTimeout = $snapshot['timeout'];
+                $this->addToBlacklist(
+                    $tokenValue,
+                    $tokenTimeout === -1 ? null : ($tokenTimeout > 0 ? $tokenTimeout : null)
+                );
                 if (!$dao->compareAndDelete(self::TOKEN_PREFIX . $tokenValue, $snapshot['record'])) {
                     continue;
                 }
@@ -1687,11 +1704,10 @@ class TokenManager
                 throw new SaTokenException('RefreshToken 正在签发或消费，请稍后重试');
             }
             try {
-                // In rotation mode a consumed token's replay marker must remain
-                // authoritative until its retention expires. Re-registering the
-                // same bearer value would turn that old credential valid again.
-                if ($this->getConfig()->isRefreshTokenRotation()
-                    && $this->getDao()->exists(self::REFRESH_TOKEN_USED_PREFIX . hash('sha256', $refreshToken))) {
+                // A consumed or revoked refresh bearer remains unavailable until
+                // its retention expires, even when refresh rotation is disabled.
+                // Otherwise a custom generator can make an old credential valid again.
+                if ($this->getDao()->exists(self::REFRESH_TOKEN_USED_PREFIX . hash('sha256', $refreshToken))) {
                     throw new SaTokenException('RefreshToken 值冲突：该凭据已消费，拒绝重新签发');
                 }
                 // Access and refresh credentials are independent bearer classes.
@@ -1713,8 +1729,7 @@ class TokenManager
                 // inspect; a stale index entry without a credential is harmless.
                 $this->addRefreshTokenToAccountIndex($loginIdStr, $loginType, $refreshToken, $timeout);
                 if (!$this->renewLock($credentialLockKey, 30)
-                    || ($this->getConfig()->isRefreshTokenRotation()
-                        && $this->getDao()->exists(self::REFRESH_TOKEN_USED_PREFIX . hash('sha256', $refreshToken)))) {
+                    || $this->getDao()->exists(self::REFRESH_TOKEN_USED_PREFIX . hash('sha256', $refreshToken))) {
                     $this->removeRefreshTokenFromAccountIndex($loginIdStr, $loginType, $refreshToken);
                     throw new SaTokenException('RefreshToken 已消费或凭据锁已失效，拒绝重新签发');
                 }
@@ -2022,6 +2037,16 @@ class TokenManager
             && (($data['loginId'] ?? null) !== $expectedLoginId || ($data['loginType'] ?? null) !== $expectedLoginType)) {
             return;
         }
+        $refreshTimeout = $dao->getTimeout($refreshKey);
+        $usedMarkerKey = self::REFRESH_TOKEN_USED_PREFIX . hash('sha256', $refreshToken);
+        $retentionTimeout = $refreshTimeout === -1 ? null : ($refreshTimeout > 0 ? $refreshTimeout : 86400);
+        $markerValue = $snapshot;
+        if ($data !== null) {
+            $data['revoked'] = true;
+            $markerValue = $this->encryptValue(SaFoxUtil::toJson($data));
+        }
+        // setIfNotExists preserves any earlier consumed marker and its owner.
+        $dao->setIfNotExists($usedMarkerKey, $markerValue, $retentionTimeout);
         if (!$dao->compareAndDelete($refreshKey, $snapshot)) {
             return;
         }

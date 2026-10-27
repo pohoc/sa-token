@@ -297,6 +297,9 @@ trait StpLogicRefreshTokenTrait
         }
 
         $usedData = $this->tokenManager->getConsumedRefreshTokenData($refreshToken);
+        if (($usedData['revoked'] ?? false) === true) {
+            return false;
+        }
         $loginId = is_string($usedData['loginId'] ?? null) ? $usedData['loginId'] : '';
         $loginType = is_string($usedData['loginType'] ?? null) ? $usedData['loginType'] : '';
         if ($loginId === '' || $loginType !== $this->loginType) {
@@ -312,7 +315,8 @@ trait StpLogicRefreshTokenTrait
             // Recheck under the same account lock as refresh/login so the used
             // token cannot be raced with a new active registration.
             $usedData = $this->tokenManager->getConsumedRefreshTokenData($refreshToken);
-            if (($usedData['loginId'] ?? null) !== $loginId
+            if (($usedData['revoked'] ?? false) === true
+                || ($usedData['loginId'] ?? null) !== $loginId
                 || ($usedData['loginType'] ?? null) !== $this->loginType
                 || $this->tokenManager->getRefreshTokenData($refreshToken) !== null) {
                 return false;
