@@ -74,13 +74,22 @@ class SsoModeSameDomain
      */
     public static function buildCsrfValue(string $tokenValue): string
     {
-        $salt = SaToken::getConfig()->getSignKey();
-        if ($salt === '') {
-            $salt = SaToken::getConfig()->getTokenEncryptKey() ?: SaToken::getConfig()->getAesKey();
+        $config = SaToken::getConfig();
+        foreach ([
+            $config->getSignKey(),
+            $config->getHmacKey(),
+            $config->getTokenEncryptKey(),
+            $config->getAesKey(),
+        ] as $salt) {
+            // HMAC does not strengthen a weak application secret. Require the
+            // same minimum key size used by other authentication signatures,
+            // including when encryption is disabled and its key is not
+            // otherwise validated by SaTokenEncryptor.
+            if (strlen($salt) >= 32) {
+                return hash_hmac('sha256', 'sso-csrf:' . $tokenValue, $salt);
+            }
         }
-        if ($salt === '') {
-            throw new SaTokenException('同域 SSO CSRF 校验需要配置 signKey、tokenEncryptKey 或 aesKey');
-        }
-        return hash_hmac('sha256', 'sso-csrf:' . $tokenValue, $salt);
+
+        throw new SaTokenException('同域 SSO CSRF 校验需要配置至少 32 字节的 signKey、hmacKey、tokenEncryptKey 或 aesKey');
     }
 }

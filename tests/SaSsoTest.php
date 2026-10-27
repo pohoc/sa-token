@@ -485,6 +485,29 @@ class SaSsoTest extends TestCase
         SsoModeSameDomain::buildCsrfValue('known-token');
     }
 
+    public function testSameDomainSsoRejectsWeakCsrfSecret(): void
+    {
+        SaToken::setConfig(new SaTokenConfig(['aesKey' => 'weak-key']));
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('至少 32 字节');
+        SsoModeSameDomain::buildCsrfValue('known-token');
+    }
+
+    public function testSameDomainSsoUsesStrongHmacKeyWhenEncryptionKeyIsWeak(): void
+    {
+        $hmacKey = str_repeat('h', 32);
+        SaToken::setConfig(new SaTokenConfig([
+            'aesKey' => 'weak-key',
+            'hmacKey' => $hmacKey,
+        ]));
+
+        self::assertSame(
+            hash_hmac('sha256', 'sso-csrf:known-token', $hmacKey),
+            SsoModeSameDomain::buildCsrfValue('known-token')
+        );
+    }
+
     public function testBuildLoginUrlWithoutRedirect(): void
     {
         $config = new SaSsoConfig([
