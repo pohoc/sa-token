@@ -232,6 +232,7 @@ class TokenManager
         ?int $timeout = null,
         ?string $sessionId = null
     ): string {
+        $this->validateTokenValueLength($tokenValue);
         SaTokenTimeout::validate($timeout ?? $this->getConfig()->getTimeout());
 
         if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
@@ -664,6 +665,9 @@ class TokenManager
      */
     public function getTokenSessionBinding(string $tokenValue, string $loginType): ?array
     {
+        if (!$this->isTokenValueWithinLimit($tokenValue)) {
+            return null;
+        }
         $tokenKey = self::TOKEN_PREFIX . $tokenValue;
         $tokenRecord = $this->getDao()->get($tokenKey);
         if ($tokenRecord === null) {
@@ -805,6 +809,9 @@ class TokenManager
      */
     public function getTokenSessionLoginType(string $tokenValue): ?string
     {
+        if (!$this->isTokenValueWithinLimit($tokenValue)) {
+            return '';
+        }
         $tokenKey = self::TOKEN_PREFIX . $tokenValue;
         $tokenRecord = $this->getDao()->get($tokenKey);
         if ($tokenRecord === null) {
@@ -898,6 +905,7 @@ class TokenManager
 
     public function deleteToken(string $tokenValue, mixed $loginId, string $loginType): void
     {
+        $this->validateTokenValueLength($tokenValue);
         // 会话列表是整包读改写，必须与 login/refresh 共用账号级互斥锁，
         // 否则并发 logout/kickout 与 login 会互相覆盖（复活已删条目/丢失新 Token）。
         // acquireLock 可重入，login 持锁路径不会被自阻塞
@@ -1150,6 +1158,9 @@ class TokenManager
 
     public function updateLastActiveToNow(string $tokenValue): void
     {
+        if (!$this->isTokenValueWithinLimit($tokenValue)) {
+            return;
+        }
         $config = $this->getConfig();
         if ($config->getActivityTimeout() <= 0) {
             return;
@@ -1164,6 +1175,9 @@ class TokenManager
 
     public function getLastActiveTime(string $tokenValue): ?int
     {
+        if (!$this->isTokenValueWithinLimit($tokenValue)) {
+            return null;
+        }
         $key = self::LAST_ACTIVE_PREFIX . $tokenValue;
         $value = $this->getDao()->get($key);
         if ($value === null) {
@@ -1179,11 +1193,15 @@ class TokenManager
 
     public function getTokenTimeout(string $tokenValue): int
     {
+        if (!$this->isTokenValueWithinLimit($tokenValue)) {
+            return -2;
+        }
         return $this->getDao()->getTimeout(self::TOKEN_PREFIX . $tokenValue);
     }
 
     public function renewTimeout(string $tokenValue, int $timeout): void
     {
+        $this->validateTokenValueLength($tokenValue);
         SaTokenTimeout::validate($timeout);
         $this->getDao()->expire(self::TOKEN_PREFIX . $tokenValue, $timeout);
     }
@@ -1195,6 +1213,9 @@ class TokenManager
         string $loginType,
         string $expectedLoginId
     ): bool {
+        if (!$this->isTokenValueWithinLimit($tokenValue)) {
+            return false;
+        }
         SaTokenTimeout::validate($timeout);
 
         $accountLockKey = 'login:' . $loginType . ':' . hash('sha256', $expectedLoginId);
@@ -1236,7 +1257,7 @@ class TokenManager
 
     public function isTokenValid(string $tokenValue): bool
     {
-        if (SaFoxUtil::isEmpty($tokenValue)) {
+        if (!$this->isTokenValueWithinLimit($tokenValue)) {
             return false;
         }
         return $this->getDao()->exists(self::TOKEN_PREFIX . $tokenValue);
@@ -1248,6 +1269,9 @@ class TokenManager
      */
     public function invalidateTokenIfOwnedByLoginType(string $tokenValue, mixed $loginId, string $loginType): bool
     {
+        if (!$this->isTokenValueWithinLimit($tokenValue)) {
+            return false;
+        }
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
         $tokenLockKey = $this->tokenValueLockKey($tokenValue);
         $acquired = false;
@@ -1381,6 +1405,7 @@ class TokenManager
 
     public function openSafe(string $tokenValue, string $service, int $safeTime, string $loginType): void
     {
+        $this->validateTokenValueLength($tokenValue);
         if ($safeTime <= 0) {
             throw new SaTokenException('安全窗口必须是正整数秒数');
         }
@@ -1425,6 +1450,9 @@ class TokenManager
 
     public function isSafe(string $tokenValue, string $service, string $loginType): bool
     {
+        if (!$this->isTokenValueWithinLimit($tokenValue)) {
+            return false;
+        }
         $value = $this->getDao()->get($this->safeStateKey($tokenValue, $service, $loginType));
         if ($value === null) {
             return false;
@@ -1439,6 +1467,9 @@ class TokenManager
 
     public function closeSafe(string $tokenValue, string $service, string $loginType): void
     {
+        if (!$this->isTokenValueWithinLimit($tokenValue)) {
+            return;
+        }
         $tokenLockKey = $this->tokenValueLockKey($tokenValue);
         if (!$this->acquireLock($tokenLockKey, 30)) {
             throw new SaTokenException('Token 正在签发或注销，请稍后重试');
@@ -1501,6 +1532,7 @@ class TokenManager
 
     public function setSwitchTo(string $tokenValue, mixed $switchToId, string $loginType): void
     {
+        $this->validateTokenValueLength($tokenValue);
         if ($switchToId === null || $switchToId === '' || is_bool($switchToId) || !is_scalar($switchToId)) {
             throw new SaTokenException('切换身份必须是非空、非布尔标量');
         }
@@ -1518,6 +1550,9 @@ class TokenManager
 
     public function getSwitchTo(string $tokenValue, string $loginType): ?string
     {
+        if (!$this->isTokenValueWithinLimit($tokenValue)) {
+            return null;
+        }
         $dao = $this->getDao();
         $key = self::buildSwitchKey($tokenValue, $loginType);
         $value = $dao->get($key);
@@ -1544,6 +1579,9 @@ class TokenManager
 
     public function clearSwitch(string $tokenValue, string $loginType): void
     {
+        if (!$this->isTokenValueWithinLimit($tokenValue)) {
+            return;
+        }
         $dao = $this->getDao();
         $dao->delete(self::buildSwitchKey($tokenValue, $loginType));
         if (!str_contains($loginType, ':') && !str_contains($loginType, '%')
@@ -2261,6 +2299,7 @@ class TokenManager
 
     public function saveFingerprint(string $tokenValue, string $fingerprint, ?int $timeout = null): void
     {
+        $this->validateTokenValueLength($tokenValue);
         $effectiveTimeout = ($timeout === -1) ? null : $timeout;
         $key = self::FINGERPRINT_PREFIX . $tokenValue;
         $this->getDao()->set($key, $this->encryptBoundValue($key, $fingerprint), $effectiveTimeout);
@@ -2268,6 +2307,9 @@ class TokenManager
 
     public function getFingerprint(string $tokenValue): ?string
     {
+        if (!$this->isTokenValueWithinLimit($tokenValue)) {
+            return null;
+        }
         $key = self::FINGERPRINT_PREFIX . $tokenValue;
         $value = $this->getDao()->get($key);
         if ($value === null) {
@@ -2282,6 +2324,9 @@ class TokenManager
 
     public function deleteFingerprint(string $tokenValue): void
     {
+        if (!$this->isTokenValueWithinLimit($tokenValue)) {
+            return;
+        }
         $this->getDao()->delete(self::FINGERPRINT_PREFIX . $tokenValue);
     }
 
@@ -2421,6 +2466,9 @@ class TokenManager
 
     public function removeFromBlacklist(string $tokenValue): void
     {
+        if (!$this->isTokenValueWithinLimit($tokenValue)) {
+            return;
+        }
         $this->getDao()->delete(self::BLACKLIST_PREFIX . $tokenValue);
     }
 

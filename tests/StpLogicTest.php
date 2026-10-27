@@ -208,6 +208,47 @@ class StpLogicTest extends TestCase
         $this->tokenManager->addToBlacklist(str_repeat('t', TokenManager::MAX_TOKEN_VALUE_BYTES + 1), 60);
     }
 
+    public function testOversizedTokensFailClosedAcrossTokenMetadataOperations(): void
+    {
+        $token = str_repeat('x', TokenManager::MAX_TOKEN_VALUE_BYTES + 1);
+
+        self::assertNull($this->tokenManager->getTokenSessionBinding($token, 'login'));
+        self::assertSame('', $this->tokenManager->getTokenSessionLoginType($token));
+        self::assertNull($this->tokenManager->getTokenSessionId($token, 'login'));
+        self::assertNull($this->tokenManager->getLastActiveTime($token));
+        self::assertSame(-2, $this->tokenManager->getTokenTimeout($token));
+        self::assertFalse($this->tokenManager->isTokenValid($token));
+        self::assertFalse($this->logic->isTokenRevoked($token));
+        self::assertNull($this->tokenManager->getFingerprint($token));
+        self::assertFalse($this->tokenManager->isSafe($token, 'transfer', 'login'));
+        self::assertNull($this->tokenManager->getSwitchTo($token, 'login'));
+        self::assertNull($this->logic->getLoginIdByToken($token));
+        self::assertNull($this->logic->kickoutByTokenValue($token));
+        self::assertFalse($this->logic->revokeToken($token));
+
+        foreach ([
+            fn () => $this->tokenManager->deleteToken($token, 'user', 'login'),
+            fn () => $this->tokenManager->renewTimeout($token, 60),
+            fn () => $this->tokenManager->openSafe($token, 'transfer', 60, 'login'),
+            fn () => $this->tokenManager->setSwitchTo($token, 'other-user', 'login'),
+            fn () => $this->tokenManager->saveFingerprint($token, 'fingerprint'),
+            fn () => $this->logic->writeTokenToResponse($token, new SaLoginParameter()),
+        ] as $operation) {
+            try {
+                $operation();
+                self::fail('超长 Token 写操作必须拒绝');
+            } catch (SaTokenException $exception) {
+                self::assertStringContainsString('Token 长度无效', $exception->getMessage());
+            }
+        }
+
+        $this->tokenManager->updateLastActiveToNow($token);
+        $this->tokenManager->closeSafe($token, 'transfer', 'login');
+        $this->tokenManager->clearSwitch($token, 'login');
+        $this->tokenManager->deleteFingerprint($token);
+        $this->tokenManager->removeFromBlacklist($token);
+    }
+
     public function testDisableWithLevel(): void
     {
         $this->logic->disable(10001, 'comment', 2, 3600);

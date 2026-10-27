@@ -428,6 +428,9 @@ class StpLogic
      */
     public function kickoutByTokenValue(string $tokenValue, bool $dispatchEvent = true): ?string
     {
+        if ($tokenValue === '' || strlen($tokenValue) > TokenManager::MAX_TOKEN_VALUE_BYTES) {
+            return null;
+        }
         if ($this->getConfig()->isJwtStateless()) {
             $loginId = $this->getStatelessLoginIdByToken($tokenValue);
             if ($loginId === null || !$this->revokeToken($tokenValue)) {
@@ -1117,6 +1120,9 @@ class StpLogic
      */
     public function writeTokenToResponse(string $tokenValue, SaLoginParameter $parameter): void
     {
+        if ($tokenValue === '' || strlen($tokenValue) > TokenManager::MAX_TOKEN_VALUE_BYTES) {
+            throw new SaTokenException('Token 长度无效，无法写入响应');
+        }
         $config = $this->getConfig();
         $tokenName = $config->getTokenName();
         $tokenPrefix = $config->getTokenPrefix();
@@ -1171,6 +1177,9 @@ class StpLogic
 
     public function revokeToken(string $tokenValue): bool
     {
+        if ($tokenValue === '' || strlen($tokenValue) > TokenManager::MAX_TOKEN_VALUE_BYTES) {
+            return false;
+        }
         $alreadyBlacklisted = $this->tokenManager->isBlacklisted($tokenValue);
         if ($alreadyBlacklisted && $this->getConfig()->isJwtStateless()) {
             return true;
