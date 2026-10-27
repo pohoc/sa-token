@@ -12,6 +12,14 @@ use SaToken\Util\SaTokenContext;
 
 class SaHttpAuth
 {
+    protected const MAX_BASIC_HEADER_BYTES = 8192;
+
+    protected const MAX_DIGEST_HEADER_BYTES = 8192;
+
+    protected const MAX_LOGIN_NAME_BYTES = 1024;
+
+    protected const MAX_LOGIN_SECRET_BYTES = 4096;
+
     protected const DIGEST_NONCE_TTL = 300;
 
     protected const DIGEST_NONCE_SECRET_KEY = 'satoken:auth:digest:nonce-secret';
@@ -37,6 +45,10 @@ class SaHttpAuth
             $this->sendChallenge($realm);
             throw new SaTokenException('未提供有效的 Basic 认证信息');
         }
+        if (strlen($authHeader) > self::MAX_BASIC_HEADER_BYTES) {
+            $this->sendChallenge($realm);
+            throw new SaTokenException('Basic Authorization Header 超过最大长度');
+        }
 
         $encoded = trim(substr($authHeader, 6));
         $decoded = base64_decode($encoded, true);
@@ -52,6 +64,15 @@ class SaHttpAuth
         }
 
         [$username, $password] = $parts;
+
+        if (strlen($username) > self::MAX_LOGIN_NAME_BYTES) {
+            $this->sendChallenge($realm);
+            throw new SaTokenException('Basic 用户名长度无效，最大为 ' . self::MAX_LOGIN_NAME_BYTES . ' 字节');
+        }
+        if (strlen($password) > self::MAX_LOGIN_SECRET_BYTES) {
+            $this->sendChallenge($realm);
+            throw new SaTokenException('Basic 密码长度无效，最大为 ' . self::MAX_LOGIN_SECRET_BYTES . ' 字节');
+        }
 
         if ($this->basicValidator === null) {
             throw new SaTokenException('未设置 Basic 认证校验器');
@@ -92,6 +113,10 @@ class SaHttpAuth
             $this->sendDigestChallenge($realm);
             throw new SaTokenException('未提供有效的 Digest 认证信息');
         }
+        if (strlen($authHeader) > self::MAX_DIGEST_HEADER_BYTES) {
+            $this->sendDigestChallenge($realm);
+            throw new SaTokenException('Digest Authorization Header 超过最大长度');
+        }
 
         $params = $this->parseDigestHeader($authHeader);
 
@@ -110,6 +135,11 @@ class SaHttpAuth
             || !is_string($cnonce) || $cnonce === '') {
             $this->sendDigestChallenge($realm);
             throw new SaTokenException('Digest 认证信息不完整或与服务端挑战不匹配');
+        }
+        if (strlen($username) > self::MAX_LOGIN_NAME_BYTES || strlen($nonce) > 256
+            || strlen($uri) > 4096 || strlen($cnonce) > 1024 || strlen($response) > 256) {
+            $this->sendDigestChallenge($realm);
+            throw new SaTokenException('Digest 认证字段超过最大长度');
         }
 
         // nonce 必须是服务端签发的（RFC 2617 允许 nonce 未过期期间复用，
@@ -331,6 +361,10 @@ class SaHttpAuth
      */
     public function parseDigestHeader(string $header): array
     {
+        if (strlen($header) > self::MAX_DIGEST_HEADER_BYTES) {
+            return [];
+        }
+
         $headerPart = substr($header, 7) ?: '';
         if ($headerPart === '') {
             return [];

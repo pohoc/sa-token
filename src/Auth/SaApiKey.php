@@ -13,6 +13,10 @@ class SaApiKey
 {
     protected const MIN_SECRET_BYTES = 32;
 
+    protected const MAX_KEY_BYTES = 1024;
+
+    protected const MAX_SECRET_BYTES = 4096;
+
     protected string $keyHeaderName;
 
     protected string $secretHeaderName;
@@ -50,6 +54,9 @@ class SaApiKey
 
         if ($apiKey === null || $apiSecret === null || trim($apiKey) === '' || trim($apiSecret) === '') {
             throw new SaTokenException('缺少 API Key 或 Secret');
+        }
+        if (strlen($apiKey) > self::MAX_KEY_BYTES || strlen($apiSecret) > self::MAX_SECRET_BYTES) {
+            throw new SaTokenException('API Key 或 Secret 超过最大长度');
         }
 
         SaAntiBruteUtil::checkAndThrow($apiKey, 'api-key');
@@ -182,6 +189,9 @@ class SaApiKey
         if (strlen($apiSecret) < self::MIN_SECRET_BYTES) {
             throw new SaTokenException('API Secret 至少需要 32 字节');
         }
+        if (strlen($apiKey) > self::MAX_KEY_BYTES || strlen($apiSecret) > self::MAX_SECRET_BYTES) {
+            throw new SaTokenException('API Key 或 Secret 超过最大长度');
+        }
 
         $this->keyRegistry[$apiKey] = [
             'secret'  => $apiSecret,
@@ -201,6 +211,9 @@ class SaApiKey
             }
             if (strlen($entry['secret']) < self::MIN_SECRET_BYTES) {
                 throw new SaTokenException('API Key 注册表中的 API Secret 至少需要 32 字节');
+            }
+            if (strlen((string) $apiKey) > self::MAX_KEY_BYTES || strlen($entry['secret']) > self::MAX_SECRET_BYTES) {
+                throw new SaTokenException('API Key 注册表中的 Key 或 Secret 超过最大长度');
             }
         }
 

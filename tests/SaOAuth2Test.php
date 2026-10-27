@@ -190,6 +190,29 @@ class SaOAuth2Test extends TestCase
         $this->assertSame(1, SaAntiBruteUtil::getFailCount('throwing-user'));
     }
 
+    public function testPasswordGrantRejectsOversizedCredentialsBeforeValidator(): void
+    {
+        $validatorCalls = 0;
+        $this->handle->setUserCredentialsValidator(static function () use (&$validatorCalls): string {
+            $validatorCalls++;
+            return 'unexpected-user';
+        });
+
+        foreach ([
+            [str_repeat('u', 1025), 'password', 'username 长度无效'],
+            ['username', str_repeat('p', 4097), 'password 长度无效'],
+        ] as [$username, $password, $message]) {
+            try {
+                $this->handle->tokenByPassword('test-client', $this->clientSecret, $username, $password);
+                self::fail('超长密码授权凭据必须拒绝');
+            } catch (SaTokenException $exception) {
+                self::assertStringContainsString($message, $exception->getMessage());
+            }
+        }
+
+        self::assertSame(0, $validatorCalls);
+    }
+
     public function testPasswordGrantRechecksClientSecretAfterCredentialValidation(): void
     {
         SaTokenContext::setRequest($this->requestFromIp('192.0.2.44'));

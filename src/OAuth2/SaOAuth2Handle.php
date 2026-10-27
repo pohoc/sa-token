@@ -32,6 +32,10 @@ class SaOAuth2Handle
 
     protected const MAX_CLIENT_SECRET_BYTES = 4096;
 
+    protected const MAX_LOGIN_NAME_BYTES = 1024;
+
+    protected const MAX_LOGIN_SECRET_BYTES = 4096;
+
     protected const MAX_OPAQUE_CREDENTIAL_BYTES = 4096;
 
     protected const MAX_SCOPE_LENGTH = 4096;
@@ -878,6 +882,15 @@ class SaOAuth2Handle
      */
     public function tokenByPassword(string $clientId, string $clientSecret, string $username, string $password, string $scope = ''): SaOAuth2AccessToken
     {
+        $this->validateClientIdLength($clientId);
+        $this->validateClientSecretLength($clientSecret);
+        if ($username === '' || strlen($username) > self::MAX_LOGIN_NAME_BYTES) {
+            throw new SaTokenException('username 长度无效，最大为 ' . self::MAX_LOGIN_NAME_BYTES . ' 字节');
+        }
+        if ($password === '' || strlen($password) > self::MAX_LOGIN_SECRET_BYTES) {
+            throw new SaTokenException('password 长度无效，最大为 ' . self::MAX_LOGIN_SECRET_BYTES . ' 字节');
+        }
+
         if (!in_array('password', $this->config->getGrantTypes(), true)) {
             throw new SaTokenException('不支持密码模式');
         }

@@ -105,6 +105,28 @@ class SaApiKeyTest extends TestCase
         self::assertNull($logic->getLoginId(), '部分 API Key 凭据不得降级成请求中的 bearer token');
     }
 
+    public function testOversizedApiKeyCredentialsAreRejectedBeforeValidator(): void
+    {
+        $validatorCalls = 0;
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'api-key' => str_repeat('k', 1025),
+            'api-secret' => str_repeat('s', 32),
+        ]));
+        $api = (new SaApiKey())->setValidator(static function () use (&$validatorCalls): string {
+            $validatorCalls++;
+            return 'api-user';
+        });
+
+        try {
+            $api->checkApiKey();
+            self::fail('超长 API Key 必须拒绝');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('超过最大长度', $exception->getMessage());
+        }
+
+        self::assertSame(0, $validatorCalls);
+    }
+
     public function testSetConfigRotatesSingletonApiKeyHeadersAndPreservesValidator(): void
     {
         $validatorCalls = 0;

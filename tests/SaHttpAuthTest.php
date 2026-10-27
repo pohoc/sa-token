@@ -77,6 +77,33 @@ class SaHttpAuthTest extends TestCase
         $this->assertTrue(true);
     }
 
+    public function testBasicRejectsOversizedCredentialsBeforeValidator(): void
+    {
+        $validatorCalls = 0;
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->willReturnCallback(static fn (string $name): array => $name === 'Authorization'
+            ? ['Basic ' . base64_encode('admin:' . str_repeat('p', 4097))]
+            : []);
+        SaTokenContext::setRequest($request);
+
+        try {
+            (new SaHttpAuth())->setBasicValidator(static function () use (&$validatorCalls): string {
+                $validatorCalls++;
+                return 'admin';
+            })->checkBasic();
+            self::fail('超长 Basic 密码必须拒绝');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('Basic 密码长度无效', $exception->getMessage());
+        }
+
+        self::assertSame(0, $validatorCalls);
+    }
+
+    public function testDigestParserRejectsOversizedHeader(): void
+    {
+        self::assertSame([], (new SaHttpAuth())->parseDigestHeader('Digest username="' . str_repeat('u', 8192) . '"'));
+    }
+
     public function testBasicIdentityOverridesAnUnrelatedBearerToken(): void
     {
         SaToken::setConfig(SaToken::getConfig()->setIsReadHeader(true));
