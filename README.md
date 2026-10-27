@@ -1013,14 +1013,14 @@ class MyDao implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface,
 }
 ```
 
-## 密码加密工具
+## 摘要与密码哈希工具
 
 ```php
 use SaToken\Plugin\SaTokenCrypto;
 
-$hash = SaTokenCrypto::md5('password');
-$hash = SaTokenCrypto::sha1('password');
-$hash = SaTokenCrypto::sha256('password');
+$digest = SaTokenCrypto::md5('payload');
+$digest = SaTokenCrypto::sha1('payload');
+$digest = SaTokenCrypto::sha256('payload');
 
 $hmacKey = bin2hex(random_bytes(32)); // 保存到安全配置中，后续签名与验签使用同一密钥
 $hmac = SaTokenCrypto::hmacSha256('data', $hmacKey);
@@ -1030,7 +1030,7 @@ $bcrypt = SaTokenCrypto::bcryptHash('password', 12);
 $valid = SaTokenCrypto::bcryptVerify('password', $bcrypt);
 ```
 
-bcrypt 输入不能超过 72 字节；`bcryptHash()` 对超长密码抛出异常，`bcryptVerify()` 对超长输入返回 `false`，避免 bcrypt 静默忽略后缀导致不同密码被视为相同凭据。需要支持更长密码时，请使用 Argon2id 等不受该限制的算法。
+MD5、SHA1 和 SHA256 是通用快速摘要，不能用于存储密码；密码应使用 Argon2id 等专用密码哈希。遗留系统必须使用 bcrypt 时，成本至少为 10，并应根据服务器性能选择更高成本；本方法拒绝低于 10 的成本。bcrypt 输入不能超过 72 字节；`bcryptHash()` 对超长密码抛出异常，`bcryptVerify()` 对超长输入返回 `false`，避免 bcrypt 静默忽略后缀导致不同密码被视为相同凭据。需要支持更长密码时，请使用 Argon2id 等不受该限制的算法。
 
 AES / RSA / SM2 / SM3 / SM4 等加解密功能参见 `SaTokenCrypto` 类。
 

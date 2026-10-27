@@ -345,6 +345,9 @@ class SaTokenCrypto
         if (strlen($data) > 72) {
             throw new SaTokenException('bcrypt 密码不能超过 72 字节');
         }
+        if ($cost < 10 || $cost > 31) {
+            throw new SaTokenException('bcrypt cost 必须在 10 到 31 之间');
+        }
 
         return password_hash($data, PASSWORD_BCRYPT, ['cost' => $cost]);
     }
