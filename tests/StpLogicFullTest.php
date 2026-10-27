@@ -531,6 +531,24 @@ class StpLogicFullTest extends TestCase
         $this->assertSame('temp', $tokens[0]['deviceType']);
     }
 
+    public function testInvalidTempTokenTimeoutDoesNotRevokeExistingSession(): void
+    {
+        SaToken::getConfig()->setMaxLoginCount(1);
+        $oldToken = $this->loginAndGetToken('temp-invalid-timeout-user');
+
+        try {
+            $this->logic->createTempToken('temp-invalid-timeout-user', 0);
+            self::fail('Invalid temporary-token timeout must be rejected');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('有效期', $exception->getMessage());
+        }
+
+        self::assertTrue(
+            $this->tokenManager->isTokenValid($oldToken),
+            'Invalid input must be rejected before max-login-count handling removes an existing session'
+        );
+    }
+
     public function testTempTokenReplacementEventRunsAfterAccountLockIsReleased(): void
     {
         $loginId = 'temp-replacement-listener-lock-check';

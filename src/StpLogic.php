@@ -898,6 +898,7 @@ class StpLogic
             throw new SaTokenException('loginId 不能为空且必须是非布尔标量');
         }
         TokenManager::validateLoginIdLength($loginId);
+        SaTokenTimeout::validate($timeout, '临时 Token');
 
         $loginIdStr = (string) $loginId;
         $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', $loginIdStr);
