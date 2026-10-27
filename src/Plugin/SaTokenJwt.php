@@ -165,10 +165,10 @@ class SaTokenJwt
             throw new SaTokenException('JWT Token Header 无效');
         }
 
-        $alg = $header['alg'] ?? 'HS256';
-        if (!is_string($alg)) {
+        if (!array_key_exists('alg', $header) || !is_string($header['alg'])) {
             throw new SaTokenException('JWT Header alg 字段必须为字符串');
         }
+        $alg = $header['alg'];
         $expectedAlg = $this->cryptoType === 'sm' ? 'SM3' : 'HS256';
         if ($alg !== $expectedAlg) {
             throw new SaTokenException('JWT 算法与当前 cryptoType 配置不匹配');

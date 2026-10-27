@@ -48,6 +48,24 @@ class SaTokenJwtTest extends TestCase
         $smConfiguredJwt->parseToken($token);
     }
 
+    public function testParseTokenRejectsMissingAlgorithmEvenWhenSignedWithConfiguredAlgorithm(): void
+    {
+        $secretKey = getenv('TEST_JWT_SECRET_KEY') ?: 'test-key-placeholder-32-bytes-lo';
+        $encode = static fn (string $value): string => rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
+        $header = $encode(json_encode(['typ' => 'JWT'], JSON_THROW_ON_ERROR));
+        $payload = $encode(json_encode([
+            'sub' => '10001',
+            'type' => 'login',
+            'exp' => time() + 3600,
+        ], JSON_THROW_ON_ERROR));
+        $signingInput = $header . '.' . $payload;
+        $token = $signingInput . '.' . $encode(hash_hmac('sha256', $signingInput, $secretKey, true));
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('JWT Header alg 字段必须为字符串');
+        $this->jwt->parseToken($token);
+    }
+
     public function testParseTokenRejectsNonCanonicalSignatureBase64Url(): void
     {
         $token = $this->jwt->createToken('user-1', 'login', 3600);
