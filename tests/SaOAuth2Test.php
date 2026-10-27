@@ -18,6 +18,7 @@ use SaToken\OAuth2\SaOAuth2Manager;
 use SaToken\OAuth2\Strategy\ImplicitStrategy;
 use SaToken\SaToken;
 use SaToken\Security\SaAntiBruteUtil;
+use SaToken\StpUtil;
 use SaToken\Util\SaTokenContext;
 
 /**
@@ -136,6 +137,17 @@ class SaOAuth2Test extends TestCase
         } catch (SaTokenException $exception) {
             self::assertStringContainsString('client_id 长度无效', $exception->getMessage());
         }
+    }
+
+    public function testPasswordGrantRejectsDisabledLoginId(): void
+    {
+        SaToken::getConfig()->setAntiBruteMaxFailures(0)->setAntiBruteIpMaxFailures(0);
+        $loginId = 'disabled-oauth-user';
+        StpUtil::disable($loginId, 'login', 1, 3600);
+        $this->handle->setUserCredentialsValidator(static fn (): string => 'disabled-oauth-user');
+
+        $this->expectException(\SaToken\Exception\DisableServiceException::class);
+        $this->handle->tokenByPassword('test-client', $this->clientSecret, 'disabled-user', 'correct-password');
     }
 
     public function testAuthenticationRejectsLegacyShortSecret(): void

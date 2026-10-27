@@ -16,6 +16,7 @@ use SaToken\OAuth2\Data\SaOAuth2IdToken;
 use SaToken\OAuth2\Data\SaOAuth2RefreshToken;
 use SaToken\SaToken;
 use SaToken\Security\SaAntiBruteUtil;
+use SaToken\StpUtil;
 use SaToken\Util\SaFoxUtil;
 use SaToken\Util\SaTokenContext;
 use SaToken\Util\SaTokenEncryptor;
@@ -942,7 +943,42 @@ class SaOAuth2Handle
             $this->validateGrantTypeForClient($client, 'password');
             $scope = $this->validateScopeForClient($client, $scope);
 
-            $accessToken = $this->issueAccessToken($clientId, $loginId, $scope, '', true, '', false, 'password');
+            // Password authorization is a login flow too: share the default
+            // login account lock with StpLogic::login()/disable() so a ban
+            // cannot race between the check and OAuth credential issuance.
+            $logic = StpUtil::getStpLogic();
+            $tokenManager = $logic->getTokenManager();
+            $loginIdString = (string) $loginId;
+            $accountLockKey = 'login:' . $logic->getLoginType() . ':' . hash('sha256', $loginIdString);
+            if (!$tokenManager->acquireLock($accountLockKey, 30)) {
+                throw new SaTokenException('同账号会话正在处理中，请稍后重试');
+            }
+
+            $accessToken = null;
+            try {
+                StpUtil::checkDisable($loginId, 'login');
+                $accessToken = $this->issueAccessToken($clientId, $loginId, $scope, '', true, '', false, 'password');
+
+                // The account lock is a lease. If token persistence stalls
+                // past it, a newer disable may complete; verify both the ban
+                // state and lock ownership before returning the bearer.
+                StpUtil::checkDisable($loginId, 'login');
+                if (!$tokenManager->renewLock($accountLockKey, 30)) {
+                    throw new SaTokenException('账号会话锁已失效，拒绝签发 OAuth 令牌');
+                }
+            } catch (\Throwable $exception) {
+                if ($accessToken !== null) {
+                    try {
+                        $this->revokeAccessToken($accessToken->getAccessToken());
+                    } catch (\Throwable $cleanupException) {
+                        throw new SaTokenException('OAuth 令牌签发后状态校验失败，且撤销清理失败', 0, $cleanupException);
+                    }
+                }
+                throw $exception;
+            } finally {
+                $tokenManager->releaseLock($accountLockKey);
+            }
+
             SaAntiBruteUtil::clearCurrentAccountFailures($username);
 
             return $accessToken;
