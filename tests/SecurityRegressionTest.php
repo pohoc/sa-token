@@ -2801,6 +2801,7 @@ class SecurityRegressionTest extends TestCase
 
         // 频控窗口清零后可再发
         SaToken::getDao()->delete(\SaToken\Security\SaSensitiveVerify::getKey('sms-bomb', 62001) . ':sent');
+        SaToken::getDao()->delete('satoken:sensitive:sent:login:' . hash('sha256', '62001'));
         \SaToken\Security\SaSensitiveVerify::sendCode('sms-bomb', 62001);
         $this->assertCount(3, $sent);
     }
