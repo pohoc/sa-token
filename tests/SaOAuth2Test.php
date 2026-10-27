@@ -98,6 +98,46 @@ class SaOAuth2Test extends TestCase
         ]));
     }
 
+    public function testOAuthRejectsOversizedCredentialsBeforeStorageLookup(): void
+    {
+        self::assertNull($this->handle->getClient(str_repeat('c', 1025)));
+        self::assertNull($this->handle->validateAccessToken(str_repeat('t', 4097)));
+
+        try {
+            $this->handle->refreshToken(str_repeat('r', 4097), 'test-client', $this->clientSecret);
+            self::fail('超长刷新令牌必须在 DAO 查询和锁处理前被拒绝');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('刷新令牌长度无效', $exception->getMessage());
+        }
+
+        try {
+            $this->handle->exchangeTokenByCode(str_repeat('c', 4097), 'test-client', $this->clientSecret);
+            self::fail('超长授权码必须被拒绝');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('授权码长度无效', $exception->getMessage());
+        }
+    }
+
+    public function testOAuthRejectsOversizedClientSecretsBeforeComparison(): void
+    {
+        try {
+            $this->handle->tokenByClientCredentials('test-client', str_repeat('s', 4097));
+            self::fail('超长客户端密钥必须在比较前被拒绝');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('client_secret 长度不能超过', $exception->getMessage());
+        }
+    }
+
+    public function testOAuthRejectsOversizedClientIdsBeforeStorageLookup(): void
+    {
+        try {
+            $this->handle->tokenByClientCredentials(str_repeat('i', 1025), $this->clientSecret);
+            self::fail('超长客户端 ID 必须在 DAO 查询前被拒绝');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('client_id 长度无效', $exception->getMessage());
+        }
+    }
+
     public function testAuthenticationRejectsLegacyShortSecret(): void
     {
         SaToken::getDao()->set('oauth2:client:legacy-weak-client', \SaToken\Util\SaFoxUtil::toJson([
@@ -595,7 +635,7 @@ class SaOAuth2Test extends TestCase
     public function testRedirectUriRejectsBackslashesAndControlCharactersEvenWhenRegistered(): void
     {
         foreach ([
-            "https://example.com/callback\\@evil.example/",
+            'https://example.com/callback\\@evil.example/',
             "https://example.com/callback\t",
             "https://example.com/callback\n",
             "https://example.com/callback\x7f",

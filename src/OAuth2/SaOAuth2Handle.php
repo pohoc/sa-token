@@ -27,6 +27,13 @@ use SaToken\Util\SaTokenEncryptor;
  */
 class SaOAuth2Handle
 {
+    /** Bound attacker-controlled OAuth identifiers before DAO/key processing. */
+    protected const MAX_CLIENT_ID_BYTES = 1024;
+
+    protected const MAX_CLIENT_SECRET_BYTES = 4096;
+
+    protected const MAX_OPAQUE_CREDENTIAL_BYTES = 4096;
+
     protected const MAX_SCOPE_LENGTH = 4096;
 
     protected const MAX_OIDC_NONCE_LENGTH = 1024;
@@ -54,7 +61,11 @@ class SaOAuth2Handle
         if ($client->getClientId() === '') {
             throw new SaTokenException('注册客户端必须提供 clientId');
         }
+        $this->validateClientIdLength($client->getClientId());
         $clientSecret = $client->getClientSecret();
+        if (strlen($clientSecret) > self::MAX_CLIENT_SECRET_BYTES) {
+            throw new SaTokenException('clientSecret 长度不能超过 ' . self::MAX_CLIENT_SECRET_BYTES . ' 字节');
+        }
         if ($clientSecret === '') {
             // 公开客户端（PKCE）允许无 secret，但只能使用授权码模式且强制 PKCE；
             // 其他授权模式没有 secret 就等于没有客户端认证
@@ -77,6 +88,10 @@ class SaOAuth2Handle
 
     public function getClient(string $clientId): ?SaOAuth2Client
     {
+        if ($clientId === '' || strlen($clientId) > self::MAX_CLIENT_ID_BYTES) {
+            return null;
+        }
+
         // Client secrets and redirect/grant allowlists can be rotated from a
         // different process. Always read the shared DAO so cached credentials
         // cannot remain valid after revocation or rotation.
@@ -169,6 +184,10 @@ class SaOAuth2Handle
      */
     public function exchangeTokenByCode(string $code, string $clientId, string $clientSecret, string $redirectUri = '', string $codeVerifier = ''): SaOAuth2AccessToken
     {
+        $this->validateOpaqueCredentialLength($code, '授权码');
+        $this->validateClientIdLength($clientId);
+        $this->validateClientSecretLength($clientSecret);
+
         // 客户端认证先于授权码消费：避免攻击者用错误密钥"烧掉"合法客户端的授权码（DoS）。
         // 公开客户端（未配置 secret）改为强制 PKCE 验证作为客户端认证
         $client = $this->validateClient($clientId);
@@ -292,6 +311,10 @@ class SaOAuth2Handle
      */
     public function refreshToken(string $refreshToken, string $clientId, string $clientSecret): SaOAuth2AccessToken
     {
+        $this->validateOpaqueCredentialLength($refreshToken, '刷新令牌');
+        $this->validateClientIdLength($clientId);
+        $this->validateClientSecretLength($clientSecret);
+
         // 同一家族的不同 RT 也必须串行处理：否则旧 RT 重放撤销家族时，
         // 并发子 RT 可能在撤销完成后继续签发并登记新访问令牌。
         $client = $this->validateClientWithSecret($clientId, $clientSecret);
@@ -953,6 +976,10 @@ class SaOAuth2Handle
      */
     public function validateAccessToken(string $accessToken): ?SaOAuth2AccessToken
     {
+        if ($accessToken === '' || strlen($accessToken) > self::MAX_OPAQUE_CREDENTIAL_BYTES) {
+            return null;
+        }
+
         $json = $this->getDao()->get($this->buildAccessTokenKey($accessToken));
         if ($json === null) {
             return null;
@@ -986,6 +1013,8 @@ class SaOAuth2Handle
      */
     public function revokeAccessToken(string $accessToken): void
     {
+        $this->validateOpaqueCredentialLength($accessToken, '访问令牌');
+
         $accessTokenKey = $this->buildAccessTokenKey($accessToken);
         $json = $this->getDao()->get($accessTokenKey);
         $data = $json !== null ? SaFoxUtil::fromJson($this->decryptValue($json)) : null;
@@ -1369,6 +1398,8 @@ class SaOAuth2Handle
      */
     protected function validateClientWithSecret(string $clientId, string $clientSecret): SaOAuth2Client
     {
+        $this->validateClientIdLength($clientId);
+        $this->validateClientSecretLength($clientSecret);
         $this->checkClientNotLocked($clientId);
         $client = $this->validateClient($clientId);
         $storedSecret = $client->getClientSecret();
@@ -1381,6 +1412,27 @@ class SaOAuth2Handle
         }
         $this->clearClientFailures($clientId);
         return $client;
+    }
+
+    protected function validateClientIdLength(string $clientId): void
+    {
+        if ($clientId === '' || strlen($clientId) > self::MAX_CLIENT_ID_BYTES) {
+            throw new SaTokenException('client_id 长度无效，最大为 ' . self::MAX_CLIENT_ID_BYTES . ' 字节');
+        }
+    }
+
+    protected function validateClientSecretLength(string $clientSecret): void
+    {
+        if (strlen($clientSecret) > self::MAX_CLIENT_SECRET_BYTES) {
+            throw new SaTokenException('client_secret 长度不能超过 ' . self::MAX_CLIENT_SECRET_BYTES . ' 字节');
+        }
+    }
+
+    protected function validateOpaqueCredentialLength(string $credential, string $label): void
+    {
+        if ($credential === '' || strlen($credential) > self::MAX_OPAQUE_CREDENTIAL_BYTES) {
+            throw new SaTokenException($label . '长度无效，最大为 ' . self::MAX_OPAQUE_CREDENTIAL_BYTES . ' 字节');
+        }
     }
 
     /**
