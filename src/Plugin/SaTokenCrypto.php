@@ -254,7 +254,7 @@ class SaTokenCrypto
         }
 
         $signature = base64_decode($sign, true);
-        if ($signature === false) {
+        if ($signature === false || base64_encode($signature) !== $sign) {
             return false;
         }
 

@@ -235,6 +235,34 @@ class SaTokenCryptoTest extends TestCase
         $this->assertFalse($crypto->rsaVerify('tampered-data', $sign));
     }
 
+    public function testRsaVerifyRejectsNonCanonicalBase64Signature(): void
+    {
+        $keyPair = openssl_pkey_new([
+            'private_key_bits' => 2048,
+            'private_key_type' => OPENSSL_KEYTYPE_RSA,
+        ]);
+        self::assertNotFalse($keyPair);
+        self::assertTrue(openssl_pkey_export($keyPair, $privateKey));
+        $details = openssl_pkey_get_details($keyPair);
+        self::assertIsArray($details);
+
+        $crypto = new SaTokenCrypto([
+            'rsaPrivateKey' => $privateKey,
+            'rsaPublicKey' => $details['key'],
+        ]);
+        $signature = $crypto->rsaSign('signed payload');
+        $alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+        $padBitsPosition = strlen($signature) - 3;
+        $canonicalValue = strpos($alphabet, $signature[$padBitsPosition]);
+        self::assertIsInt($canonicalValue);
+        $alias = $signature;
+        $alias[$padBitsPosition] = $alphabet[($canonicalValue & 48) | (($canonicalValue + 1) & 15)];
+
+        self::assertSame(base64_decode($signature, true), base64_decode($alias, true));
+        self::assertTrue($crypto->rsaVerify('signed payload', $signature));
+        self::assertFalse($crypto->rsaVerify('signed payload', $alias));
+    }
+
     public function testRsaRejectsKeysShorterThan2048Bits(): void
     {
         $keyPair = openssl_pkey_new([
