@@ -975,7 +975,7 @@ class TokenManager
             $tokenTimeout = $dao->getTimeout($tokenKey);
             $this->addToBlacklist(
                 $tokenValue,
-                $tokenTimeout === -1 ? null : ($tokenTimeout > 0 ? $tokenTimeout : null)
+                $tokenTimeout === -1 ? null : max(1, $tokenTimeout)
             );
 
             // The bearer record is the authoritative login state. Revoke it
@@ -1134,7 +1134,7 @@ class TokenManager
                 $tokenTimeout = $snapshot['timeout'];
                 $this->addToBlacklist(
                     $tokenValue,
-                    $tokenTimeout === -1 ? null : ($tokenTimeout > 0 ? $tokenTimeout : null)
+                    $tokenTimeout === -1 ? null : max(1, $tokenTimeout)
                 );
                 if (!$dao->compareAndDelete(self::TOKEN_PREFIX . $tokenValue, $snapshot['record'])) {
                     continue;

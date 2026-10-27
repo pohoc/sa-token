@@ -262,6 +262,28 @@ class TokenManagerTest extends TestCase
         self::assertSame($ownerB, $this->manager->getLoginIdByToken($replacementToken));
     }
 
+    public function testNearExpiryRevocationMarkerDoesNotBecomePermanent(): void
+    {
+        $dao = new class () extends SaTokenDaoMemory {
+            public function getTimeout(string $key): int
+            {
+                if (str_starts_with($key, TokenManager::TOKEN_PREFIX)) {
+                    return 0;
+                }
+                return parent::getTimeout($key);
+            }
+        };
+        $this->dao = $dao;
+        SaToken::setDao($dao);
+        $token = $this->manager->saveToken('near-expiry-token-value', 'near-expiry-user', 'login', 'PC', 3600);
+
+        $this->manager->deleteToken($token, 'near-expiry-user', 'login');
+
+        $blacklistTimeout = $dao->getTimeout(TokenManager::BLACKLIST_PREFIX . $token);
+        self::assertNotSame(-1, $blacklistTimeout, '零秒 TTL 应转换成有限的一秒保留期');
+        self::assertLessThanOrEqual(1, $blacklistTimeout);
+    }
+
     public function testDeletedRefreshTokenCannotBeReissuedToAnotherAccount(): void
     {
         $accessA = $this->manager->saveToken('refresh-owner-a-access', 'refresh-owner-a', 'login', 'PC', 3600);
