@@ -446,6 +446,41 @@ class SaAntiBruteUtilTest extends TestCase
         SaAntiBruteUtil::checkAndThrow('fourth-account');
     }
 
+    public function testExpiredAbandonedSourceReservationDoesNotLeaveAStaleCounter(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'antiBruteMaxFailures' => 0,
+            'antiBruteIpMaxFailures' => 1,
+            'antiBruteLockDuration' => 3,
+        ]));
+        $ip = '192.0.2.78';
+
+        // Model a request process that exits after admission and cannot run its
+        // normal reservation cleanup.
+        SaTokenContext::setContextId('abandoned-auth-request');
+        SaTokenContext::setRequest($this->requestFromIp($ip));
+        SaAntiBruteUtil::checkAndThrow('abandoned-account');
+
+        // A rejected concurrent request currently decrements the shared count
+        // with a fresh TTL, which can keep the abandoned slot alive past its
+        // own reservation expiry.
+        usleep(1_300_000);
+        SaTokenContext::setContextId('overflow-auth-request');
+        SaTokenContext::setRequest($this->requestFromIp($ip));
+        try {
+            SaAntiBruteUtil::checkAndThrow('overflow-account');
+            self::fail('超出来源并发额度的请求必须被拒绝');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('并发认证尝试过多', $exception->getMessage());
+        }
+
+        usleep(2_000_000);
+        SaTokenContext::setContextId('recovered-auth-request');
+        SaTokenContext::setRequest($this->requestFromIp($ip));
+        SaAntiBruteUtil::checkAndThrow('recovered-account');
+        SaAntiBruteUtil::releaseCurrentSourceAttempt('recovered-account');
+    }
+
     public function testManualLockAppliesAcrossSourceIps(): void
     {
         SaTokenContext::setRequest($this->requestFromIp('192.0.2.10'));

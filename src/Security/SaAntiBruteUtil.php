@@ -173,17 +173,29 @@ class SaAntiBruteUtil
         return self::getIpLockPrefix($account, $loginType) . $epoch . ':' . $ipEpoch . ':' . self::getIpSuffix();
     }
 
-    protected static function createSourceAttemptReservation(string $counterKey, int $timeout): string
+    /** @return array{key: string, owner: string}|null */
+    protected static function createSourceAttemptReservation(string $slotPrefix, int $timeout, int $maxSlots): ?array
     {
-        $reservationKey = $counterKey . ':reservation:' . bin2hex(random_bytes(16));
-        if (!SaToken::getDao()->setIfNotExists($reservationKey, '1', $timeout)) {
-            throw new SaTokenException('无法创建来源并发认证租约，请重试');
+        $dao = SaToken::getDao();
+        if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
+            throw new SaTokenException('DAO 必须实现安全比较删除接口才能维护来源并发限流');
         }
 
-        return $reservationKey;
+        // One leased key per permitted concurrent attempt avoids a separate
+        // counter drifting when a worker dies before releasing its lease.
+        for ($slot = 0; $slot < $maxSlots; $slot++) {
+            $reservationKey = $slotPrefix . ':slot:' . $slot;
+            $owner = bin2hex(random_bytes(16));
+            if ($dao->setIfNotExists($reservationKey, $owner, $timeout)) {
+                return ['key' => $reservationKey, 'owner' => $owner];
+            }
+        }
+
+        return null;
     }
 
-    protected static function storeSourceAttemptReservation(string $account, string $loginType, string $reservationKey): void
+    /** @param array{key: string, owner: string} $reservation */
+    protected static function storeSourceAttemptReservation(string $account, string $loginType, array $reservation): void
     {
         $reservations = SaTokenContext::getRequestScopedValue(self::SOURCE_RESERVATIONS_ATTRIBUTE, []);
         if (!is_array($reservations)) {
@@ -195,16 +207,14 @@ class SaAntiBruteUtil
         if (!is_array($ownerReservations)) {
             $ownerReservations = [];
         }
-        $ownerReservations[] = $reservationKey;
+        $ownerReservations[] = $reservation;
         $reservations[$ownerKey] = $ownerReservations;
         SaTokenContext::setRequestScopedValue(self::SOURCE_RESERVATIONS_ATTRIBUTE, $reservations);
     }
 
     protected static function releaseSourceAttemptReservation(
         string $account,
-        string $loginType,
-        string $sourceIdentity,
-        int $timeout
+        string $loginType
     ): void {
         $reservations = SaTokenContext::getRequestScopedValue(self::SOURCE_RESERVATIONS_ATTRIBUTE, []);
         if (!is_array($reservations)) {
@@ -214,8 +224,10 @@ class SaAntiBruteUtil
         $ownerReservations = is_array($reservations[$ownerKey] ?? null)
             ? $reservations[$ownerKey]
             : [];
-        $reservationKey = array_shift($ownerReservations);
-        if (!is_string($reservationKey)) {
+        $reservation = array_shift($ownerReservations);
+        if (!is_array($reservation)
+            || !is_string($reservation['key'] ?? null)
+            || !is_string($reservation['owner'] ?? null)) {
             return;
         }
 
@@ -231,34 +243,13 @@ class SaAntiBruteUtil
         }
 
         $dao = SaToken::getDao();
-        // An expired marker means this request's lease is already gone. Do not
-        // decrement a counter that may now represent newer requests.
-        if ($dao->getAndDelete($reservationKey) === null) {
-            return;
+        if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
+            throw new SaTokenException('DAO 必须实现安全比较删除接口才能释放来源并发租约');
         }
 
-        self::decrementSourceAttemptCounter(self::getSourceAttemptKey($sourceIdentity), $timeout);
-    }
-
-    protected static function decrementSourceAttemptCounter(string $counterKey, int $timeout): void
-    {
-        $dao = SaToken::getDao();
-        if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface) {
-            throw new SaTokenException('DAO 必须实现安全比较设置接口才能释放来源并发限流');
-        }
-
-        for ($attempt = 0; $attempt < 16; $attempt++) {
-            $current = $dao->get($counterKey);
-            if ($current === null || !ctype_digit($current) || (int) $current <= 0) {
-                return;
-            }
-
-            if ($dao->compareAndSet($counterKey, $current, (string) ((int) $current - 1), $timeout)) {
-                return;
-            }
-        }
-
-        throw new SaTokenException('来源并发限流状态竞争过多，请重试');
+        // The owner check prevents a late request from deleting a slot that
+        // expired and was subsequently claimed by another request.
+        $dao->compareAndDelete($reservation['key'], $reservation['owner']);
     }
 
     protected static function getLockUntil(string $key): int
@@ -306,17 +297,15 @@ class SaAntiBruteUtil
         }
 
         // Account+IP counters alone let an attacker create a fresh persistent key
-        // for every guessed username. Bound that key growth with one counter per
-        // source and login type; after the cap, reject new attempts before they
-        // can allocate another account counter. This must happen before writing
-        // the account counter because concurrent requests may all pass
-        // checkAndThrow() before any of them records its failed credential.
+        // for every guessed username. Bound that key growth with a fixed pool of
+        // leased slots per source and login type; reject new attempts at capacity
+        // before they can allocate another account counter.
         $sourceProtectionEnabled = $sourceProtectionEnabled && $sourceIdentity !== null;
         if ($sourceIdentity !== null) {
             // Release only the slot reserved by this request. A shared counter
             // alone lets a slow request whose lease expired decrement a newer
             // request's live reservation.
-            self::releaseSourceAttemptReservation($account, $loginType, $sourceIdentity, $lockDuration);
+            self::releaseSourceAttemptReservation($account, $loginType);
         }
         if ($sourceProtectionEnabled && $sourceIdentity !== null) {
             $sourceEpoch = self::getSourceEpoch($sourceIdentity);
@@ -353,12 +342,7 @@ class SaAntiBruteUtil
             return;
         }
 
-        self::releaseSourceAttemptReservation(
-            $account,
-            $loginType,
-            $sourceIdentity,
-            SaToken::getConfig()->getAntiBruteLockDuration()
-        );
+        self::releaseSourceAttemptReservation($account, $loginType);
     }
 
     public static function checkAndThrow(string $account, string $loginType = 'login'): void
@@ -392,21 +376,16 @@ class SaAntiBruteUtil
 
         $sourceSlotReserved = false;
         if ($sourceProtectionEnabled && $sourceIdentity !== null) {
-            $dao = SaToken::getDao();
-            if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface) {
-                throw new SaTokenException('DAO 必须实现安全比较设置接口才能维护来源并发限流');
-            }
-
             $sourceAttemptKey = self::getSourceAttemptKey($sourceIdentity);
-            $reservationKey = self::createSourceAttemptReservation($sourceAttemptKey, $config->getAntiBruteLockDuration());
-            $sourceAttemptCount = $dao->increment($sourceAttemptKey, 1, $config->getAntiBruteLockDuration());
-            if ($sourceAttemptCount > $config->getAntiBruteIpMaxFailures()) {
-                if ($dao->getAndDelete($reservationKey) !== null) {
-                    self::decrementSourceAttemptCounter($sourceAttemptKey, $config->getAntiBruteLockDuration());
-                }
+            $reservation = self::createSourceAttemptReservation(
+                $sourceAttemptKey,
+                $config->getAntiBruteLockDuration(),
+                $config->getAntiBruteIpMaxFailures()
+            );
+            if ($reservation === null) {
                 throw new SaTokenException('当前来源并发认证尝试过多，请稍后重试', -10);
             }
-            self::storeSourceAttemptReservation($account, $loginType, $reservationKey);
+            self::storeSourceAttemptReservation($account, $loginType, $reservation);
             $sourceSlotReserved = true;
         }
 
@@ -433,9 +412,7 @@ class SaAntiBruteUtil
                 if ($sourceSlotReserved && $sourceIdentity !== null) {
                     self::releaseSourceAttemptReservation(
                         $account,
-                        $loginType,
-                        $sourceIdentity,
-                        $config->getAntiBruteLockDuration()
+                        $loginType
                     );
                 }
                 throw new SaTokenException(
@@ -475,12 +452,7 @@ class SaAntiBruteUtil
         $dao = SaToken::getDao();
         $sourceIdentity = self::getSourceIdentity($loginType);
         if ($sourceIdentity !== null) {
-            self::releaseSourceAttemptReservation(
-                $account,
-                $loginType,
-                $sourceIdentity,
-                SaToken::getConfig()->getAntiBruteLockDuration()
-            );
+            self::releaseSourceAttemptReservation($account, $loginType);
             // Successful authentication clears source-level failures too. Use
             // a generation switch so an already-running failed request can
             // only finish writing to the old, now-ignored source state.
