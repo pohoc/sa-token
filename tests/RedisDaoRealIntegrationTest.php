@@ -63,6 +63,13 @@ class RedisDaoRealIntegrationTest extends TestCase
         }
     }
 
+    public function testRedisDaoAcceptsExistingClientAsFirstConstructorArgument(): void
+    {
+        $dao = new SaTokenDaoRedis($this->redis);
+
+        self::assertSame($this->redis, $dao->getClient());
+    }
+
     public function testRedisDaoRejectsPhpRedisSerializerForLuaBackedOperations(): void
     {
         $client = new \Redis();

@@ -15,10 +15,19 @@ class SaTokenDaoRedis implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
     protected int $database = 0;
 
     /**
-     * @param array<string, mixed>|string $config
+     * @param array<string, mixed>|string|\Redis $config
      */
-    public function __construct(array|string $config = [], ?\Redis $client = null)
+    public function __construct(array|string|\Redis $config = [], ?\Redis $client = null)
     {
+        if ($config instanceof \Redis) {
+            if ($client !== null) {
+                throw new SaTokenException('Redis 客户端只能通过一个参数注入');
+            }
+            $this->assertRawRedisEncoding($config);
+            $this->client = $config;
+            return;
+        }
+
         if ($client !== null) {
             $this->assertRawRedisEncoding($client);
             $this->client = $client;
