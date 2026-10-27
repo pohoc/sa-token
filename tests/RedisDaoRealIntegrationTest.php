@@ -1110,4 +1110,39 @@ class RedisDaoRealIntegrationTest extends TestCase
 
         \SaToken\SaToken::reset();
     }
+
+    public function testEvictedStatelessJwtGenerationCannotReviveRevokedTokenAgainstRealRedis(): void
+    {
+        SaToken::reset();
+        $loginId = 'redis-jwt-generation-' . bin2hex(random_bytes(8));
+        $generationKey = TokenManager::buildStatelessTokenGenerationKey($loginId, 'login');
+        $watermarkKey = 'satoken:jwt:revoked-before:login:' . hash('sha256', $loginId);
+
+        try {
+            SaToken::setConfig(new SaTokenConfig([
+                'jwtStateless' => true,
+                'jwtSecretKey' => 'real-redis-stateless-jwt-secret-32-bytes',
+                'isReadHeader' => true,
+            ]));
+            SaToken::setDao($this->dao);
+
+            $logic = new StpLogic('login');
+            $token = $logic->loginStateless($loginId);
+            $logic->logoutByLoginId($loginId);
+            self::assertNotNull($this->dao->get($watermarkKey));
+            $this->dao->delete($generationKey);
+
+            self::assertNull(
+                $logic->getLoginIdByToken($token),
+                'Redis 中代际键丢失后，旧 stateless JWT 仍必须受撤销水位保护'
+            );
+            $newToken = $logic->loginStateless($loginId);
+            self::assertSame($loginId, $logic->getLoginIdByToken($newToken));
+        } finally {
+            $this->dao->delete($generationKey);
+            $this->dao->delete($watermarkKey);
+            $this->dao->delete(TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId));
+            SaToken::reset();
+        }
+    }
 }

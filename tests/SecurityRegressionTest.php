@@ -1052,6 +1052,59 @@ class SecurityRegressionTest extends TestCase
         $this->assertFalse(StpUtil::isLogin(), '无法认证的撤销版本记录必须按已撤销处理');
     }
 
+    public function testMissingStatelessJwtGenerationCannotBypassPersistentRevocationWatermark(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'isReadHeader' => true,
+        ]));
+        $jwt = new \SaToken\Plugin\SaTokenJwt([
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+        ]);
+        $loginId = 'generation-eviction-user';
+        $token = $jwt->createStatelessToken($loginId, 'login', 3600);
+        $generationKey = TokenManager::buildStatelessTokenGenerationKey($loginId, 'login');
+        $watermarkKey = 'satoken:jwt:revoked-before:login:' . hash('sha256', $loginId);
+
+        StpUtil::logoutByLoginId($loginId);
+        self::assertNotNull(SaToken::getDao()->get($watermarkKey));
+        SaToken::getDao()->delete($generationKey);
+
+        $this->actAsToken($token);
+        self::assertNull(
+            StpUtil::getStpLogic()->getLoginIdByToken($token),
+            '代际键丢失时必须回退到仍存在的永久撤销水位，不能令旧 JWT 复活'
+        );
+
+        $newToken = StpUtil::getStpLogic()->loginStateless($loginId);
+        self::assertSame($loginId, StpUtil::getStpLogic()->getLoginIdByToken($newToken));
+    }
+
+    public function testEncryptedStatelessJwtGenerationRecoversAfterGenerationKeyLoss(): void
+    {
+        SaToken::setConfig(new SaTokenConfig([
+            'jwtStateless' => true,
+            'jwtSecretKey' => 'test-jwt-secret-key-32-bytes-long-ok!',
+            'tokenEncrypt' => true,
+            'tokenEncryptKey' => str_repeat('e', 32),
+            'aesKey' => str_repeat('e', 32),
+            'isReadHeader' => true,
+        ]));
+        $loginId = 'encrypted-generation-eviction-user';
+        $logic = StpUtil::getStpLogic();
+        $token = $logic->loginStateless($loginId);
+        $generationKey = TokenManager::buildStatelessTokenGenerationKey($loginId, 'login');
+
+        $logic->logoutByLoginId($loginId);
+        SaToken::getDao()->delete($generationKey);
+        $this->actAsToken($token);
+        self::assertNull($logic->getLoginIdByToken($token));
+
+        $newToken = $logic->loginStateless($loginId);
+        self::assertSame($loginId, $logic->getLoginIdByToken($newToken));
+    }
+
     public function testStatelessJwtAtExactAccountRevocationWatermarkIsRevoked(): void
     {
         SaToken::setConfig(new SaTokenConfig([

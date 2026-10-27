@@ -63,12 +63,37 @@ class TokenManager
         return self::JWT_GENERATION_PREFIX . self::encodeKeyComponent($loginType) . ':' . hash('sha256', $loginId);
     }
 
+    protected static function buildStatelessTokenRevocationWatermarkKey(string $loginId, string $loginType): string
+    {
+        return 'satoken:jwt:revoked-before:' . $loginType . ':' . hash('sha256', $loginId);
+    }
+
     public function getStatelessTokenGeneration(string $loginId, string $loginType): int
     {
         $key = self::buildStatelessTokenGenerationKey($loginId, $loginType);
         $value = $this->getDao()->get($key);
         if ($value === null) {
-            return 0;
+            // If a generation key was evicted after logout, treating the
+            // missing value as generation 0 would revive old gen=0 JWTs. A
+            // persistent revocation watermark proves this account already had
+            // a revocation boundary, so restore a fresh generation first.
+            $watermarkKey = self::buildStatelessTokenRevocationWatermarkKey($loginId, $loginType);
+            if (!$this->getDao()->exists($watermarkKey)) {
+                return 0;
+            }
+
+            $generation = random_int(1, intdiv(PHP_INT_MAX, 2));
+            $storedGeneration = $this->getConfig()->isTokenEncrypt()
+                ? $this->encryptBoundValue($key, (string) $generation)
+                : (string) $generation;
+            if ($this->getDao()->setIfNotExists($key, $storedGeneration, null)) {
+                return $generation;
+            }
+
+            $value = $this->getDao()->get($key);
+            if ($value === null) {
+                throw new SaTokenException('无状态 JWT 账号会话版本初始化失败');
+            }
         }
 
         $value = $this->decryptBoundValue($key, $value);
@@ -2482,7 +2507,7 @@ class TokenManager
             // Keep the timestamp watermark for tokens issued by older versions;
             // current tokens use the monotonic generation and do not depend on
             // synchronized clocks across application nodes.
-            $key = 'satoken:jwt:revoked-before:' . $loginType . ':' . hash('sha256', $loginId);
+            $key = self::buildStatelessTokenRevocationWatermarkKey($loginId, $loginType);
             $current = $this->getDao()->get($key);
             $cutoff = microtime(true);
             if ($current !== null) {
@@ -2547,7 +2572,7 @@ class TokenManager
             return true;
         }
 
-        $key = 'satoken:jwt:revoked-before:' . $loginType . ':' . hash('sha256', $loginId);
+        $key = self::buildStatelessTokenRevocationWatermarkKey($loginId, $loginType);
         $storedCutoff = $this->getDao()->get($key);
         if ($storedCutoff === null) {
             return false;
