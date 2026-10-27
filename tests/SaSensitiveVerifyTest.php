@@ -310,6 +310,40 @@ class SaSensitiveVerifyTest extends TestCase
         $this->assertSame('another-request-owner', $dao->get($rateKey));
     }
 
+    public function testFailedSendDoesNotDeleteNewOtpGenerationWithSameCode(): void
+    {
+        $scene = 'failed-send-generation';
+        $loginId = 10001;
+        $key = SaSensitiveVerify::getKey($scene, $loginId);
+        $dao = new SensitiveVerifyInterleavingDao();
+        SaToken::setDao($dao);
+
+        SaToken::getConfig()->setSensitiveVerifyCallback(static function (string $sentScene, string $code, int $sentLoginId) use ($key, $dao): void {
+            $replacement = [
+                'codeHash' => password_hash($code, PASSWORD_DEFAULT),
+                'generationId' => str_repeat('f', 32),
+                'createdAt' => time(),
+                'expiresAt' => time() + 300,
+                'attempts' => 0,
+                'verified' => false,
+            ];
+            $record = (new \ReflectionMethod(SaSensitiveVerify::class, 'encodeSensitiveState'))
+                ->invoke(null, $replacement, $key);
+            self::assertIsString($record);
+            $dao->set($key, $record, 360);
+            throw new \RuntimeException('delivery failed after a concurrent resend');
+        });
+
+        try {
+            SaSensitiveVerify::sendCode($scene, $loginId);
+            self::fail('Delivery failure must be propagated');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('delivery failed after a concurrent resend', $exception->getMessage());
+        }
+
+        self::assertNotNull($dao->get($key), 'The newer OTP generation must survive even when its code matches');
+    }
+
     public function testConcurrentSuccessfulCodeVerificationIsRejectedByAtomicClaim(): void
     {
         $scene = 'test-scene';

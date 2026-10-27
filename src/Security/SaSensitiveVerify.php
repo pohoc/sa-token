@@ -75,6 +75,12 @@ class SaSensitiveVerify
 
     public static function generateCode(string $scene, mixed $loginId, string $loginType = 'login'): string
     {
+        return self::generateCodeWithGeneration($scene, $loginId, $loginType)['code'];
+    }
+
+    /** @return array{code: string, generationId: string} */
+    protected static function generateCodeWithGeneration(string $scene, mixed $loginId, string $loginType = 'login'): array
+    {
         $dao = SaToken::getDao();
         if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface) {
             throw new SaTokenException('DAO 必须实现安全比较设置接口才能生成验证码');
@@ -90,9 +96,11 @@ class SaSensitiveVerify
 
             $code = self::generateRandomCode();
             $codeHash = password_hash($code, PASSWORD_DEFAULT);
+            $generationId = bin2hex(random_bytes(16));
 
             $data = [
                 'codeHash' => $codeHash,
+                'generationId' => $generationId,
                 'createdAt' => time(),
                 'expiresAt' => time() + self::$validSeconds,
                 'attempts' => 0,
@@ -111,7 +119,7 @@ class SaSensitiveVerify
             $dao->delete($key . ':att');
             $dao->delete($key . ':verified');
 
-            return $code;
+            return ['code' => $code, 'generationId' => $generationId];
         } finally {
             self::releaseStateLock($key, $lockValue);
         }
@@ -148,7 +156,9 @@ class SaSensitiveVerify
 
         $key = self::getKey($scene, $loginId, $loginType);
         try {
-            $code = self::generateCode($scene, $loginId, $loginType);
+            $generated = self::generateCodeWithGeneration($scene, $loginId, $loginType);
+            $code = $generated['code'];
+            $generationId = $generated['generationId'];
         } catch (SaTokenException $e) {
             $dao = SaToken::getDao();
             if ($rateOwner !== null && $dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
@@ -166,8 +176,7 @@ class SaSensitiveVerify
             $currentRecord = $dao->get($key);
             if ($currentRecord !== null && $dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface) {
                 $info = self::decodeSensitiveState($currentRecord, $key);
-                $codeHash = $info['codeHash'] ?? null;
-                if (is_string($codeHash) && password_verify($code, $codeHash)) {
+                if (is_array($info) && ($info['generationId'] ?? null) === $generationId) {
                     $dao->compareAndSet($key, $currentRecord, null);
                 }
             }
