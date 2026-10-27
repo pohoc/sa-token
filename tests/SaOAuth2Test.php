@@ -667,6 +667,17 @@ class SaOAuth2Test extends TestCase
         $this->handle->generateAuthorizationCode('test-client', 10001, 'https://evil.com/callback');
     }
 
+    public function testRedirectUriRejectsOversizedValuesBeforeAuthorizationCodeStorage(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('回调地址长度不能超过');
+        $this->handle->generateAuthorizationCode(
+            'test-client',
+            10001,
+            'https://example.com/' . str_repeat('a', 4096)
+        );
+    }
+
     public function testRedirectUriRejectsUserInfoAndFragments(): void
     {
         foreach ([

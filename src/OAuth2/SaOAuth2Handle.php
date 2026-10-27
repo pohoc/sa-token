@@ -42,6 +42,8 @@ class SaOAuth2Handle
 
     protected const MAX_OIDC_NONCE_LENGTH = 1024;
 
+    protected const MAX_REDIRECT_URI_BYTES = 4096;
+
     protected SaOAuth2Config $config;
 
     protected const CLIENT_PREFIX = 'oauth2:client:';
@@ -1590,6 +1592,9 @@ class SaOAuth2Handle
     {
         if ($redirectUri === '') {
             throw new SaTokenException('回调地址不能为空');
+        }
+        if (strlen($redirectUri) > self::MAX_REDIRECT_URI_BYTES) {
+            throw new SaTokenException('回调地址长度不能超过 ' . self::MAX_REDIRECT_URI_BYTES . ' 字节');
         }
 
         // parse_url() accepts characters that browsers and HTTP clients may
