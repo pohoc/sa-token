@@ -943,7 +943,7 @@ class SaOAuth2Handle
             $scope = $this->validateScopeForClient($client, $scope);
 
             $accessToken = $this->issueAccessToken($clientId, $loginId, $scope, '', true, '', false, 'password');
-            SaAntiBruteUtil::clearCurrentSourceFailures($username);
+            SaAntiBruteUtil::clearCurrentAccountFailures($username);
 
             return $accessToken;
         } finally {

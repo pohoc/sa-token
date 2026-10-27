@@ -95,7 +95,7 @@ class SaHttpAuth
 
         try {
             $result = StpUtil::login($loginId);
-            SaAntiBruteUtil::clearCurrentSourceFailures($username);
+            SaAntiBruteUtil::clearCurrentAccountFailures($username);
             SaTokenContext::setTokenOverride(StpUtil::getStpLogic()->getLoginType(), $result->getAccessToken());
         } finally {
             SaAntiBruteUtil::releaseCurrentSourceAttempt($username);
@@ -230,7 +230,7 @@ class SaHttpAuth
         }
 
         $result = StpUtil::login($username);
-        SaAntiBruteUtil::clearCurrentSourceFailures($username);
+        SaAntiBruteUtil::clearCurrentAccountFailures($username);
         SaTokenContext::setTokenOverride(StpUtil::getStpLogic()->getLoginType(), $result->getAccessToken());
     }
 

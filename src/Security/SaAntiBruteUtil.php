@@ -453,14 +453,37 @@ class SaAntiBruteUtil
         $sourceIdentity = self::getSourceIdentity($loginType);
         if ($sourceIdentity !== null) {
             self::releaseSourceAttemptReservation($account, $loginType);
-            // Successful authentication clears source-level failures too. Use
-            // a generation switch so an already-running failed request can
-            // only finish writing to the old, now-ignored source state.
+            // This is an explicit administrative reset. Authentication success
+            // uses clearCurrentAccountFailures() so a valid account cannot
+            // reset the source-wide cumulative failure budget.
             self::rotateSourceEpoch(
                 $sourceIdentity,
                 SaToken::getConfig()->getAntiBruteLockDuration()
             );
         }
+        self::clearAccountFailuresForCurrentSource($dao, $account, $loginType);
+    }
+
+    /**
+     * Clear only the authenticated account's source-specific failure state.
+     * Source-wide failures remain cumulative until their configured window
+     * expires or an administrator explicitly calls clearCurrentSourceFailures().
+     */
+    public static function clearCurrentAccountFailures(string $account, string $loginType = 'login'): void
+    {
+        $dao = SaToken::getDao();
+        $sourceIdentity = self::getSourceIdentity($loginType);
+        if ($sourceIdentity !== null) {
+            self::releaseSourceAttemptReservation($account, $loginType);
+        }
+        self::clearAccountFailuresForCurrentSource($dao, $account, $loginType);
+    }
+
+    protected static function clearAccountFailuresForCurrentSource(
+        \SaToken\Dao\SaTokenDaoInterface $dao,
+        string $account,
+        string $loginType
+    ): void {
         $epoch = self::getEpoch($account, $loginType);
         $ipEpoch = self::getIpEpoch($account, $loginType, $epoch);
         // Advance before deleting old keys. A failure operation already in

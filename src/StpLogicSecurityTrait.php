@@ -168,7 +168,7 @@ trait StpLogicSecurityTrait
         SaAntiBruteUtil::recordFailure($account, $this->loginType);
     }
 
-    /** Release the reserved source slot and clear failures after credentials are accepted. */
+    /** Release the reserved source slot and clear this account's failures after credentials are accepted. */
     public function clearAntiBruteFailures(mixed $loginId): void
     {
         $config = $this->getConfig();
@@ -176,7 +176,7 @@ trait StpLogicSecurityTrait
             return;
         }
 
-        SaAntiBruteUtil::clearCurrentSourceFailures(
+        SaAntiBruteUtil::clearCurrentAccountFailures(
             is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : ''),
             $this->loginType
         );

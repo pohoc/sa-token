@@ -147,7 +147,7 @@ class SaAntiBruteUtilTest extends TestCase
         // Successful authentication clears the current account+source state
         // while an earlier failed request is paused before writing its lock.
         SaTokenContext::setRequest($makeRequest());
-        SaAntiBruteUtil::clearCurrentSourceFailures('source-cleanup-race');
+        SaAntiBruteUtil::clearCurrentAccountFailures('source-cleanup-race');
         $fiber->resume();
 
         self::assertTrue($fiber->isTerminated());
@@ -155,7 +155,7 @@ class SaAntiBruteUtilTest extends TestCase
         self::assertSame(0, SaAntiBruteUtil::getFailCount('source-cleanup-race'));
     }
 
-    public function testSuccessfulAuthenticationClearsCurrentSourceFailureLock(): void
+    public function testSuccessfulAuthenticationDoesNotResetCumulativeSourceFailureLock(): void
     {
         SaToken::setConfig(new SaTokenConfig([
             'antiBruteMaxFailures' => 0,
@@ -174,15 +174,24 @@ class SaAntiBruteUtilTest extends TestCase
             self::assertStringContainsString('来源失败次数过多', $exception->getMessage());
         }
 
-        // An external credential verifier has authenticated this user. The
-        // documented successful-login cleanup must clear this source's state.
-        SaAntiBruteUtil::clearCurrentSourceFailures('valid-user');
+        // A valid account must not reset the source-wide cumulative budget;
+        // otherwise an attacker can interleave own-account logins with guesses.
+        SaAntiBruteUtil::clearCurrentAccountFailures('valid-user');
         SaTokenContext::setRequest($this->requestFromIp('192.0.2.49'));
+        try {
+            SaAntiBruteUtil::checkAndThrow('another-user');
+            self::fail('成功登录不得清除来源累计失败上限');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('来源失败次数过多', $exception->getMessage());
+        }
+
+        // Explicit administrative reset remains available.
+        SaAntiBruteUtil::clearCurrentSourceFailures('valid-user');
         SaAntiBruteUtil::checkAndThrow('another-user');
         SaAntiBruteUtil::clearCurrentSourceFailures('another-user');
     }
 
-    public function testStaleSourceFailureCannotRelockAfterSuccessfulCleanup(): void
+    public function testConcurrentSourceFailureStillCountsAfterSuccessfulLogin(): void
     {
         SaToken::setConfig(new SaTokenConfig([
             'antiBruteMaxFailures' => 0,
@@ -214,13 +223,17 @@ class SaAntiBruteUtilTest extends TestCase
         self::assertTrue($fiber->isSuspended());
 
         SaTokenContext::setRequest($makeRequest());
-        SaAntiBruteUtil::clearCurrentSourceFailures('successful-account');
+        SaAntiBruteUtil::clearCurrentAccountFailures('successful-account');
         $fiber->resume();
 
         self::assertTrue($fiber->isTerminated());
         SaTokenContext::setRequest($makeRequest());
-        SaAntiBruteUtil::checkAndThrow('next-account');
-        SaAntiBruteUtil::clearCurrentSourceFailures('next-account');
+        try {
+            SaAntiBruteUtil::checkAndThrow('next-account');
+            self::fail('在途失败必须计入来源累计上限');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('来源失败次数过多', $exception->getMessage());
+        }
     }
 
     public function testSourceGenerationExpiresWithFailureWindow(): void
@@ -233,7 +246,7 @@ class SaAntiBruteUtilTest extends TestCase
         SaTokenContext::setRequest($this->requestFromIp('192.0.2.47'));
 
         SaAntiBruteUtil::checkAndThrow('valid-user');
-        SaAntiBruteUtil::clearCurrentSourceFailures('valid-user');
+        SaAntiBruteUtil::clearCurrentAccountFailures('valid-user');
 
         $identity = hash('sha256', "login\0" . '192.0.2.47');
         $epochKey = 'satoken:security:brute:source-epoch:' . $identity;

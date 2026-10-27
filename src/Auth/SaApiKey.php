@@ -117,7 +117,7 @@ class SaApiKey
                             (new \SaToken\SaLoginParameter())->setWriteResponseCredentials(false)
                         );
                         SaTokenContext::setTokenOverride($logic->getLoginType(), $reuseToken);
-                        SaAntiBruteUtil::clearCurrentSourceFailures($apiKey, 'api-key');
+                        SaAntiBruteUtil::clearCurrentAccountFailures($apiKey, 'api-key');
                         return;
                     }
                 } finally {
@@ -131,7 +131,7 @@ class SaApiKey
                     StpUtil::getStpLogic()->getLoginType(),
                     $result->getAccessToken()
                 );
-                SaAntiBruteUtil::clearCurrentSourceFailures($apiKey, 'api-key');
+                SaAntiBruteUtil::clearCurrentAccountFailures($apiKey, 'api-key');
                 return;
             } catch (SaTokenException $e) {
                 // 冷启动并发：多个请求同时发现无可复用会话时，只有一个能拿到

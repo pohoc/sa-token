@@ -1073,7 +1073,7 @@ SaToken::init([
 |--------|------|--------|------|
 | `antiBruteMaxFailures` | int | `5` | 单一账号、单一来源的最大失败次数，`0` 不限制 |
 | `antiBruteLockDuration` | int | `600` | 锁定时长（秒） |
-| `antiBruteIpMaxFailures` | int | `100` | 同一来源、同一登录类型累计失败上限，并限制并发认证校验数，防止随机账号名造成的存储增长；需 `antiBruteLockDuration` 大于 `0`，`0` 关闭此上限 |
+| `antiBruteIpMaxFailures` | int | `100` | 同一来源、同一登录类型在锁定窗口内的累计失败上限，并限制并发认证校验数；成功登录只清除该账号在当前来源的失败状态，不会重置来源累计失败数，避免用其他有效账号绕过来源限流。需 `antiBruteLockDuration` 大于 `0`，`0` 关闭此上限 |
 
 ## IP 异常检测
 
