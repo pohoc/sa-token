@@ -629,7 +629,7 @@ class StpLogic
     {
         $tokenOverride = SaTokenContext::getTokenOverride($this->loginType);
         if ($tokenOverride !== null) {
-            return $tokenOverride;
+            return $this->formatAndValidateTokenValue($tokenOverride);
         }
 
         $config = $this->getConfig();
@@ -644,7 +644,7 @@ class StpLogic
             }
             $tokenValue = SaTokenContext::getHeader($tokenName);
             if ($tokenValue !== null && SaFoxUtil::isNotEmpty($tokenValue)) {
-                return $this->formatTokenValue($tokenValue);
+                return $this->formatAndValidateTokenValue($tokenValue);
             }
         }
 
@@ -657,7 +657,7 @@ class StpLogic
             }
             $tokenValue = SaTokenContext::getCookie($tokenName);
             if ($tokenValue !== null && SaFoxUtil::isNotEmpty($tokenValue)) {
-                return $this->formatTokenValue($tokenValue);
+                return $this->formatAndValidateTokenValue($tokenValue);
             }
         }
 
@@ -673,7 +673,7 @@ class StpLogic
                     && !str_contains($contentType, 'application/json')) {
                     trigger_error('Sa-Token: 从 URL 参数读取 Token 存在安全风险，建议使用 Header 或 Cookie 传递', E_USER_NOTICE);
                 }
-                return $this->formatTokenValue($tokenValue);
+                return $this->formatAndValidateTokenValue($tokenValue);
             }
         }
 
@@ -695,8 +695,21 @@ class StpLogic
         return $tokenValue;
     }
 
+    protected function formatAndValidateTokenValue(string $tokenValue): ?string
+    {
+        $formatted = $this->formatTokenValue($tokenValue);
+        if ($formatted === '' || strlen($formatted) > TokenManager::MAX_TOKEN_VALUE_BYTES) {
+            return null;
+        }
+        return $formatted;
+    }
+
     public function getLoginIdByToken(string $tokenValue): ?string
     {
+        if ($tokenValue === '' || strlen($tokenValue) > TokenManager::MAX_TOKEN_VALUE_BYTES) {
+            return null;
+        }
+
         if ($this->tokenManager->isBlacklisted($tokenValue)) {
             return null;
         }

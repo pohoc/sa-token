@@ -182,6 +182,32 @@ class StpLogicTest extends TestCase
         self::assertFalse($this->logic->isLogin());
     }
 
+    public function testOversizedBearerTokensAreRejectedBeforeAuthenticationLookup(): void
+    {
+        SaToken::getConfig()->setIsReadHeader(true);
+        $oversizedToken = str_repeat('t', TokenManager::MAX_TOKEN_VALUE_BYTES + 1);
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->willReturnCallback(static fn (string $name): array => $name === 'satoken'
+            ? [$oversizedToken]
+            : []);
+        SaTokenContext::setRequest($request);
+
+        self::assertNull($this->logic->getTokenValue());
+        self::assertFalse($this->logic->isLogin());
+        self::assertNull($this->logic->getLoginIdByToken($oversizedToken));
+        self::assertFalse($this->tokenManager->isBlacklisted($oversizedToken));
+
+        SaTokenContext::setTokenOverride('login', $oversizedToken);
+        self::assertNull($this->logic->getTokenValue());
+    }
+
+    public function testOversizedTokenCannotBeAddedToBlacklist(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('Token 长度无效');
+        $this->tokenManager->addToBlacklist(str_repeat('t', TokenManager::MAX_TOKEN_VALUE_BYTES + 1), 60);
+    }
+
     public function testDisableWithLevel(): void
     {
         $this->logic->disable(10001, 'comment', 2, 3600);

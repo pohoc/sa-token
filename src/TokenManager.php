@@ -14,6 +14,9 @@ use SaToken\Util\SaTokenTimeout;
 
 class TokenManager
 {
+    /** Match the JWT parser ceiling while bounding attacker-controlled DAO keys. */
+    public const MAX_TOKEN_VALUE_BYTES = 65536;
+
     public const TOKEN_PREFIX = 'satoken:login:token:';
     public const LOGIN_ID_PREFIX = 'satoken:login:loginId:';
     public const LOGIN_ID_V2_PREFIX = 'satoken:login:v2:loginId:';
@@ -542,6 +545,10 @@ class TokenManager
 
     public function getLoginIdByToken(string $tokenValue): ?string
     {
+        if ($tokenValue === '' || strlen($tokenValue) > self::MAX_TOKEN_VALUE_BYTES) {
+            return null;
+        }
+
         // Dao 记录是会话存在性的唯一权威来源：
         // logout/kickout/吊销均通过删除该记录实现，因此不存在记录的 Token 一律无效
         $tokenKey = self::TOKEN_PREFIX . $tokenValue;
@@ -2254,12 +2261,23 @@ class TokenManager
 
     public function addToBlacklist(string $tokenValue, ?int $timeout): void
     {
+        $this->validateTokenValueLength($tokenValue);
         $this->getDao()->set(self::BLACKLIST_PREFIX . $tokenValue, '1', ($timeout !== null && $timeout > 0) ? $timeout : null);
     }
 
     public function isBlacklisted(string $tokenValue): bool
     {
+        if ($tokenValue === '' || strlen($tokenValue) > self::MAX_TOKEN_VALUE_BYTES) {
+            return false;
+        }
         return $this->getDao()->exists(self::BLACKLIST_PREFIX . $tokenValue);
+    }
+
+    protected function validateTokenValueLength(string $tokenValue): void
+    {
+        if ($tokenValue === '' || strlen($tokenValue) > self::MAX_TOKEN_VALUE_BYTES) {
+            throw new SaTokenException('Token 长度无效，最大为 ' . self::MAX_TOKEN_VALUE_BYTES . ' 字节');
+        }
     }
 
     public function revokeStatelessTokensByLoginId(string $loginId, string $loginType): void
