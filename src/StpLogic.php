@@ -887,9 +887,20 @@ class StpLogic
         }
 
         $tokenValue = null;
+        $replacedTokens = [];
         try {
             $this->checkDisableForLogin($loginId);
             $tokenValue = $this->tokenManager->createTokenValue($loginId, $this->loginType);
+            // Apply the account limit before indexing the new token. This is
+            // the same ordering used by login(), so existing sessions are
+            // evicted before the temporary credential is added.
+            $this->controlMaxLoginCount(
+                $loginId,
+                'temp',
+                $this->getConfig()->getMaxLoginCount(),
+                $tokenValue,
+                $replacedTokens
+            );
             // mixed 模式下实际存储的是 JWT，必须返回真实值
             $tokenValue = $this->tokenManager->saveToken($tokenValue, $loginId, $this->loginType, 'temp', $timeout);
             $this->checkDisableForLogin($loginId);
@@ -897,7 +908,6 @@ class StpLogic
                 throw new SaTokenException('账号会话锁已失效，拒绝签发临时登录凭证');
             }
 
-            return $tokenValue;
         } catch (\Throwable $exception) {
             if ($tokenValue !== null && $this->tokenManager->isTokenValid($tokenValue)) {
                 try {
@@ -925,6 +935,12 @@ class StpLogic
         } finally {
             $this->tokenManager->releaseLock($lockKey);
         }
+
+        foreach ($replacedTokens as $replacedToken) {
+            $this->getEvent()->onReplaced($this->loginType, $loginId, $replacedToken);
+        }
+
+        return $tokenValue;
     }
 
     // ---- 内部辅助方法 ----

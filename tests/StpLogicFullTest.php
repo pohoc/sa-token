@@ -508,6 +508,39 @@ class StpLogicFullTest extends TestCase
         $this->assertEquals('10001', $loginId);
     }
 
+    public function testCreateTempTokenRespectsMaxLoginCount(): void
+    {
+        SaToken::getConfig()->setMaxLoginCount(1);
+        $oldToken = $this->loginAndGetToken('temp-limit-user');
+
+        $tempToken = $this->logic->createTempToken('temp-limit-user', 300);
+
+        $this->assertNotSame($oldToken, $tempToken);
+        $this->assertNull($this->tokenManager->getLoginIdByToken($oldToken));
+        $this->assertSame('temp-limit-user', $this->tokenManager->getLoginIdByToken($tempToken));
+        $tokens = $this->tokenManager->getTokenListByLoginId('temp-limit-user', 'login');
+        $this->assertCount(1, $tokens);
+        $this->assertSame($tempToken, $tokens[0]['tokenValue']);
+        $this->assertSame('temp', $tokens[0]['deviceType']);
+    }
+
+    public function testTempTokenReplacementEventRunsAfterAccountLockIsReleased(): void
+    {
+        $loginId = 'temp-replacement-listener-lock-check';
+        $this->logic->login($loginId);
+        SaToken::getConfig()->setMaxLoginCount(1);
+        $lockKey = TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId);
+        $listener = $this->createMock(SaTokenListenerInterface::class);
+        $listener->expects($this->once())
+            ->method('onReplaced')
+            ->willReturnCallback(function () use ($lockKey): void {
+                self::assertNull($this->dao->get($lockKey));
+            });
+        SaToken::addListener($listener);
+
+        $this->logic->createTempToken($loginId, 300);
+    }
+
     public function testCreateTempTokenUsesAccountLock(): void
     {
         $loginId = '10001';
