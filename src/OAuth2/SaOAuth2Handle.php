@@ -528,6 +528,15 @@ class SaOAuth2Handle
         if (!$dao instanceof SaTokenDaoCompareAndUpdateInterface) {
             throw new SaTokenException('DAO 不支持刷新令牌的原子消费');
         }
+
+        // Client credentials and grant policy may be rotated while this
+        // request waits for family locks or validates refresh-token state.
+        // Re-read the live client at the consumption boundary so a request
+        // authenticated with a revoked secret cannot rotate a refresh token.
+        $currentClient = $this->validateClientWithSecret($clientId, $clientSecret);
+        $this->validateGrantTypeForClient($currentClient, 'refresh_token');
+        $rtData->setScope($this->validateScopeForClient($currentClient, $rtData->getScope()));
+
         $consumedRecord = $this->encryptValue(SaFoxUtil::toJson([
             '_state'          => 'consumed',
             'refreshTokenHash' => hash('sha256', $refreshToken),

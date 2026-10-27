@@ -944,6 +944,59 @@ class SaOAuth2Test extends TestCase
         $this->assertNotEquals($accessToken->getAccessToken(), $newAccessToken->getAccessToken());
     }
 
+    public function testRefreshRejectsClientSecretRotationBeforeRefreshTokenConsumption(): void
+    {
+        $dao = new class () extends SaTokenDaoMemory {
+            public int $clientReadCount = 0;
+
+            public ?\Closure $afterValidatedClientRead = null;
+
+            public function get(string $key): ?string
+            {
+                $value = parent::get($key);
+                if ($key === 'oauth2:client:test-client') {
+                    $this->clientReadCount++;
+                    if ($this->afterValidatedClientRead !== null && $this->clientReadCount === 2) {
+                        $callback = $this->afterValidatedClientRead;
+                        $this->afterValidatedClientRead = null;
+                        $callback();
+                    }
+                }
+
+                return $value;
+            }
+        };
+        SaToken::setDao($dao);
+        $this->handle->registerClient($this->testClient);
+        $code = $this->handle->generateAuthorizationCode('test-client', 'secret-rotation-refresh', 'https://example.com/callback');
+        $accessToken = $this->handle->exchangeTokenByCode(
+            $code->getCode(),
+            'test-client',
+            $this->clientSecret,
+            'https://example.com/callback'
+        );
+        $refreshToken = $accessToken->getRefreshToken();
+        self::assertNotNull($refreshToken);
+
+        $dao->clientReadCount = 0;
+        $dao->afterValidatedClientRead = function (): void {
+            $rotatedClient = new SaOAuth2Client(array_merge($this->testClient->toArray(), [
+                'clientSecret' => 'rotated-refresh-secret-with-at-least-32-bytes',
+            ]));
+            $this->handle->registerClient($rotatedClient);
+        };
+
+        try {
+            $this->handle->refreshToken($refreshToken, 'test-client', $this->clientSecret);
+            self::fail('客户端密钥轮换后，旧密钥不得消费刷新令牌');
+        } catch (SaTokenException $exception) {
+            self::assertSame('客户端密钥错误', $exception->getMessage());
+        }
+
+        $rotatedSecret = 'rotated-refresh-secret-with-at-least-32-bytes';
+        self::assertNotEmpty($this->handle->refreshToken($refreshToken, 'test-client', $rotatedSecret)->getAccessToken());
+    }
+
     public function testGloballyDisabledGrantCannotBeUsedByPreviouslyRegisteredClient(): void
     {
         $code = $this->handle->generateAuthorizationCode('test-client', 10001, 'https://example.com/callback');
