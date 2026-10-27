@@ -150,6 +150,22 @@ class SaOAuth2Test extends TestCase
         $this->handle->tokenByPassword('test-client', $this->clientSecret, 'disabled-user', 'correct-password');
     }
 
+    public function testOAuthRefreshGrantRejectsDisabledLoginId(): void
+    {
+        SaToken::getConfig()->setAntiBruteMaxFailures(0)->setAntiBruteIpMaxFailures(0);
+        $loginId = 'disabled-oauth-refresh-user';
+        $this->handle->setUserCredentialsValidator(static fn (): string => 'disabled-oauth-refresh-user');
+        $issued = $this->handle->tokenByPassword('test-client', $this->clientSecret, 'refresh-user', 'correct-password');
+        StpUtil::disable($loginId, 'login', 1, 3600);
+        $refreshToken = $issued->getRefreshToken();
+        if ($refreshToken === null) {
+            self::fail('OAuth 密码授权未签发预期的 RefreshToken');
+        }
+
+        $this->expectException(\SaToken\Exception\DisableServiceException::class);
+        $this->handle->refreshToken($refreshToken, 'test-client', $this->clientSecret);
+    }
+
     public function testAuthenticationRejectsLegacyShortSecret(): void
     {
         SaToken::getDao()->set('oauth2:client:legacy-weak-client', \SaToken\Util\SaFoxUtil::toJson([

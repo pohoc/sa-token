@@ -331,17 +331,62 @@ class SaOAuth2Handle
         $tokenLockKey = 'oauth2:refresh:token:' . hash('sha256', $refreshToken);
         $this->acquireRefreshLock($tokenLockKey, $lockValue);
 
+        $accountLockManager = null;
+        $accountLockKey = null;
         try {
+            // User refresh tokens are login continuations: serialize them with
+            // login/disable and reject disabled identities before consuming RT.
+            // A missing record can be a consumed token, whose replay handling
+            // below must still run without an account identity.
+            $storedRefreshToken = $this->getRefreshTokenData($refreshToken);
+            $loginId = $storedRefreshToken?->getLoginId();
+            if ($loginId !== null && $loginId !== '' && !is_bool($loginId) && is_scalar($loginId)) {
+                $logic = StpUtil::getStpLogic();
+                $accountLockManager = $logic->getTokenManager();
+                $accountLockKey = 'login:' . $logic->getLoginType() . ':' . hash('sha256', (string) $loginId);
+                if (!$accountLockManager->acquireLock($accountLockKey, 30)) {
+                    throw new SaTokenException('同账号会话正在处理中，请稍后重试');
+                }
+                StpUtil::checkDisable($loginId, 'login');
+            }
+
             // 必须在拿到单 RT 锁后重新解析家族：若请求在前一请求消费 RT 的
             // 窗口中启动，它此时才能读到已写入的 consumed 标记并加入同一家族锁。
             $familyLockKey = 'oauth2:refresh:' . $this->getRefreshTokenFamilyLockIdentity($refreshToken);
             $this->acquireRefreshLock($familyLockKey, $lockValue);
             try {
-                return $this->refreshTokenUnlocked($refreshToken, $clientId, $clientSecret);
+                $issuedAccessToken = null;
+                try {
+                    $issuedAccessToken = $this->refreshTokenUnlocked($refreshToken, $clientId, $clientSecret);
+                    if ($accountLockManager !== null && $accountLockKey !== null) {
+                        StpUtil::checkDisable($loginId, 'login');
+                        if (!$accountLockManager->renewLock($accountLockKey, 30)) {
+                            throw new SaTokenException('账号会话锁已失效，拒绝签发 OAuth 刷新令牌');
+                        }
+                    }
+                    return $issuedAccessToken;
+                } catch (\Throwable $exception) {
+                    if ($issuedAccessToken !== null) {
+                        try {
+                            $familyId = $this->getAccessTokenFamilyId($issuedAccessToken->getAccessToken());
+                            if (is_string($familyId) && $familyId !== '') {
+                                $this->revokeTokenFamily('oauth2:family:' . hash('sha256', $familyId));
+                            } else {
+                                $this->revokeAccessTokenUnlocked($issuedAccessToken->getAccessToken());
+                            }
+                        } catch (\Throwable $cleanupException) {
+                            throw new SaTokenException('OAuth 刷新令牌状态校验失败，且撤销清理失败', 0, $cleanupException);
+                        }
+                    }
+                    throw $exception;
+                }
             } finally {
                 $this->releaseRefreshLock($familyLockKey, $lockValue);
             }
         } finally {
+            if ($accountLockManager !== null && $accountLockKey !== null) {
+                $accountLockManager->releaseLock($accountLockKey);
+            }
             $this->releaseRefreshLock($tokenLockKey, $lockValue);
         }
     }
