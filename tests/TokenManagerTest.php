@@ -1119,6 +1119,38 @@ class TokenManagerTest extends TestCase
         self::assertNull($this->manager->getSwitchTo($token, 'login'));
     }
 
+    public function testOpenSafeBoundsServiceNameAndPerTokenRegistry(): void
+    {
+        $token = $this->manager->createTokenValue(10001, 'login');
+        $this->manager->saveToken($token, 10001, 'login', 'PC');
+
+        try {
+            $this->manager->openSafe($token, str_repeat('s', TokenManager::MAX_SERVICE_NAME_BYTES + 1), 60, 'login');
+            self::fail('安全场景 service 名称必须有长度上限');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('service 长度不能超过', $exception->getMessage());
+        }
+
+        for ($index = 0; $index < TokenManager::MAX_SAFE_SERVICES_PER_TOKEN; $index++) {
+            $this->manager->openSafe($token, 'scope-' . $index, 60, 'login');
+        }
+
+        try {
+            $this->manager->openSafe($token, 'scope-overflow', 60, 'login');
+            self::fail('单个 Token 的安全场景索引必须有数量上限');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('安全场景数量不能超过', $exception->getMessage());
+        }
+
+        $registeredServices = (new \ReflectionMethod(TokenManager::class, 'getSafeServices'))
+            ->invoke($this->manager, $token, 'login');
+        self::assertIsArray($registeredServices);
+        self::assertCount(TokenManager::MAX_SAFE_SERVICES_PER_TOKEN, $registeredServices);
+
+        // Renewing an already indexed service remains valid at the limit.
+        $this->manager->openSafe($token, 'scope-0', 60, 'login');
+    }
+
     public function testDisableRejectsOversizedLoginIdBeforeWriting(): void
     {
         $loginId = str_repeat('d', TokenManager::MAX_LOGIN_ID_BYTES + 1);

@@ -20,10 +20,21 @@ class TokenManager
     /** Bound login identifiers before they enter JWT claims, DAO keys, or sessions. */
     public const MAX_LOGIN_ID_BYTES = 4096;
 
+    /** Bound per-token security-state indexes populated by service names. */
+    public const MAX_SERVICE_NAME_BYTES = 256;
+    public const MAX_SAFE_SERVICES_PER_TOKEN = 64;
+
     public static function validateLoginIdLength(mixed $loginId): void
     {
         if (is_scalar($loginId) && strlen((string) $loginId) > self::MAX_LOGIN_ID_BYTES) {
             throw new SaTokenException('loginId 长度无效，最大为 ' . self::MAX_LOGIN_ID_BYTES . ' 字节');
+        }
+    }
+
+    protected static function validateServiceNameLength(string $service): void
+    {
+        if (strlen($service) > self::MAX_SERVICE_NAME_BYTES) {
+            throw new SaTokenException('service 长度不能超过 ' . self::MAX_SERVICE_NAME_BYTES . ' 字节');
         }
     }
 
@@ -1349,6 +1360,7 @@ class TokenManager
     {
         SaTokenTimeout::validate($time, '封禁时长');
         self::validateLoginIdLength($loginId);
+        self::validateServiceNameLength($service);
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
         $key = self::buildDisableKey($loginType, $loginIdStr, $service);
         $data = SaFoxUtil::toJson([
@@ -1435,6 +1447,7 @@ class TokenManager
     public function openSafe(string $tokenValue, string $service, int $safeTime, string $loginType): void
     {
         $this->validateTokenValueLength($tokenValue);
+        self::validateServiceNameLength($service);
         if ($safeTime <= 0) {
             throw new SaTokenException('安全窗口必须是正整数秒数');
         }
@@ -1457,6 +1470,9 @@ class TokenManager
 
             $services = $this->getSafeServices($tokenValue, $loginType);
             if (!in_array($service, $services, true)) {
+                if (count($services) >= self::MAX_SAFE_SERVICES_PER_TOKEN) {
+                    throw new SaTokenException('单个 Token 的安全场景数量不能超过 ' . self::MAX_SAFE_SERVICES_PER_TOKEN);
+                }
                 $services[] = $service;
             }
 
