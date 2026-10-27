@@ -1377,7 +1377,14 @@ class TokenManager
             throw new SaTokenException('同账号会话正在处理中，请稍后重试');
         }
         try {
-            $this->getDao()->set($key, $this->encryptValue($data), $time > 0 ? $time : null);
+            $dao = $this->getDao();
+            if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndSetInterface) {
+                throw new SaTokenException('DAO 不支持封禁状态的原子条件写入');
+            }
+            $current = $dao->get($key);
+            if (!$dao->compareAndSet($key, $current, $this->encryptValue($data), $time > 0 ? $time : null)) {
+                throw new SaTokenException('封禁状态已并发变更，拒绝覆盖更新后的封禁');
+            }
         } finally {
             $this->releaseLock($lockKey);
         }

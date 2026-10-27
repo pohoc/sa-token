@@ -1011,6 +1011,58 @@ class TokenManagerTest extends TestCase
         self::assertSame(2, $this->manager->getDisableLevel($loginId, 'login', 'login'));
     }
 
+    public function testStaleDisableCannotOverwriteANewerBanAfterLeaseExpires(): void
+    {
+        $dao = new class () extends SaTokenDaoMemory {
+            public ?\Closure $beforeDisableWrite = null;
+
+            public function set(string $key, string $value, ?int $timeout = null): void
+            {
+                if (str_starts_with($key, 'satoken:disable:') && $this->beforeDisableWrite !== null) {
+                    $callback = $this->beforeDisableWrite;
+                    $this->beforeDisableWrite = null;
+                    $callback();
+                }
+                parent::set($key, $value, $timeout);
+            }
+
+            public function compareAndSet(string $key, ?string $expectedValue, ?string $newValue, ?int $timeout = null): bool
+            {
+                if (str_starts_with($key, 'satoken:disable:') && $this->beforeDisableWrite !== null) {
+                    $callback = $this->beforeDisableWrite;
+                    $this->beforeDisableWrite = null;
+                    $callback();
+                }
+                return parent::compareAndSet($key, $expectedValue, $newValue, $timeout);
+            }
+        };
+        SaToken::setDao($dao);
+        $loginId = 'stale-disable-write';
+        $lockKey = 'login:login:' . hash('sha256', $loginId);
+        $dao->beforeDisableWrite = function () use ($dao, $lockKey, $loginId): void {
+            // The first disable has captured its current record; expire its
+            // lease and let a newer, stronger disable win before its write.
+            $dao->delete(TokenManager::LOCK_PREFIX . $lockKey);
+            SaTokenContext::setContextId('new-disable-write-owner');
+            try {
+                (new TokenManager())->disable($loginId, 'login', 2, 3600, 'login');
+            } finally {
+                SaTokenContext::setContextId('default');
+            }
+        };
+
+        try {
+            $this->manager->disable($loginId, 'login', 1, 30, 'login');
+            self::fail('过期租约的旧封禁不得覆盖较新的封禁');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('并发变更', $exception->getMessage());
+        }
+
+        self::assertTrue($this->manager->isDisable($loginId, 'login', 'login'));
+        self::assertSame(2, $this->manager->getDisableLevel($loginId, 'login', 'login'));
+        self::assertGreaterThan(3000, $this->manager->getDisableTime($loginId, 'login', 'login'));
+    }
+
     public function testSafeAuth(): void
     {
         $token = $this->manager->createTokenValue(10001, 'login');
