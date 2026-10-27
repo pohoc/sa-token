@@ -570,6 +570,22 @@ class StpLogicFullTest extends TestCase
         }
     }
 
+    public function testCreateTempTokenRejectsOversizedLoginIdBeforeTakingAccountLock(): void
+    {
+        $loginId = str_repeat('a', TokenManager::MAX_LOGIN_ID_BYTES + 1);
+        $lockKey = TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId);
+
+        try {
+            $this->logic->createTempToken($loginId, 300);
+            self::fail('临时 Token 入口必须在任何账号状态变更前拒绝超长 loginId');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('loginId 长度无效', $exception->getMessage());
+        }
+
+        self::assertNull($this->dao->get($lockKey));
+        self::assertSame([], $this->tokenManager->getTokenListByLoginId($loginId, 'login'));
+    }
+
     public function testLoginRejectsOversizedLoginIdsBeforePersistence(): void
     {
         $loginId = str_repeat('a', TokenManager::MAX_LOGIN_ID_BYTES + 1);

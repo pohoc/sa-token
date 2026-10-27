@@ -897,6 +897,7 @@ class StpLogic
         if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
             throw new SaTokenException('loginId 不能为空且必须是非布尔标量');
         }
+        TokenManager::validateLoginIdLength($loginId);
 
         $loginIdStr = (string) $loginId;
         $lockKey = 'login:' . $this->loginType . ':' . hash('sha256', $loginIdStr);

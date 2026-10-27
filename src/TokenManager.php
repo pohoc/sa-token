@@ -1564,6 +1564,7 @@ class TokenManager
         if ($switchToId === null || $switchToId === '' || is_bool($switchToId) || !is_scalar($switchToId)) {
             throw new SaTokenException('切换身份必须是非空、非布尔标量');
         }
+        self::validateLoginIdLength($switchToId);
 
         $key = self::buildSwitchKey($tokenValue, $loginType);
         // 身份切换跟随 Token 生命周期：Token 过期/被删除后切换关系不应残留；

@@ -1104,6 +1104,21 @@ class TokenManagerTest extends TestCase
         self::assertNull($this->manager->getSwitchTo($token, 'login'));
     }
 
+    public function testSetSwitchToRejectsOversizedIdentityValues(): void
+    {
+        $token = $this->manager->createTokenValue(10001, 'login');
+        $this->manager->saveToken($token, 10001, 'login', 'PC');
+
+        try {
+            $this->manager->setSwitchTo($token, str_repeat('x', TokenManager::MAX_LOGIN_ID_BYTES + 1), 'login');
+            self::fail('身份切换不能存储超长目标 loginId');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('loginId 长度无效', $exception->getMessage());
+        }
+
+        self::assertNull($this->manager->getSwitchTo($token, 'login'));
+    }
+
     public function testSwitchStateDoesNotCollideAcrossLoginTypeAndToken(): void
     {
         $tokenA = 'b:c:1234567890123456';
