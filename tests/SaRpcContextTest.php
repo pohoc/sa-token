@@ -348,6 +348,22 @@ class SaRpcContextTest extends TestCase
         $this->assertTrue(true);
     }
 
+    public function testValidationOnlyRpcRequestCannotFallBackToNativeBearerOrPriorOverride(): void
+    {
+        $forwardedToken = StpUtil::login('forwarded-rpc-account')->getAccessToken();
+        $nativeToken = StpUtil::login('unrelated-native-account')->getAccessToken();
+        SaTokenContext::setRequest($this->mockRequestWithHeaders([
+            'X-Sa-Token' => $forwardedToken,
+            'satoken' => $nativeToken,
+        ]));
+        SaTokenContext::setTokenOverride('login', $nativeToken);
+
+        (new SaRpcInterceptor())->handleIncoming();
+
+        self::assertSame($forwardedToken, SaRpcContext::getForwardedToken());
+        self::assertNull(StpUtil::getLoginId(), 'autoLogin=false 时不得把本地 bearer 或旧 override 当作 RPC 身份');
+    }
+
     public function testInvalidRpcTokenCannotFallBackToAnUnrelatedBearerTokenWhenExceptionIsCaught(): void
     {
         $bearerToken = StpUtil::login('local-bearer-account')->getAccessToken();

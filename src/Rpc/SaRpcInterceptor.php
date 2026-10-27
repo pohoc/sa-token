@@ -34,6 +34,12 @@ class SaRpcInterceptor
 
     public function handleIncoming(): void
     {
+        // RPC identity must come only from the forwarded credential. In
+        // validation-only mode callers can inspect the forwarded identity
+        // explicitly, but a native bearer or a prior request-local override
+        // must not become an accidental fallback principal.
+        SaTokenContext::denyTokenFallback();
+
         try {
             if (!SaRpcContext::isRpcRequest()) {
                 throw new SaTokenException('RPC 请求缺少认证信息');
