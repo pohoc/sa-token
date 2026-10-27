@@ -1119,6 +1119,21 @@ class TokenManagerTest extends TestCase
         self::assertNull($this->manager->getSwitchTo($token, 'login'));
     }
 
+    public function testDisableRejectsOversizedLoginIdBeforeWriting(): void
+    {
+        $loginId = str_repeat('d', TokenManager::MAX_LOGIN_ID_BYTES + 1);
+        $lockKey = TokenManager::LOCK_PREFIX . 'login:login:' . hash('sha256', $loginId);
+
+        try {
+            $this->manager->disable($loginId, 'login', 1, 60, 'login');
+            self::fail('封禁入口必须拒绝超长 loginId');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('loginId 长度无效', $exception->getMessage());
+        }
+
+        self::assertNull($this->dao->get($lockKey));
+    }
+
     public function testSwitchStateDoesNotCollideAcrossLoginTypeAndToken(): void
     {
         $tokenA = 'b:c:1234567890123456';

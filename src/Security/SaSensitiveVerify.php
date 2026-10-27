@@ -74,6 +74,7 @@ class SaSensitiveVerify
         if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
             throw new SaTokenException('敏感验证 loginId 不能为空且必须是非布尔标量');
         }
+        \SaToken\TokenManager::validateLoginIdLength($loginId);
 
         return (string) $loginId;
     }

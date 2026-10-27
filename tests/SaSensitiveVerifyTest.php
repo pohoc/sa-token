@@ -180,6 +180,13 @@ class SaSensitiveVerifyTest extends TestCase
         SaSensitiveVerify::generateCode(str_repeat('s', 257), 'alice');
     }
 
+    public function testSensitiveVerificationRejectsOversizedLoginIds(): void
+    {
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('loginId 长度无效');
+        SaSensitiveVerify::generateCode('payment', str_repeat('u', 4097));
+    }
+
     public function testGeneratedCodeIsStoredAsOneWayHash(): void
     {
         $scene = 'hashed-code-scene';
