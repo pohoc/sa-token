@@ -819,6 +819,54 @@ class SaHttpAuthTest extends TestCase
         }
     }
 
+    public function testDigestReplayFailureReleasesSourceConcurrencyReservation(): void
+    {
+        SaToken::setConfig(SaToken::getConfig()
+            ->setAntiBruteMaxFailures(0)
+            ->setAntiBruteIpMaxFailures(1)
+            ->setAntiBruteLockDuration(60));
+        $username = 'digest-replay-user';
+        $realm = 'Replay-Test';
+        $uri = '/replay';
+        $auth = new SaHttpAuth();
+        $nonce = $auth->generateNonce();
+        $ha1 = md5($username . ':' . $realm . ':secret');
+        $ha2 = md5('GET:' . $uri);
+        $response = md5($ha1 . ':' . $nonce . ':00000001:client:auth:' . $ha2);
+        $header = sprintf(
+            'Digest username="%s", realm="%s", nonce="%s", uri="%s", qop=auth, nc=00000001, cnonce="client", response="%s"',
+            $username,
+            $realm,
+            $nonce,
+            $uri,
+            $response
+        );
+        $request = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $request->method('getHeader')->willReturnCallback(static fn (string $name): array => $name === 'Authorization' ? [$header] : []);
+        $request->method('getMethod')->willReturn('GET');
+        $request->method('getRequestTarget')->willReturn($uri);
+        $request->method('getServerParams')->willReturn(['REMOTE_ADDR' => '192.0.2.104']);
+        SaTokenContext::setRequest($request);
+        $auth->setDigestValidator(static function () use ($nonce, $ha1): string {
+            $nonceId = explode(':', $nonce)[1];
+            SaToken::getDao()->set('satoken:auth:digest:nonce:used:' . $nonceId, '1', 300);
+            return $ha1;
+        });
+        try {
+            $auth->checkDigest($realm);
+            self::fail('并发消费的 Digest nonce 必须拒绝当前请求');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('重放', $exception->getMessage());
+        }
+
+        $nextRequest = $this->createMock(\Psr\Http\Message\ServerRequestInterface::class);
+        $nextRequest->method('getHeader')->willReturn([]);
+        $nextRequest->method('getServerParams')->willReturn(['REMOTE_ADDR' => '192.0.2.104']);
+        SaTokenContext::setRequest($nextRequest);
+        SaAntiBruteUtil::checkAndThrow('another-user');
+        SaAntiBruteUtil::clearCurrentSourceFailures('another-user');
+    }
+
     public function testCheckDigestRejectsAuthorizationForDifferentRequestTarget(): void
     {
         $username = 'admin';

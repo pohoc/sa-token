@@ -176,6 +176,27 @@ class SaHttpAuth
         SaAntiBruteUtil::checkAndThrow($username);
 
         try {
+            $this->authenticateDigestRequest($username, $nonce, $nc, $cnonce, $uri, $response, $method, $realm);
+        } finally {
+            SaAntiBruteUtil::releaseCurrentSourceAttempt($username);
+        }
+    }
+
+    protected function authenticateDigestRequest(
+        string $username,
+        string $nonce,
+        string $nc,
+        string $cnonce,
+        string $uri,
+        string $response,
+        string $method,
+        string $realm
+    ): void {
+        if ($this->digestValidator === null) {
+            throw new SaTokenException('未设置 Digest 认证校验器');
+        }
+
+        try {
             $ha1 = ($this->digestValidator)($username);
         } catch (\Throwable $exception) {
             SaAntiBruteUtil::recordFailure($username);
@@ -208,13 +229,9 @@ class SaHttpAuth
             throw new SaTokenException('Digest nonce 已使用，可能遭受重放攻击');
         }
 
-        try {
-            $result = StpUtil::login($username);
-            SaAntiBruteUtil::clearCurrentSourceFailures($username);
-            SaTokenContext::setTokenOverride(StpUtil::getStpLogic()->getLoginType(), $result->getAccessToken());
-        } finally {
-            SaAntiBruteUtil::releaseCurrentSourceAttempt($username);
-        }
+        $result = StpUtil::login($username);
+        SaAntiBruteUtil::clearCurrentSourceFailures($username);
+        SaTokenContext::setTokenOverride(StpUtil::getStpLogic()->getLoginType(), $result->getAccessToken());
     }
 
     /** 获取实际请求目标，避免把为其他资源签发的 Digest 响应移用到当前路径。 */
