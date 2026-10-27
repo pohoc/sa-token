@@ -1596,6 +1596,8 @@ class TokenManager
 
     public function saveRefreshToken(string $refreshToken, string $accessToken, mixed $loginId, string $loginType, int $timeout): void
     {
+        $this->validateTokenValueLength($refreshToken);
+        $this->validateTokenValueLength($accessToken);
         SaTokenTimeout::validate($timeout, 'RefreshToken');
 
         if ($loginId === null || $loginId === '' || is_bool($loginId) || !is_scalar($loginId)) {
@@ -1721,6 +1723,9 @@ class TokenManager
      */
     public function getRefreshTokenData(string $refreshToken): ?array
     {
+        if (!$this->isTokenValueWithinLimit($refreshToken)) {
+            return null;
+        }
         $value = $this->getDao()->get(self::REFRESH_TOKEN_PREFIX . $refreshToken);
         if ($value === null) {
             return null;
@@ -1751,6 +1756,9 @@ class TokenManager
      */
     public function consumeRefreshToken(string $refreshToken): ?array
     {
+        if (!$this->isTokenValueWithinLimit($refreshToken)) {
+            return null;
+        }
         // Issuance and consumption must serialize on the same lock. Otherwise
         // a stale issuer can pass the replay-marker check while a consumer is
         // about to mark and delete this credential, then re-register its bearer.
@@ -1768,6 +1776,9 @@ class TokenManager
     /** @return array<string, mixed>|null */
     protected function consumeRefreshTokenLocked(string $refreshToken): ?array
     {
+        if (!$this->isTokenValueWithinLimit($refreshToken)) {
+            return null;
+        }
         $dao = $this->getDao();
         $refreshKey = self::REFRESH_TOKEN_PREFIX . $refreshToken;
         $snapshot = $dao->get($refreshKey);
@@ -1843,6 +1854,9 @@ class TokenManager
     /** @return array<string, mixed>|null */
     public function getConsumedRefreshTokenData(string $refreshToken): ?array
     {
+        if (!$this->isTokenValueWithinLimit($refreshToken)) {
+            return null;
+        }
         $value = $this->getDao()->get(self::REFRESH_TOKEN_USED_PREFIX . hash('sha256', $refreshToken));
         if ($value === null) {
             return null;
@@ -1859,6 +1873,9 @@ class TokenManager
 
     public function deleteConsumedRefreshTokenData(string $refreshToken): void
     {
+        if (!$this->isTokenValueWithinLimit($refreshToken)) {
+            return;
+        }
         $this->getDao()->delete(self::REFRESH_TOKEN_USED_PREFIX . hash('sha256', $refreshToken));
     }
 
@@ -1867,11 +1884,17 @@ class TokenManager
      */
     public function getRefreshTokenTimeout(string $refreshToken): int
     {
+        if (!$this->isTokenValueWithinLimit($refreshToken)) {
+            return -2;
+        }
         return $this->getDao()->getTimeout(self::REFRESH_TOKEN_PREFIX . $refreshToken);
     }
 
     public function getRefreshTokenByAccessToken(mixed $loginId, string $loginType, string $accessToken): ?string
     {
+        if (!$this->isTokenValueWithinLimit($accessToken)) {
+            return null;
+        }
         $loginIdStr = is_string($loginId) ? $loginId : (is_scalar($loginId) ? (string) $loginId : '');
         $mapKey = self::buildRefreshTokenMapKey($loginIdStr, $loginType, $accessToken);
         $value = $this->getDao()->get($mapKey);
@@ -1908,6 +1931,7 @@ class TokenManager
 
     public function deleteRefreshToken(string $refreshToken): void
     {
+        $this->validateTokenValueLength($refreshToken);
         $credentialLockKey = 'refresh-credential:' . hash('sha256', $refreshToken);
         if (!$this->acquireLock($credentialLockKey, 30)) {
             throw new SaTokenException('RefreshToken 正在签发或消费，请稍后重试');
@@ -1922,6 +1946,9 @@ class TokenManager
 
     protected function deleteRefreshTokenIfOwned(string $refreshToken, string $loginId, string $loginType): void
     {
+        if (!$this->isTokenValueWithinLimit($refreshToken)) {
+            return;
+        }
         $credentialLockKey = 'refresh-credential:' . hash('sha256', $refreshToken);
         if (!$this->acquireLock($credentialLockKey, 30)) {
             throw new SaTokenException('RefreshToken 正在签发或消费，请稍后重试');
@@ -1940,6 +1967,9 @@ class TokenManager
         ?string $expectedLoginType = null,
         bool $removeAccountIndex = true
     ): void {
+        if (!$this->isTokenValueWithinLimit($refreshToken)) {
+            return;
+        }
         $dao = $this->getDao();
         if (!$dao instanceof \SaToken\Dao\SaTokenDaoCompareAndDeleteInterface) {
             throw new SaTokenException('DAO 不支持 RefreshToken 的原子比较删除');
@@ -2223,6 +2253,9 @@ class TokenManager
 
     public function isRefreshTokenValid(string $refreshToken): bool
     {
+        if (!$this->isTokenValueWithinLimit($refreshToken)) {
+            return false;
+        }
         return $this->getDao()->exists(self::REFRESH_TOKEN_PREFIX . $refreshToken);
     }
 
@@ -2275,9 +2308,14 @@ class TokenManager
 
     protected function validateTokenValueLength(string $tokenValue): void
     {
-        if ($tokenValue === '' || strlen($tokenValue) > self::MAX_TOKEN_VALUE_BYTES) {
+        if (!$this->isTokenValueWithinLimit($tokenValue)) {
             throw new SaTokenException('Token 长度无效，最大为 ' . self::MAX_TOKEN_VALUE_BYTES . ' 字节');
         }
+    }
+
+    protected function isTokenValueWithinLimit(string $tokenValue): bool
+    {
+        return $tokenValue !== '' && strlen($tokenValue) <= self::MAX_TOKEN_VALUE_BYTES;
     }
 
     public function revokeStatelessTokensByLoginId(string $loginId, string $loginType): void

@@ -43,6 +43,49 @@ class RefreshTokenTest extends TestCase
         $this->assertTrue(StpUtil::isRefreshTokenValid($refreshToken));
     }
 
+    public function testOversizedRefreshTokenIsRejectedBeforeDaoLookupOrLock(): void
+    {
+        $dao = new class () extends SaTokenDaoMemory {
+            public int $refreshTokenLookups = 0;
+
+            public function get(string $key): ?string
+            {
+                if (str_starts_with($key, TokenManager::REFRESH_TOKEN_PREFIX)
+                    || str_starts_with($key, TokenManager::REFRESH_TOKEN_USED_PREFIX)) {
+                    $this->refreshTokenLookups++;
+                }
+                return parent::get($key);
+            }
+        };
+        SaToken::setDao($dao);
+        $refreshToken = str_repeat('r', TokenManager::MAX_TOKEN_VALUE_BYTES + 1);
+        $manager = new TokenManager();
+
+        self::assertNull($manager->getRefreshTokenData($refreshToken));
+        self::assertNull($manager->consumeRefreshToken($refreshToken));
+        self::assertNull($manager->getConsumedRefreshTokenData($refreshToken));
+        self::assertSame(-2, $manager->getRefreshTokenTimeout($refreshToken));
+        self::assertFalse($manager->isRefreshTokenValid($refreshToken));
+        $manager->deleteConsumedRefreshTokenData($refreshToken);
+        self::assertSame(0, $dao->refreshTokenLookups);
+
+        try {
+            StpUtil::refreshToken($refreshToken);
+            self::fail('超长 RefreshToken 必须按无效凭据拒绝');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('无效', $exception->getMessage());
+        }
+        self::assertSame(0, $dao->refreshTokenLookups);
+
+        try {
+            $manager->deleteRefreshToken($refreshToken);
+            self::fail('超长 RefreshToken 不得进入锁操作');
+        } catch (SaTokenException $exception) {
+            self::assertStringContainsString('Token 长度无效', $exception->getMessage());
+        }
+        self::assertSame(0, $dao->refreshTokenLookups);
+    }
+
     public function testCreateRefreshTokenWithInvalidAccessToken(): void
     {
         $this->expectException(SaTokenException::class);
