@@ -6,6 +6,7 @@ namespace SaToken\Tests;
 
 use PHPUnit\Framework\TestCase;
 use SaToken\SaRouter;
+use SaToken\Util\SaTokenContext;
 
 class SaRouterFullTest extends TestCase
 {
@@ -39,6 +40,27 @@ class SaRouterFullTest extends TestCase
             $matched = true;
         });
         $this->assertFalse($matched);
+    }
+
+    public function testExactProtectedRuleMatchesFrameworkRouteWithTrailingSlash(): void
+    {
+        SaTokenContext::setRequest(new class () {
+            public function getPathInfo(): string
+            {
+                return '/admin/';
+            }
+        });
+
+        try {
+            $matched = false;
+            SaRouter::match('/admin')->check(function () use (&$matched): void {
+                $matched = true;
+            });
+
+            self::assertTrue($matched, 'An exact protected rule must match a route after framework trailing-slash normalization');
+        } finally {
+            SaTokenContext::clear();
+        }
     }
 
     // ======== ** 多级通配 ========

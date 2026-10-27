@@ -160,8 +160,6 @@ class SaRouter
         // or downstream router may canonicalize /public/../admin to /admin;
         // matching the pre-canonical path here would skip /admin protections.
         $isAbsolute = str_starts_with($path, '/');
-        $hasTrailingSlash = str_ends_with($path, '/')
-            || preg_match('~(?:^|/)\.{1,2}$~D', $path) === 1;
         $segments = [];
         foreach (explode('/', $path) as $segment) {
             if ($segment === '' || $segment === '.') {
@@ -176,8 +174,6 @@ class SaRouter
         $path = ($isAbsolute ? '/' : '') . implode('/', $segments);
         if ($path === '') {
             $path = '/';
-        } elseif ($hasTrailingSlash && $path !== '/') {
-            $path .= '/';
         }
 
         return str_starts_with($path, '/') ? $path : '/' . $path;
@@ -199,6 +195,16 @@ class SaRouter
 
     protected static function isMatch(string $path, string $pattern): bool
     {
+        // Framework routers commonly treat /path and /path/ as the same
+        // endpoint. Canonicalize configured rules too, or a trailing slash in
+        // either the request or the rule could change the authorization result.
+        if ($pattern !== '') {
+            $pattern = rtrim($pattern, '/');
+            if ($pattern === '') {
+                $pattern = '/';
+            }
+        }
+
         if ($pattern === $path) {
             return true;
         }
