@@ -360,12 +360,18 @@ class SaSessionTest extends TestCase
 
     public function testTokenSession(): void
     {
-        $tokenSession = SaSession::create('satoken:tokenSession:test-token-123');
-        $tokenSession->set('request_count', 5);
-
-        $loaded = SaSession::getBySessionId('satoken:tokenSession:test-token-123');
-        $this->assertNotNull($loaded);
-        $this->assertEquals(5, $loaded->get('request_count'));
+        $sessionId = TokenManager::TOKEN_SESSION_PREFIX . 'test-token-123';
+        foreach ([
+            static fn () => SaSession::create($sessionId),
+            static fn () => SaSession::getBySessionId($sessionId),
+        ] as $access) {
+            try {
+                $access();
+                self::fail('Public SaSession APIs must reject token session IDs');
+            } catch (SaTokenException $e) {
+                self::assertStringContainsString('保留存储命名空间', $e->getMessage());
+            }
+        }
     }
 
     public function testLoginSessionsCannotCollideAcrossLoginTypes(): void

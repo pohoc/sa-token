@@ -57,12 +57,12 @@ trait StpLogicSessionTrait
         }
 
         $sessionId = TokenManager::TOKEN_SESSION_PREFIX . $tokenValue;
-        $session = SaSession::getBySessionId($sessionId);
+        $session = SaSession::getTokenSessionById($sessionId);
 
         if ($session === null && $isCreate) {
             $timeout = $this->tokenManager->getTokenTimeout($tokenValue);
             $sessionTimeout = ($timeout > 0) ? $timeout : null;
-            $session = SaSession::forLoginSession($sessionId, $sessionTimeout);
+            $session = SaSession::forTokenSession($sessionId, $sessionTimeout);
         }
 
         return $session;

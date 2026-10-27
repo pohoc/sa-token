@@ -65,6 +65,18 @@ class SaSession
     public static function forLoginSession(string $id, ?int $timeout = null): static
     {
         self::assertSafeSessionId($id, true);
+        return self::createReservedSession($id, $timeout);
+    }
+
+    /** @internal Create a token session after its owner has validated the bearer token. */
+    public static function forTokenSession(string $id, ?int $timeout = null): static
+    {
+        self::assertSafeSessionId($id, false, true);
+        return self::createReservedSession($id, $timeout);
+    }
+
+    protected static function createReservedSession(string $id, ?int $timeout): static
+    {
         $session = (new \ReflectionClass(static::class))->newInstanceWithoutConstructor();
         $session->id = $id;
         $session->timeout = $timeout;
@@ -94,15 +106,27 @@ class SaSession
         return $session->persisted ? $session : null;
     }
 
+    /** @internal Resolve a token session after its owner has validated the bearer token. */
+    public static function getTokenSessionById(string $sessionId): ?static
+    {
+        self::assertSafeSessionId($sessionId, false, true);
+        $session = self::forTokenSession($sessionId);
+        return $session->persisted ? $session : null;
+    }
+
     /**
      * Session helpers can delete and overwrite their backing DAO key. Keep
      * caller-supplied IDs out of Sa-Token's authentication and security state
      * namespaces; only the two session namespaces are valid under satoken:.
      */
-    protected static function assertSafeSessionId(string $sessionId, bool $allowLoginSession = false): void
-    {
+    protected static function assertSafeSessionId(
+        string $sessionId,
+        bool $allowLoginSession = false,
+        bool $allowTokenSession = false,
+    ): void {
         if (str_starts_with($sessionId, 'satoken:session:lock:')
-            || (!$allowLoginSession && str_starts_with($sessionId, TokenManager::SESSION_PREFIX))) {
+            || (!$allowLoginSession && str_starts_with($sessionId, TokenManager::SESSION_PREFIX))
+            || (!$allowTokenSession && str_starts_with($sessionId, TokenManager::TOKEN_SESSION_PREFIX))) {
             throw new \SaToken\Exception\SaTokenException('Session ID 不能使用 Sa-Token 保留存储命名空间');
         }
 
@@ -114,7 +138,7 @@ class SaSession
             return;
         }
 
-        if (str_starts_with($sessionId, TokenManager::TOKEN_SESSION_PREFIX)) {
+        if ($allowTokenSession && str_starts_with($sessionId, TokenManager::TOKEN_SESSION_PREFIX)) {
             return;
         }
 
