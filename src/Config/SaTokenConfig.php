@@ -106,7 +106,7 @@ class SaTokenConfig
     // JWT 无状态模式
     protected bool $jwtStateless = false;
 
-    // JWT 模式（simple / mixed / stateless）
+    // 有状态 JWT 模式（simple / mixed）；无状态模式由 jwtStateless 单独控制
     protected string $jwtMode = 'simple';
 
     // 是否开启 Token 内容加密

@@ -678,7 +678,7 @@ SaToken::init();
 | ✅ 账号封禁 | `disable` / `checkDisable` |
 | ✅ 防暴力破解 | `SaAntiBruteUtil` |
 | ✅ Refresh Token | 双 Token 机制 + Token 轮换 |
-| ✅ JWT 支持 | `jwtStateless` / `jwtMixed` |
+| ✅ JWT 支持 | `jwtStateless` / `jwtMode='mixed'` |
 | ✅ 国密加密 | SM2/SM3/SM4 支持 |
 | ✅ OAuth2.0 | 标准授权流程 |
 | ✅ SSO 单点登录 | 多种模式 |

@@ -9,7 +9,7 @@ return [
     'storage'               => [
         'type'              => 'file',          // memory / file / redis
         'path'              => 'runtime/sa-token',  // file 模式数据目录
-        // redis 模式可用：host / port / password / database / timeout
+        // redis 模式可用：url，或 host / port / username / password / database / timeout
     ],
 
     // Token 名称（同时也是 Cookie 名称、提交参数名、Header 名称）
@@ -57,7 +57,7 @@ return [
 
     // 加密类型：intl（国际算法 AES/RSA/HMAC-SHA256） / sm（国密算法 SM2/SM3/SM4）
     'cryptoType'            => 'intl',
-    // AES 密钥（16/24/32 字节对应 AES-128/192/256）
+    // AES 密钥（至少 32 字节）
     'aesKey'                => '',
     // RSA 私钥（PEM 格式或文件路径）
     'rsaPrivateKey'         => '',
@@ -69,11 +69,22 @@ return [
     'sm2PrivateKey'         => '',
     // 国密 SM2 公钥
     'sm2PublicKey'          => '',
-    // 国密 SM4 密钥（16 字节）
+    // 国密 SM4 密钥（32 字节材料或 32 位十六进制密钥）
     'sm4Key'                => '',
 
-    // JWT 密钥
+    // JWT 密钥（至少 32 字节）
     'jwtSecretKey'          => '',
+    // JWT 无状态模式；有状态模式可通过 jwtMode 选择 simple / mixed
+    'jwtStateless'          => false,
+    // 有状态 JWT 模式（simple / mixed）
+    'jwtMode'               => 'simple',
+
+    // 防暴力破解：每账号/来源最大失败数（0 表示不限制）
+    'antiBruteMaxFailures'  => 5,
+    // 失败锁定时长（秒）
+    'antiBruteLockDuration' => 600,
+    // 每来源累计失败上限（0 表示关闭）
+    'antiBruteIpMaxFailures'=> 100,
 
     // 是否在登录后将 Token 信息写入 Session
     'tokenSessionCheckLogin'=> true,
@@ -89,8 +100,12 @@ return [
         'checkTicketUrl'    => '',
         // SSO 单点注销地址
         'sloUrl'            => '',
-        // SSO 模式（same-domain / cross-domain / front-separate）
+        // SSO 模式（same-domain / cross-domain / front-separate / no-sdk）
         'mode'              => 'same-domain',
+        // 允许的回调域名白名单
+        'allowDomains'      => [],
+        // 是否校验 SSO state（生产环境建议保持开启）
+        'checkState'        => true,
         // SSO Client ID
         'clientId'          => '',
         // SSO Client Secret
@@ -108,5 +123,8 @@ return [
         'refreshTokenTimeout' => -1,
         // 是否每次生成新的 Refresh Token
         'isNewRefreshToken' => false,
+        // 是否启用 OpenID Connect，以及 ID Token 的 issuer
+        'openIdMode'        => false,
+        'issuer'            => '',
     ],
 ];

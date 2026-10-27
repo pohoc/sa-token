@@ -35,7 +35,7 @@ class SaSsoConfig
     // SSO 单点注销地址
     protected string $sloUrl = '';
 
-    // SSO 模式（same-domain / cross-domain / front-separate）
+    // SSO 模式（same-domain / cross-domain / front-separate / no-sdk）
     protected string $mode = 'same-domain';
 
     // SSO Client ID

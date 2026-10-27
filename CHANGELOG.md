@@ -19,6 +19,12 @@
 - 文件 DAO 对缺失记录执行 `compareAndSet(key, null, null)` 时按接口约定成功返回，不再因尝试删除不存在的文件而抛错。
 - PSR-16 DAO 对缺失记录执行 `compareAndSet(key, null, null)` 时成功返回，不依赖缓存实现对不存在键的删除返回值。
 
+### 升级提示
+- 运行环境最低要求为 PHP 8.2。
+- 使用自定义 DAO 时，请补齐并正确实现本版本使用到的原子扩展接口；OAuth2 刷新家族状态更新和锁续期需要 `SaTokenDaoCompareAndExpireInterface`。
+- 启用防暴力破解并部署在反向代理后时，需将真实代理 IP 配置到 `SaTokenContext::setTrustedProxies()`；未能解析来源 IP 的认证会失败关闭。
+- 加密存储数据绑定 DAO key，升级后旧版未绑定的加密状态按上文说明重新登录、授权或重建。
+
 本文件由脚本自动生成，基于 git tag 和 commit 记录。
 
 ## [v0.2.0] - 2026-08-31

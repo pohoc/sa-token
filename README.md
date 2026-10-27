@@ -10,8 +10,8 @@
 > **致谢与声明**：本项目参考了 Java 生态 [dromara/sa-token](https://github.com/dromara/sa-token)（Apache-2.0）的 API 设计理念，
 > 代码为独立 PHP 实现。感谢原项目作者与社区。
 
-> **v0.1.3 安全加固说明**：本版本修复了安全审计发现的多处高危问题，部分行为为有意收紧（详见 [CHANGELOG.md](CHANGELOG.md)）：
-> OAuth2 换 token 必须携带 redirect_uri、SSO 回调强制校验 state、客户端注册必须配置非空 secret、
+> **未发布版本升级提示**：当前分支包含安全加固和兼容性收紧，最低 PHP 版本为 8.2（详见 [CHANGELOG.md](CHANGELOG.md)）：
+> OAuth2 换 token 必须携带 redirect_uri、SSO 回调强制校验 state、机密 OAuth2 客户端必须配置高熵 secret（公开客户端仅能使用授权码 + PKCE）、
 > `SaSign` 强制 timestamp/nonce 且移除 MD5、加密插件密文格式升级（AES 旧格式兼容读取；安全敏感路径拒绝旧版无密钥 SM3 摘要）。升级前请阅读变更日志。
 
 > **存储完整性说明**：安全敏感读取会拒绝 MAC 校验失败的密文。旧版 SM4 存储使用无密钥 SM3 摘要，无法验证篡改；启用 SM 模式升级后，应重新登录并清理旧版持久化会话和 OAuth2 令牌。
@@ -579,6 +579,8 @@ $token = StpUtil::loginStateless(10001);
 
 无状态 JWT 若启用正值 `activityTimeout`，会额外在 DAO 保存短期活动标记；标记缺失或超过活动窗口会使 Token 失效。
 
+`jwtStateless` 控制无状态签发与校验；`jwtMode` 用于有状态 JWT，支持 `simple`（默认）和 `mixed`（同时校验签名 JWT 与 DAO 登录记录）。`jwtMixed` 不是有效配置项。
+
 JWT Payload 仅签名、不加密，持有者可以解码读取其中的声明。不要把密码、密钥或其他机密写入 JWT；无状态 Token 不会自动携带服务端登录 Session 数据，需传入 `createStatelessToken()` 的显式 claims 也应仅包含可公开的数据。
 
 ### SM3 签名
@@ -981,16 +983,19 @@ return [
 
 实现 `SaTokenDaoInterface`。另外，登录、会话、OAuth2 刷新和敏感验证码状态更新使用带租约互斥锁，
 自定义 DAO 还必须实现 `SaTokenDaoCompareAndDeleteInterface`，并保证比较后删除是原子操作；
-否则这些加锁操作会在获取锁前抛出 `SaTokenException`。会话变更还要求实现
+否则这些加锁操作会在获取锁前抛出 `SaTokenException`。OAuth2 刷新家族状态变更还要求实现
+`SaTokenDaoCompareAndExpireInterface`，以原子方式比较并延长记录 TTL；调用 `TokenManager::renewLock()` 时也需要此接口。
+会话变更还要求实现
 `SaTokenDaoCompareAndSetInterface` 和 `SaTokenDaoCompareAndUpdateInterface`：条件更新必须原子地比较并替换，且保留记录原 TTL；条件删除用于阻止租约过期后的旧会话对象覆盖或删除新代际。不要用先读取再删除/更新来模拟原子操作。
 
 ```php
 use SaToken\Dao\SaTokenDaoInterface;
 use SaToken\Dao\SaTokenDaoCompareAndDeleteInterface;
+use SaToken\Dao\SaTokenDaoCompareAndExpireInterface;
 use SaToken\Dao\SaTokenDaoCompareAndSetInterface;
 use SaToken\Dao\SaTokenDaoCompareAndUpdateInterface;
 
-class MyDao implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface, SaTokenDaoCompareAndSetInterface, SaTokenDaoCompareAndUpdateInterface
+class MyDao implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface, SaTokenDaoCompareAndExpireInterface, SaTokenDaoCompareAndSetInterface, SaTokenDaoCompareAndUpdateInterface
 {
     public function get(string $key): ?string { /* ... */ }
     public function set(string $key, string $value, ?int $timeout = null): void { /* ... */ }
@@ -1008,6 +1013,7 @@ class MyDao implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteInterface,
     public function setIfNotExists(string $key, string $value, ?int $timeout = null): bool { /* ... */ } // 仅当 key 不存在时设置（登录锁/签名防重放依赖）
     public function increment(string $key, int $amount = 1, ?int $timeout = null): int { /* ... */ } // 原子计数（防爆破/OTP 依赖）
     public function compareAndDelete(string $key, string $expectedValue): bool { /* 原子比较并删除 */ }
+    public function compareAndExpire(string $key, string $expectedValue, int $timeout): bool { /* 原子比较并续期，不缩短现有 TTL */ }
     public function compareAndSet(string $key, ?string $expectedValue, ?string $newValue, ?int $timeout = null): bool { /* 原子条件设置或删除 */ }
     public function compareAndUpdate(string $key, string $expectedValue, string $newValue): bool { /* 原子条件更新并保留原 TTL */ }
 }
@@ -1040,7 +1046,15 @@ Token 存储加密器 `SaTokenEncryptor::decrypt()` 同样默认拒绝旧版无�
 
 ## 防暴力破解
 
-登录失败次数按账号和来源 IP 分别记录；单一账号达到阈值后只锁定该账号在当前来源的尝试，避免匿名请求锁住其他用户。另有来源级累计上限，防止攻击者不断更换账号名制造无界计数键；达到上限后，该来源在锁定时长内不能继续尝试该登录类型，并且同一来源同时进行的认证校验数不会超过该阈值。显式调用 `lock()` / `unlockAccount()` 仍按账号全局生效。部署在代理后时，应正确配置可信代理与客户端 IP 解析。启用任一防暴力阈值时，如果无法解析客户端 IP，认证检查和失败计数会拒绝继续，避免所有未知来源共用账号锁定桶；需要在 HTTP 请求上下文中提供可靠的客户端 IP。分布式来源的全局限流仍应由网关或应用层补充。
+登录失败次数按账号和来源 IP 分别记录；单一账号达到阈值后只锁定该账号在当前来源的尝试，避免匿名请求锁住其他用户。另有来源级累计上限，防止攻击者不断更换账号名制造无界计数键；达到上限后，该来源在锁定时长内不能继续尝试该登录类型，并且同一来源同时进行的认证校验数不会超过该阈值。显式调用 `lock()` / `unlockAccount()` 仍按账号全局生效。部署在代理后时，应在应用启动时只信任实际反向代理的精确 IP，并确保代理会覆盖/清理客户端传入的转发头：
+
+```php
+use SaToken\Util\SaTokenContext;
+
+SaTokenContext::setTrustedProxies(['10.0.0.10', '10.0.0.11']);
+```
+
+配置后，只有来自可信代理的请求才会解析 `X-Forwarded-For`（从右向左跳过可信代理）或回退到 `X-Real-IP`；未配置可信代理时不会采信这些头。此列表只支持精确 IP，不支持 CIDR。启用任一防暴力阈值时，如果无法解析客户端 IP，认证检查和失败计数会拒绝继续；需要在 HTTP 请求上下文中提供可靠的客户端 IP。分布式来源的全局限流仍应由网关或应用层补充。
 
 ```php
 StpUtil::checkAntiBrute('user@example.com');
@@ -1328,6 +1342,7 @@ try {
 | `sm4Key` | string | `''` | SM4 密钥（32 字节材料或 32 位十六进制密钥） |
 | `jwtSecretKey` | string | `''` | JWT 密钥 |
 | `jwtStateless` | bool | `false` | JWT 无状态模式 |
+| `jwtMode` | string | `'simple'` | 有状态 JWT 模式：`simple` / `mixed`；无状态模式由 `jwtStateless` 控制 |
 
 ### 签名配置
 
