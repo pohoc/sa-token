@@ -593,26 +593,47 @@ class SaTokenDaoFile implements SaTokenDaoInterface, SaTokenDaoCompareAndDeleteI
      */
     protected function scanDataFiles(?callable $filter = null): array
     {
-        $files = @scandir($this->dataDir);
-        if ($files === false) {
+        $directory = @opendir($this->dataDir);
+        if ($directory === false) {
             return [];
         }
 
+        // Keep only the lexically first scanLimit regular records, matching
+        // scandir()'s previous deterministic ordering without materializing
+        // every directory entry in memory.
+        $files = new \SplMaxHeap();
+        try {
+            while (($file = readdir($directory)) !== false) {
+                if (!str_ends_with($file, '.dat')) {
+                    continue;
+                }
+                $path = $this->dataDir . '/' . $file;
+                $stat = @lstat($path);
+                if ($stat === false || ($stat['mode'] & 0170000) !== 0100000) {
+                    continue;
+                }
+
+                $files->insert($file);
+                if ($files->count() > $this->scanLimit) {
+                    $files->extract();
+                }
+            }
+        } finally {
+            closedir($directory);
+        }
+
+        $names = [];
+        while (!$files->isEmpty()) {
+            $name = $files->extract();
+            if (is_string($name)) {
+                $names[] = $name;
+            }
+        }
+        sort($names, SORT_STRING);
+
         $result = [];
-        $scanned = 0;
-        foreach ($files as $file) {
-            if ($scanned >= $this->scanLimit) {
-                break;
-            }
-            if (!str_ends_with($file, '.dat')) {
-                continue;
-            }
+        foreach ($names as $file) {
             $path = $this->dataDir . '/' . $file;
-            $stat = @lstat($path);
-            if ($stat === false || ($stat['mode'] & 0170000) !== 0100000) {
-                continue;
-            }
-            $scanned++;
             if ($filter === null || $filter($path)) {
                 $result[] = $path;
             }

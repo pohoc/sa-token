@@ -486,6 +486,24 @@ class SaTokenDaoFileTest extends TestCase
         $this->assertNull($this->dao->get('satoken:login:token:dead'));
     }
 
+    public function testScanLimitBoundsResultsAndPreservesSortedOrder(): void
+    {
+        $limitedDao = new SaTokenDaoFile(['path' => $this->basePath, 'scanLimit' => 2]);
+        $keys = ['scan:key:a', 'scan:key:b', 'scan:key:c', 'scan:key:d', 'scan:key:e'];
+        foreach ($keys as $key) {
+            $limitedDao->set($key, $key);
+        }
+
+        $expected = $keys;
+        usort($expected, static fn (string $left, string $right): int => strcmp(
+            hash('sha256', $left) . '.dat',
+            hash('sha256', $right) . '.dat',
+        ));
+
+        self::assertSame(array_slice($expected, 0, 2), $limitedDao->searchKeys('scan:key:', '', 0, 10));
+        self::assertSame(2, $limitedDao->size());
+    }
+
     public function testPersistenceAcrossInstances(): void
     {
         $this->dao->set('k:persist', 'survives', 60);
