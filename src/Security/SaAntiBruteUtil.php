@@ -495,6 +495,7 @@ class SaAntiBruteUtil
         $dao->delete(self::getIpLockKey($account, $loginType, $epoch, $ipEpoch));
     }
 
+    /** @phpstan-impure The result depends on the current request IP context. */
     public static function getFailCount(string $account, string $loginType = 'login'): int
     {
         $dao = SaToken::getDao();
