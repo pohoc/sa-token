@@ -909,31 +909,35 @@ class SaOAuth2Handle
         // 同一来源 IP 连续失败达到 antiBruteMaxFailures 后临时锁定（原子计数）
         SaAntiBruteUtil::checkAndThrow($username);
 
-        // 用户验证由外部回调处理
         try {
-            $loginId = $this->validateUserCredentials($username, $password);
-        } catch (\Throwable $exception) {
-            // Validator callbacks may signal rejected credentials by throwing.
-            // Count those failures too, otherwise callers can bypass brute-force
-            // protection simply by using an exception-based validator.
-            SaAntiBruteUtil::recordFailure($username);
-            throw $exception;
+            // 用户验证由外部回调处理
+            try {
+                $loginId = $this->validateUserCredentials($username, $password);
+            } catch (\Throwable $exception) {
+                // Validator callbacks may signal rejected credentials by throwing.
+                // Count those failures too, otherwise callers can bypass brute-force
+                // protection simply by using an exception-based validator.
+                SaAntiBruteUtil::recordFailure($username);
+                throw $exception;
+            }
+            if ($loginId === null || is_bool($loginId) || !is_scalar($loginId) || $loginId === '') {
+                SaAntiBruteUtil::recordFailure($username);
+                throw new SaTokenException('用户名或密码错误');
+            }
+
+            // 凭据验证回调可能耗时或触发客户端配置更新；签发前重新确认
+            // 当前密钥和授权策略，避免已轮换的密钥继续完成在途认证。
+            $client = $this->validateClientWithSecret($clientId, $clientSecret);
+            $this->validateGrantTypeForClient($client, 'password');
+            $scope = $this->validateScopeForClient($client, $scope);
+
+            $accessToken = $this->issueAccessToken($clientId, $loginId, $scope, '', true, '', false, 'password');
+            SaAntiBruteUtil::clearCurrentSourceFailures($username);
+
+            return $accessToken;
+        } finally {
+            SaAntiBruteUtil::releaseCurrentSourceAttempt($username);
         }
-        if ($loginId === null || is_bool($loginId) || !is_scalar($loginId) || $loginId === '') {
-            SaAntiBruteUtil::recordFailure($username);
-            throw new SaTokenException('用户名或密码错误');
-        }
-
-        // 凭据验证回调可能耗时或触发客户端配置更新；签发前重新确认
-        // 当前密钥和授权策略，避免已轮换的密钥继续完成在途认证。
-        $client = $this->validateClientWithSecret($clientId, $clientSecret);
-        $this->validateGrantTypeForClient($client, 'password');
-        $scope = $this->validateScopeForClient($client, $scope);
-
-        $accessToken = $this->issueAccessToken($clientId, $loginId, $scope, '', true, '', false, 'password');
-        SaAntiBruteUtil::clearCurrentSourceFailures($username);
-
-        return $accessToken;
     }
 
     /**

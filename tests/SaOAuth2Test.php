@@ -230,6 +230,34 @@ class SaOAuth2Test extends TestCase
         $this->handle->tokenByPassword('test-client', $this->clientSecret, 'user', 'password');
     }
 
+    public function testPasswordGrantRecheckFailureReleasesSourceConcurrencyReservation(): void
+    {
+        SaToken::setConfig(SaToken::getConfig()
+            ->setAntiBruteMaxFailures(0)
+            ->setAntiBruteIpMaxFailures(1)
+            ->setAntiBruteLockDuration(60));
+        SaTokenContext::setRequest($this->requestFromIp('192.0.2.44'));
+        $this->handle->setUserCredentialsValidator(function (): string {
+            $rotatedClient = new SaOAuth2Client(array_merge($this->testClient->toArray(), [
+                'clientSecret' => 'rotated-oauth-client-secret-32-bytes',
+            ]));
+            $this->handle->registerClient($rotatedClient);
+
+            return 'password-rotation-user';
+        });
+
+        try {
+            $this->handle->tokenByPassword('test-client', $this->clientSecret, 'user', 'password');
+            self::fail('客户端密钥轮换后不得签发令牌');
+        } catch (SaTokenException $exception) {
+            self::assertSame('客户端密钥错误', $exception->getMessage());
+        }
+
+        SaTokenContext::setRequest($this->requestFromIp('192.0.2.44'));
+        SaAntiBruteUtil::checkAndThrow('another-user');
+        SaAntiBruteUtil::clearCurrentSourceFailures('another-user');
+    }
+
     public function testImplicitAuthorizationRejectsRedirectRevokedDuringScopeValidation(): void
     {
         $this->config->setGrantTypes(['authorization_code', 'implicit']);
