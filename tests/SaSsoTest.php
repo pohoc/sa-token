@@ -530,6 +530,18 @@ class SaSsoTest extends TestCase
         (new SaSsoHandle($config))->buildLoginUrl('http://app.example.com/callback');
     }
 
+    public function testBuildLoginUrlRejectsOversizedRedirectBeforeParsing(): void
+    {
+        $config = new SaSsoConfig([
+            'loginUrl'     => 'https://auth.example.com/login',
+            'allowDomains' => ['app.example.com'],
+        ]);
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('SSO 回调域名不在允许列表中');
+        (new SaSsoHandle($config))->buildLoginUrl('https://app.example.com/' . str_repeat('a', 4096));
+    }
+
     public function testBuildLoginUrlRequiresAllowlistedPortForNonDefaultPort(): void
     {
         $config = new SaSsoConfig([

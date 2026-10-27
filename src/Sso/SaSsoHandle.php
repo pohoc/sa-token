@@ -29,6 +29,9 @@ class SaSsoHandle
     /** Bound attacker-controlled SSO tickets before constructing outbound requests. */
     protected const MAX_TICKET_BYTES = 4096;
 
+    /** Bound request-controlled redirects before parsing and allowlist matching. */
+    protected const MAX_REDIRECT_BYTES = 4096;
+
     /**
      * SSO 配置
      */
@@ -576,6 +579,10 @@ class SaSsoHandle
      */
     protected function validateDomain(string $url): bool
     {
+        if (strlen($url) > self::MAX_REDIRECT_BYTES) {
+            return false;
+        }
+
         $allowDomains = $this->config->getAllowDomains();
         if ($allowDomains === [] || $allowDomains === ['']) {
             return false;
