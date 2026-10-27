@@ -20,6 +20,7 @@ class SaTokenDaoRedis implements SaTokenDaoInterface, SaTokenDaoCompareAndDelete
     public function __construct(array|string $config = [], ?\Redis $client = null)
     {
         if ($client !== null) {
+            $this->assertRawRedisEncoding($client);
             $this->client = $client;
             return;
         }
@@ -518,7 +519,26 @@ LUA;
 
     public function setSaRedis(\Redis $redis): void
     {
+        $this->assertRawRedisEncoding($redis);
         $this->saRedis = $redis;
+    }
+
+    /**
+     * Lua scripts compare and return the raw bytes stored by Redis. PhpRedis
+     * applies serializers/compressors to ordinary GET/SET calls, but not to
+     * EVAL arguments or results, which would make the DAO's atomic operations
+     * disagree with its regular reads and writes.
+     */
+    protected function assertRawRedisEncoding(\Redis $redis): void
+    {
+        if ($redis->getOption(\Redis::OPT_SERIALIZER) !== \Redis::SERIALIZER_NONE) {
+            throw new SaTokenException('SaTokenDaoRedis 要求 Redis 客户端关闭 serializer，以保证 Lua 原子操作与普通读写一致');
+        }
+
+        if (defined('Redis::OPT_COMPRESSION') && defined('Redis::COMPRESSION_NONE')
+            && $redis->getOption(\Redis::OPT_COMPRESSION) !== \Redis::COMPRESSION_NONE) {
+            throw new SaTokenException('SaTokenDaoRedis 要求 Redis 客户端关闭 compression，以保证 Lua 原子操作与普通读写一致');
+        }
     }
 
     /**

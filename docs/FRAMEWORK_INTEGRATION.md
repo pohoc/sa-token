@@ -631,6 +631,8 @@ SaToken::setDao(new SaTokenDaoRedis($redis));
 SaToken::init();
 ```
 
+注入已有的 `\Redis` 客户端时，必须关闭 PhpRedis serializer 和 compression，使用默认原始值编码。DAO 的 CAS、一次性消费和锁操作由 Lua 脚本直接比较 Redis 原始字节，serializer/compression 会让 Lua 与普通 `GET/SET` 的值不一致；不兼容客户端会在接入时被拒绝。
+
 ### PSR-16 缓存适配器
 
 ```php

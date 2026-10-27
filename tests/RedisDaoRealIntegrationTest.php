@@ -63,6 +63,35 @@ class RedisDaoRealIntegrationTest extends TestCase
         }
     }
 
+    public function testRedisDaoRejectsPhpRedisSerializerForLuaBackedOperations(): void
+    {
+        $client = new \Redis();
+        $host = $_ENV['REDIS_HOST'] ?? getenv('REDIS_HOST') ?: '';
+        $port = $_ENV['REDIS_PORT'] ?? getenv('REDIS_PORT') ?: '';
+        $host = is_string($host) && $host !== '' ? $host : '127.0.0.1';
+        $port = is_scalar($port) && (int) $port > 0 ? (int) $port : 6379;
+        self::assertTrue($client->connect($host, $port, 1.5));
+        self::assertTrue($client->setOption(\Redis::OPT_SERIALIZER, \Redis::SERIALIZER_PHP));
+
+        try {
+            try {
+                new SaTokenDaoRedis([], $client);
+                self::fail('Redis DAO must reject serialized Redis clients');
+            } catch (SaTokenException $exception) {
+                self::assertStringContainsString('关闭 serializer', $exception->getMessage());
+            }
+
+            try {
+                $this->dao->setSaRedis($client);
+                self::fail('Redis DAO must reject serialized secondary clients');
+            } catch (SaTokenException $exception) {
+                self::assertStringContainsString('关闭 serializer', $exception->getMessage());
+            }
+        } finally {
+            $client->close();
+        }
+    }
+
     public function testKickoutDeviceCannotDeleteNestedLoginTypeDeviceRecordAgainstRealRedis(): void
     {
         SaToken::reset();

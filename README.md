@@ -922,6 +922,8 @@ use SaToken\SaToken;
 SaToken::setDao(new SaTokenDaoRedis());
 ```
 
+注入已有的 `\Redis` 客户端时，必须使用默认的原始值编码（关闭 PhpRedis serializer 和 compression）。DAO 的原子操作通过 Lua 直接比较 Redis 原始字节；编码选项会让普通 `GET/SET` 与 Lua 读写不一致，构造或设置不兼容客户端时会抛出异常。
+
 ### 独立 Redis
 
 权限缓存与业务缓存分离：
