@@ -1,233 +1,220 @@
 <?php
 
+declare(strict_types=1);
+
 /**
- * 自动从 git tag 和 commit 生成 CHANGELOG.md
+ * Archive the curated "Unreleased" section under an existing release tag.
  *
- * 用法: php scripts/changelog.php [--from <tag>] [--to <tag>]
- *
- * 约定式提交格式:
- *   feat:     → 新增
- *   fix:      → 修复
- *   refactor: → 变更
- *   perf:     → 变更
- *   chore:    → 变更（内部）
- *   ci:       → 变更（CI）
- *   docs:     → 文档
- *   test:     → 测试
- *   style:    → 忽略
+ * Usage: php scripts/changelog.php [--tag <tag>]
+ * If --tag is omitted, HEAD must point exactly at a version tag.
  */
 
 $root = dirname(__DIR__);
 chdir($root);
 
 $options = parseArgs($argv);
-$fromTag = $options['from'] ?? null;
-$toTag   = $options['to'] ?? null;
+$tag = $options['tag'] ?? getHeadTag();
 
-$tags = getTags();
-
-if (empty($tags)) {
-    echo "未找到任何 git tag，请先创建 tag\n";
+if ($tag === null) {
+    fwrite(STDERR, "无法确定版本 tag。请在 tag checkout 上运行，或使用 --tag vX.Y.Z\n");
     exit(1);
 }
 
-// 确定版本范围
-if ($fromTag !== null && $toTag !== null) {
-    $ranges = [["$fromTag..$toTag", $toTag, getTagDate($toTag)]];
+if (!preg_match('/^v[0-9]+\.[0-9]+\.[0-9]+(?:[-.][0-9A-Za-z.-]+)?$/', $tag)) {
+    fwrite(STDERR, "无效的版本 tag：$tag\n");
+    exit(1);
+}
+
+$tags = getTags();
+if (!in_array($tag, $tags, true)) {
+    fwrite(STDERR, "未找到 git tag：$tag\n");
+    exit(1);
+}
+
+if (!isAncestor($tag, 'HEAD')) {
+    fwrite(STDERR, "版本 tag $tag 不在当前提交历史中\n");
+    exit(1);
+}
+
+$changelogPath = "$root/CHANGELOG.md";
+$content = file_get_contents($changelogPath);
+if ($content === false) {
+    fwrite(STDERR, "无法读取 CHANGELOG.md\n");
+    exit(1);
+}
+if (preg_match('//u', $content) !== 1) {
+    fwrite(STDERR, "CHANGELOG.md 不是有效 UTF-8，拒绝改写以避免破坏内容\n");
+    exit(1);
+}
+
+$lines = preg_split('/\r\n|\n|\r/', rtrim($content, "\r\n")) ?: [];
+$notice = '本日志由发布流程维护；归档时保留已有版本记录。';
+$previousNotice = '发布时，脚本会将“未发布”条目归档到对应版本；历史版本内容保持不变。';
+$lines = array_values(array_filter(
+    $lines,
+    static fn (string $line): bool =>
+        $line !== '本文件由脚本自动生成，基于 git tag 和 commit 记录。'
+        && $line !== $notice
+        && $line !== $previousNotice
+        && !preg_match('/^\[[^\]]+\]:\s+https?:\/\/\S+\s*$/', $line),
+));
+
+if (($lines[0] ?? null) !== '# 变更日志') {
+    fwrite(STDERR, "CHANGELOG.md 缺少标题 '# 变更日志'\n");
+    exit(1);
+}
+
+$unreleasedIndex = findHeading($lines, '## 未发布');
+$tagHeading = findVersionHeading($lines, $tag);
+if ($tagHeading !== null) {
+    if ($unreleasedIndex !== null) {
+        $unreleasedEnd = count($lines);
+        for ($index = $unreleasedIndex + 1; $index < count($lines); $index++) {
+            if (str_starts_with($lines[$index], '## ')) {
+                $unreleasedEnd = $index;
+                break;
+            }
+        }
+        $unreleasedBody = array_slice($lines, $unreleasedIndex + 1, $unreleasedEnd - $unreleasedIndex - 1);
+        if (trim(implode("\n", $unreleasedBody)) === '') {
+            $lines = array_merge(array_slice($lines, 0, $unreleasedIndex), array_slice($lines, $unreleasedEnd));
+        }
+    }
 } else {
-    $ranges = buildRanges($tags);
-}
-
-$sections = [
-    'feat'     => '新增',
-    'fix'      => '修复',
-    'refactor' => '变更',
-    'perf'     => '变更',
-    'chore'    => '变更',
-    'ci'       => '变更',
-    'docs'     => '文档',
-    'test'     => '测试',
-];
-
-$sectionOrder = ['修复', '新增', '变更', '文档', '测试'];
-$sectionIcons = [
-    '修复' => '### 修复',
-    '新增' => '### 新增',
-    '变更' => '### 变更',
-    '文档' => '### 文档',
-    '测试' => '### 测试',
-];
-
-$output = "# 变更日志\n\n本文件由脚本自动生成，基于 git tag 和 commit 记录。\n\n";
-$links = [];
-
-foreach ($ranges as [$range, $version, $date]) {
-    $commits = getCommits($range);
-    $grouped = groupCommits($commits, $sections);
-
-    $dateStr = $date ? $date->format('Y-m-d') : '';
-    $output .= "## [$version]" . ($dateStr ? " - $dateStr" : '') . "\n\n";
-
-    $hasContent = false;
-    foreach ($sectionOrder as $sectionName) {
-        if (!isset($grouped[$sectionName]) || empty($grouped[$sectionName])) {
-            continue;
-        }
-        $output .= $sectionIcons[$sectionName] . "\n";
-        foreach ($grouped[$sectionName] as $entry) {
-            $output .= "- $entry\n";
-        }
-        $output .= "\n";
-        $hasContent = true;
+    if ($tag !== end($tags)) {
+        fwrite(STDERR, "只能归档最新的版本 tag；最新 tag 为 " . end($tags) . "\n");
+        exit(1);
     }
 
-    if (!$hasContent) {
-        $output .= "_无显著变更_\n\n";
+    $historyStart = count($lines);
+    $scanStart = $unreleasedIndex === null ? 0 : $unreleasedIndex + 1;
+    for ($index = $scanStart; $index < count($lines); $index++) {
+        if ($index !== $unreleasedIndex && str_starts_with($lines[$index], '## ')) {
+            $historyStart = $index;
+            break;
+        }
     }
+
+    $unreleased = $unreleasedIndex === null
+        ? []
+        : array_slice($lines, $unreleasedIndex + 1, $historyStart - $unreleasedIndex - 1);
+    $unreleasedText = trim(implode("\n", $unreleased));
+    $releaseBody = $unreleasedText === '' ? ['_无显著变更_'] : explode("\n", $unreleasedText);
+    $releaseDate = getTagDate($tag);
+    $dateSuffix = $releaseDate === null ? '' : " - $releaseDate";
+    $prefixEnd = $unreleasedIndex ?? $historyStart;
+    $prefix = array_slice($lines, 0, $prefixEnd);
+
+    $lines = array_merge(
+        $prefix,
+        [''],
+        ["## [$tag]$dateSuffix", ''],
+        $releaseBody,
+        [''],
+        array_slice($lines, $historyStart),
+    );
 }
 
-// 生成比较链接
-$output .= generateLinks($tags);
+$title = array_shift($lines);
+while (($lines[0] ?? null) === '') {
+    array_shift($lines);
+}
 
-file_put_contents("$root/CHANGELOG.md", $output);
-echo "CHANGELOG.md 已生成\n";
+$output = implode("\n", array_merge([$title, '', $notice, ''], $lines));
+$output = rtrim($output) . "\n\n" . generateLinks($tags);
 
-// ============ 函数 ============
+if (file_put_contents($changelogPath, $output) === false) {
+    fwrite(STDERR, "无法写入 CHANGELOG.md\n");
+    exit(1);
+}
 
+echo "CHANGELOG.md 已更新版本 $tag\n";
+
+/** @return array{tag?: string} */
 function parseArgs(array $argv): array
 {
-    $opts = [];
-    for ($i = 1; $i < count($argv); $i++) {
-        if ($argv[$i] === '--from' && isset($argv[$i + 1])) {
-            $opts['from'] = $argv[++$i];
-        } elseif ($argv[$i] === '--to' && isset($argv[$i + 1])) {
-            $opts['to'] = $argv[++$i];
+    $options = [];
+    for ($index = 1; $index < count($argv); $index++) {
+        if ($argv[$index] === '--tag' && isset($argv[$index + 1])) {
+            $options['tag'] = $argv[++$index];
         }
     }
-    return $opts;
+
+    return $options;
 }
 
+function getHeadTag(): ?string
+{
+    exec('git describe --tags --exact-match HEAD 2>/dev/null', $output, $status);
+    return $status === 0 && isset($output[0]) ? trim($output[0]) : null;
+}
+
+/** @return list<string> */
 function getTags(): array
 {
-    $output = [];
-    exec('git tag -l', $output);
-    $tags = array_filter($output);
+    exec('git tag --list', $output, $status);
+    if ($status !== 0) {
+        fwrite(STDERR, "无法读取 git tags\n");
+        exit(1);
+    }
 
-    // 语义化版本排序
-    usort($tags, function ($a, $b) {
-        return version_compare(ltrim($a, 'v'), ltrim($b, 'v'));
-    });
-
+    $tags = array_values(array_filter($output));
+    usort($tags, static fn (string $a, string $b): int => version_compare(ltrim($a, 'v'), ltrim($b, 'v')));
     return $tags;
 }
 
-function getTagDate(string $tag): ?DateTime
+function isAncestor(string $commit, string $ref): bool
 {
-    $output = [];
-    exec("git log -1 --format=%ai " . escapeshellarg($tag), $output);
-    if (!empty($output[0])) {
-        return new DateTime(trim($output[0]));
+    exec('git merge-base --is-ancestor ' . escapeshellarg($commit) . ' ' . escapeshellarg($ref), $output, $status);
+    return $status === 0;
+}
+
+function findHeading(array $lines, string $heading): ?int
+{
+    foreach ($lines as $index => $line) {
+        if ($line === $heading) {
+            return $index;
+        }
     }
+
     return null;
 }
 
-function buildRanges(array $tags): array
+function findVersionHeading(array $lines, string $tag): ?int
 {
-    $ranges = [];
-
-    // 只列出已发布 tag
-    for ($i = count($tags) - 1; $i >= 0; $i--) {
-        $tag = $tags[$i];
-        $from = $i > 0 ? $tags[$i - 1] : null;
-        $range = $from ? "$from..$tag" : $tag;
-        $ranges[] = [$range, $tag, getTagDate($tag)];
+    $expectedPrefix = "## [$tag]";
+    foreach ($lines as $index => $line) {
+        if (str_starts_with($line, $expectedPrefix) && preg_match('/^## \[' . preg_quote($tag, '/') . '\](?:\s|$)/', $line)) {
+            return $index;
+        }
     }
 
-    return $ranges;
+    return null;
 }
 
-function getCommits(string $range): array
+function getTagDate(string $tag): ?string
 {
-    $output = [];
-    exec("git log --no-merges --format=%s " . escapeshellarg($range), $output);
-    return array_filter($output);
+    exec('git log -1 --format=%cs ' . escapeshellarg($tag), $output, $status);
+    return $status === 0 && isset($output[0]) ? trim($output[0]) : null;
 }
 
-function groupCommits(array $commits, array $sections): array
-{
-    $grouped = [];
-
-    foreach ($commits as $msg) {
-        $parsed = parseCommit($msg);
-        $type = $parsed['type'];
-        $text = $parsed['text'];
-
-        if (!isset($sections[$type])) {
-            $sectionName = '变更';
-        } else {
-            $sectionName = $sections[$type];
-        }
-
-        if ($type === 'style') {
-            continue; // 忽略纯格式变更
-        }
-
-        if (!isset($grouped[$sectionName])) {
-            $grouped[$sectionName] = [];
-        }
-        $grouped[$sectionName][] = $text;
-    }
-
-    // 去重
-    foreach ($grouped as &$items) {
-        $items = array_values(array_unique($items));
-    }
-
-    return $grouped;
-}
-
-function parseCommit(string $msg): array
-{
-    // 约定式提交: type(scope): description
-    // 也支持 emoji 格式: type: :emoji: description
-    if (preg_match('/^(\w+)(?:\(([^)]+)\))?:\s*(.+)$/u', $msg, $m)) {
-        $type = strtolower($m[1]);
-        $scope = $m[2] ?? '';
-        $desc = $m[3];
-
-        // 去除 emoji 前缀
-        $desc = preg_replace('/^:[\w-]+:\s*/u', '', $desc);
-
-        // 如果有 scope，附加到描述
-        if ($scope !== '') {
-            $desc = "($scope) $desc";
-        }
-
-        return ['type' => $type, 'text' => $desc];
-    }
-
-    // 非约定式提交，归为变更
-    return ['type' => 'chore', 'text' => $msg];
-}
-
+/** @param list<string> $tags */
 function generateLinks(array $tags): string
 {
     $repo = getRepoUrl();
-    if (!$repo) {
+    if ($repo === null) {
         return '';
     }
 
-    $links = "\n";
-
-    // 已发布 tag
-    for ($i = 0; $i < count($tags); $i++) {
-        $tag = $tags[$i];
-        if ($i === 0) {
+    $links = '';
+    foreach ($tags as $index => $tag) {
+        if ($index === 0) {
             $links .= "[$tag]: $repo/releases/tag/$tag\n";
-        } else {
-            $prev = $tags[$i - 1];
-            $links .= "[$tag]: $repo/compare/$prev...$tag\n";
+            continue;
         }
+
+        $previous = $tags[$index - 1];
+        $links .= "[$tag]: $repo/compare/$previous...$tag\n";
     }
 
     return $links;
@@ -235,20 +222,15 @@ function generateLinks(array $tags): string
 
 function getRepoUrl(): ?string
 {
-    $output = [];
-    exec('git remote get-url origin 2>/dev/null', $output);
-    if (empty($output[0])) {
+    exec('git remote get-url origin 2>/dev/null', $output, $status);
+    if ($status !== 0 || !isset($output[0])) {
         return null;
     }
 
     $url = trim($output[0]);
-
-    // SSH → HTTPS
-    if (preg_match('/git@([^:]+):(.+)\.git$/', $url, $m)) {
-        return "https://$m[1]/$m[2]";
+    if (preg_match('/^git@([^:]+):(.+)\.git$/', $url, $matches)) {
+        return "https://$matches[1]/$matches[2]";
     }
 
-    // HTTPS，去掉 .git
-    $url = preg_replace('/\.git$/', '', $url);
-    return $url;
+    return preg_replace('/\.git$/', '', $url);
 }

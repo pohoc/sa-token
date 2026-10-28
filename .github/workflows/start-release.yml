@@ -1,0 +1,120 @@
+name: Start Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: SemVer without v, for example 0.3.1
+        required: true
+        type: string
+
+concurrency:
+  group: start-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+jobs:
+  validate-version:
+    name: Validate release version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      sha: ${{ steps.version.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: main
+          fetch-depth: 0
+      - id: version
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          EVENT_REF: ${{ github.ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$EVENT_REF" = 'refs/heads/main'
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]
+          git fetch origin main --prune --tags
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+
+          OPEN_CHANGELOG_PRS="$(gh pr list --base main --state open --json headRefName --jq '[.[] | select(.headRefName | startswith("release/changelog-"))] | length')"
+          if [[ "$OPEN_CHANGELOG_PRS" != 0 ]]; then
+            echo '::error::A release changelog PR is still open. Resume or resolve that release before starting another.'
+            exit 1
+          fi
+
+          ACTIVE_RELEASE_RUNS="$(gh run list --workflow release.yml --limit 20 --json status --jq '[.[] | select(.status == "queued" or .status == "in_progress" or .status == "waiting")] | length')"
+          if [[ "$ACTIVE_RELEASE_RUNS" != 0 ]]; then
+            echo '::error::A Release workflow is still running or waiting for approval.'
+            exit 1
+          fi
+
+          RELEASES="$(gh release list --limit 100 --json tagName --jq '.[].tagName')"
+          while IFS= read -r EXISTING_TAG; do
+            [[ -z "$EXISTING_TAG" ]] && continue
+            if ! grep -Fxq "$EXISTING_TAG" <<< "$RELEASES"; then
+              echo "::error::Tag $EXISTING_TAG has no GitHub Release. Resume it before starting another release."
+              exit 1
+            fi
+          done < <(git tag --list 'v*' | sort -V)
+
+          TAG="v$VERSION"
+          if git show-ref --tags --verify --quiet "refs/tags/$TAG"; then
+            echo "::error::Release tag $TAG already exists. Use the Release workflow to resume it."
+            exit 1
+          fi
+          REMOTE_TAG="$(git ls-remote --tags origin "refs/tags/$TAG")"
+          if [[ -n "$REMOTE_TAG" ]]; then
+            echo "::error::Release tag $TAG already exists. Use the Release workflow to resume it."
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  full-ci:
+    needs: validate-version
+    uses: ./.github/workflows/_ci.yml
+    secrets: inherit
+
+  create-tag-and-start-release:
+    name: Create tag and start Release workflow
+    needs: [validate-version, full-ci]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Create immutable version tag
+        env:
+          TAG: ${{ needs.validate-version.outputs.tag }}
+          EXPECTED_SHA: ${{ needs.validate-version.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git fetch origin main --prune --tags
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$(git rev-parse origin/main)" = "$EXPECTED_SHA"
+          REMOTE_TAG="$(git ls-remote --tags origin "refs/tags/$TAG")"
+          if [[ -n "$REMOTE_TAG" ]]; then
+            echo "::error::Release tag $TAG was created by another run."
+            exit 1
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+      - name: Dispatch tag-scoped Release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.validate-version.outputs.tag }}
+        run: |
+          gh api --method POST "repos/$GITHUB_REPOSITORY/dispatches" \
+            -f event_type=release-tag-created \
+            -F "client_payload[tag]=$TAG"
