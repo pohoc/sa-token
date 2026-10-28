@@ -1,10 +1,15 @@
 name: Release
 
 on:
+  push:
+    tags:
+      - 'v*'
+  repository_dispatch:
+    types: [release-tag-created]
   workflow_dispatch:
     inputs:
-      version:
-        description: SemVer without v, for example 1.2.3
+      tag:
+        description: Existing release tag to publish or resume, for example v0.3.1
         required: true
         type: string
 
@@ -16,61 +21,222 @@ permissions:
   contents: read
 
 jobs:
-  validate-version:
-    name: Validate release version
+  validate-tag:
+    name: Validate release tag and CI
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
     outputs:
-      tag: ${{ steps.version.outputs.tag }}
+      tag: ${{ steps.tag.outputs.tag }}
+      sha: ${{ steps.verify.outputs.sha }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          ref: main
-          fetch-depth: 0
-      - id: version
-        shell: bash
+      - name: Resolve tag
+        id: tag
         env:
-          VERSION: ${{ inputs.version }}
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_TAG: ${{ github.ref_name }}
+          DISPATCH_TAG: ${{ github.event.client_payload.tag }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]
-          if git show-ref --tags --verify --quiet "refs/tags/v$VERSION"; then
-            echo '::error::The release tag already exists.'
-            exit 1
-          fi
-          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          case "$EVENT_NAME" in
+            push) TAG="$PUSH_TAG" ;;
+            repository_dispatch) TAG="$DISPATCH_TAG" ;;
+            workflow_dispatch) TAG="$INPUT_TAG" ;;
+            *) echo "Unsupported event: $EVENT_NAME" >&2; exit 1 ;;
+          esac
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-  full-ci:
-    name: Full CI
-    needs: validate-version
-    uses: ./.github/workflows/_ci.yml
-    secrets: inherit
-
-  publish:
-    name: Create tag and GitHub Release
-    needs: [validate-version, full-ci]
-    if: ${{ needs.full-ci.result == 'success' }}
-    runs-on: ubuntu-latest
-    environment: release
-    permissions:
-      contents: write
-    steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: main
+          ref: ${{ steps.tag.outputs.tag }}
           fetch-depth: 0
-      - name: Verify main is unchanged and create tag
+
+      - name: Verify tag is on main and all CI checks passed
+        id: verify
         env:
-          TAG: ${{ needs.validate-version.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           set -euo pipefail
           git fetch origin main --prune --tags
-          test "$(git rev-parse origin/main)" = "$(git rev-parse HEAD)"
-          git config user.name 'release-bot[bot]'
-          git config user.email 'release-bot@users.noreply.github.com'
-          git tag -a "$TAG" -m "Release $TAG"
-          git push origin "$TAG"
-      - name: Create GitHub Release
+          SHA="$(git rev-parse "$TAG^{commit}")"
+          test "$SHA" = "$(git rev-parse HEAD)"
+          git merge-base --is-ancestor "$SHA" origin/main
+
+          CHECKS="$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/check-runs" --jq '.check_runs')"
+          REQUIRED=(
+            'full-ci / Composer validation'
+            'full-ci / Static analysis and style'
+            'full-ci / Test (real Redis)'
+          )
+          for PHP_VERSION in 8.2 8.3 8.4 8.5; do
+            for DEPENDENCIES in lowest highest; do
+              REQUIRED+=("full-ci / Test (no Redis) / PHP $PHP_VERSION / $DEPENDENCIES")
+            done
+          done
+
+          for CHECK in "${REQUIRED[@]}"; do
+            CONCLUSION="$(jq -r --arg name "$CHECK" '[.[] | select(.name == $name)] | sort_by(.completed_at // .started_at) | last | .conclusion // "missing"' <<< "$CHECKS")"
+            if [[ "$CONCLUSION" != success ]]; then
+              echo "::error::Required CI check '$CHECK' is '$CONCLUSION' for $SHA"
+              exit 1
+            fi
+          done
+
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Generate changelog and publish
+    needs: validate-tag
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      actions: write
+      checks: read
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.validate-tag.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@b604ade2a87db23f8871b7182e69ec5e75effb45
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      - name: Generate changelog and release notes
+        env:
+          TAG: ${{ needs.validate-tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          php scripts/changelog.php --tag "$TAG"
+          cp CHANGELOG.md "$RUNNER_TEMP/generated-CHANGELOG.md"
+          awk -v tag="$TAG" '
+            index($0, "## [" tag "]") == 1 { in_release = 1; next }
+            in_release && index($0, "## [") == 1 { exit }
+            in_release && index($0, "]: https://") > 0 { exit }
+            in_release { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/release-notes.md"
+          test -s "$RUNNER_TEMP/release-notes.md"
+
+      - name: Create and validate changelog pull request
+        id: changelog
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.validate-version.outputs.tag }}
-        run: gh release create "$TAG" --verify-tag --generate-notes --title "$TAG"
+          TAG: ${{ needs.validate-tag.outputs.tag }}
+          TAG_SHA: ${{ needs.validate-tag.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git fetch origin main --prune
+          git merge-base --is-ancestor "$TAG_SHA" origin/main
+          git show origin/main:CHANGELOG.md > "$RUNNER_TEMP/main-CHANGELOG.md"
+          if grep -Fq "## [$TAG]" "$RUNNER_TEMP/main-CHANGELOG.md"; then
+            echo 'updated=true' >> "$GITHUB_OUTPUT"
+            echo 'Changelog already contains this release.'
+            exit 0
+          fi
+          if ! git diff --quiet "$TAG_SHA" origin/main -- CHANGELOG.md; then
+            echo '::error::CHANGELOG.md changed on main after the release tag. Reconcile it before retrying this Release run.'
+            exit 1
+          fi
+
+          BRANCH="release/changelog-$TAG"
+          EXISTING_PR="$(gh pr list --base main --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [[ -n "$EXISTING_PR" ]]; then
+            BRANCH_SHA="$(gh pr view "$EXISTING_PR" --json headRefOid --jq '.headRefOid')"
+            git fetch origin "$BRANCH"
+            git show "$BRANCH_SHA:CHANGELOG.md" > "$RUNNER_TEMP/existing-CHANGELOG.md"
+            if ! cmp -s "$RUNNER_TEMP/generated-CHANGELOG.md" "$RUNNER_TEMP/existing-CHANGELOG.md"; then
+              echo "::error::Changelog PR #$EXISTING_PR differs from the generated output. Resolve it before retrying Release for $TAG."
+              exit 1
+            fi
+            {
+              echo "pr_number=$EXISTING_PR"
+              echo "branch=$BRANCH"
+              echo "branch_sha=$BRANCH_SHA"
+              echo 'updated=false'
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git switch --create "$BRANCH" origin/main
+          cp "$RUNNER_TEMP/generated-CHANGELOG.md" CHANGELOG.md
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add CHANGELOG.md
+          git commit -m "docs(changelog): update $TAG release notes"
+          git push origin "$BRANCH"
+
+          PR_URL="$(gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "docs(changelog): update $TAG release notes" \
+            --body "Generated from the commits included in $TAG. This PR is part of the release workflow; the GitHub Release will be published after the required CI checks pass and the changelog is merged.")"
+          PR_NUMBER="${PR_URL##*/}"
+          BRANCH_SHA="$(git rev-parse HEAD)"
+          {
+            echo "pr_number=$PR_NUMBER"
+            echo "branch=$BRANCH"
+            echo "branch_sha=$BRANCH_SHA"
+            echo 'updated=false'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run required CI for changelog pull request
+        if: steps.changelog.outputs.updated == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.changelog.outputs.branch }}
+          BRANCH_SHA: ${{ steps.changelog.outputs.branch_sha }}
+        run: |
+          set -euo pipefail
+          gh workflow run CI --ref "$BRANCH"
+
+          RUN_ID=''
+          for _ in $(seq 1 60); do
+            RUN_ID="$(gh run list --workflow ci.yml --branch "$BRANCH" --event workflow_dispatch --limit 10 --json databaseId,headSha | jq -r --arg sha "$BRANCH_SHA" '.[] | select(.headSha == $sha) | .databaseId' | head -n 1)"
+            [[ -n "$RUN_ID" ]] && break
+            sleep 10
+          done
+          if [[ -z "$RUN_ID" ]]; then
+            echo '::error::Timed out waiting for the changelog CI run to start.'
+            exit 1
+          fi
+          gh run watch "$RUN_ID" --exit-status
+
+      - name: Merge changelog pull request
+        if: steps.changelog.outputs.updated == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.changelog.outputs.pr_number }}
+        run: gh pr merge "$PR_NUMBER" --squash --delete-branch
+
+      - name: Verify changelog is on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.validate-tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git fetch origin main --prune
+          git show origin/main:CHANGELOG.md > "$RUNNER_TEMP/main-CHANGELOG.md"
+          grep -Fq "## [$TAG]" "$RUNNER_TEMP/main-CHANGELOG.md"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.validate-tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; leaving its published notes unchanged."
+            exit 0
+          fi
+          gh release create "$TAG" \
+            --verify-tag \
+            --title "$TAG" \
+            --notes-file "$RUNNER_TEMP/release-notes.md"

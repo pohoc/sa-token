@@ -1,6 +1,8 @@
 # 变更日志
 
-## 未发布
+本日志由发布流程维护；归档时保留已有版本记录。
+
+## [v0.3.0] - 2026-10-27
 
 ### 安全修复
 - (security) API Key 请求探测现在将部分或重复凭据 Header 识别为认证尝试，避免调用方按完整性探测结果跳过 API Key 校验并回退到 bearer 认证。
@@ -25,7 +27,17 @@
 - 启用防暴力破解并部署在反向代理后时，需将真实代理 IP 配置到 `SaTokenContext::setTrustedProxies()`；未能解析来源 IP 的认证会失败关闭。
 - 加密存储数据绑定 DAO key，升级后旧版未绑定的加密状态按上文说明重新登录、授权或重建。
 
-本文件由脚本自动生成，基于 git tag 和 commit 记录。
+## [v0.2.2] - 2026-08-31
+
+### 修复
+- (sso) 绑定跨 Redis SSO 响应与 ticket。
+
+### 变更
+- 完善 Composer CI/CD 流程与依赖兼容矩阵。
+
+## [v0.2.1] - 2026-08-31
+
+_无显著变更_
 
 ## [v0.2.0] - 2026-08-31
 
@@ -112,9 +124,11 @@
 ### 新增
 - 初始提交
 
-
 [v0.0.1]: https://github.com/pohoc/sa-token/releases/tag/v0.0.1
 [v0.1.0]: https://github.com/pohoc/sa-token/compare/v0.0.1...v0.1.0
 [v0.1.1]: https://github.com/pohoc/sa-token/compare/v0.1.0...v0.1.1
 [v0.1.2]: https://github.com/pohoc/sa-token/compare/v0.1.1...v0.1.2
 [v0.2.0]: https://github.com/pohoc/sa-token/compare/v0.1.2...v0.2.0
+[v0.2.1]: https://github.com/pohoc/sa-token/compare/v0.2.0...v0.2.1
+[v0.2.2]: https://github.com/pohoc/sa-token/compare/v0.2.1...v0.2.2
+[v0.3.0]: https://github.com/pohoc/sa-token/compare/v0.2.2...v0.3.0
