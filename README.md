@@ -10,9 +10,7 @@
 > **致谢与声明**：本项目参考了 Java 生态 [dromara/sa-token](https://github.com/dromara/sa-token)（Apache-2.0）的 API 设计理念，
 > 代码为独立 PHP 实现。感谢原项目作者与社区。
 
-> **未发布版本升级提示**：当前分支包含安全加固和兼容性收紧，最低 PHP 版本为 8.2（详见 [CHANGELOG.md](CHANGELOG.md)）：
-> OAuth2 换 token 必须携带 redirect_uri、SSO 回调强制校验 state、机密 OAuth2 客户端必须配置高熵 secret（公开客户端仅能使用授权码 + PKCE）、
-> `SaSign` 强制 timestamp/nonce 且移除 MD5、加密插件密文格式升级（AES 旧格式兼容读取；安全敏感路径拒绝旧版无密钥 SM3 摘要）。升级前请阅读变更日志。
+> **升级提示**：运行环境最低要求为 PHP 8.2。升级前请阅读 [CHANGELOG.md](CHANGELOG.md) 中对应版本的兼容性说明；启用 SM 存储加密时，旧版未认证数据不能通过常规解密路径读取，迁移要求见下文。
 
 > **存储完整性说明**：安全敏感读取会拒绝 MAC 校验失败的密文。旧版 SM4 存储使用无密钥 SM3 摘要，无法验证篡改；启用 SM 模式升级后，应重新登录并清理旧版持久化会话和 OAuth2 令牌。
 
@@ -1038,11 +1036,13 @@ $valid = SaTokenCrypto::bcryptVerify('password', $bcrypt);
 
 MD5、SHA1 和 SHA256 是通用快速摘要，不能用于存储密码；密码应使用 Argon2id 等专用密码哈希。遗留系统必须使用 bcrypt 时，成本至少为 10，并应根据服务器性能选择更高成本；本方法拒绝低于 10 的成本。bcrypt 输入不能超过 72 字节；`bcryptHash()` 对超长密码抛出异常，`bcryptVerify()` 对超长输入返回 `false`，避免 bcrypt 静默忽略后缀导致不同密码被视为相同凭据。需要支持更长密码时，请使用 Argon2id 等不受该限制的算法。
 
-AES / RSA / SM2 / SM3 / SM4 等加解密功能参见 `SaTokenCrypto` 类。
+AES / RSA / HMAC 等国际算法参见 `SaTokenCrypto`；SM2 / SM3 / SM4 国密工具参见 `SaTokenSmCrypto`。
 
-AES/SM4 解密默认只接受带 HMAC 的认证格式。旧版未认证 CBC 密文如需迁移，可在受控离线流程中临时使用 `aesDecryptLegacy()` / `sm4DecryptLegacy()` 读取，再用对应的加密方法重加密；迁移方法不能用于请求输入或在线解密路径。
+这两个插件工具产生的密文格式不同：AES 使用 CBC + HMAC-SHA256；`SaTokenSmCrypto` 使用 crypto-sm 的自包含 SM4-GCM 格式，并兼容读取本插件旧版 `SMT1`（CBC + HMAC-SM3）密文。
 
-Token 存储加密器 `SaTokenEncryptor::decrypt()` 同样默认拒绝旧版无密钥 SM3 摘要的 SM4 密文；仅受控离线迁移可显式调用 `decryptLegacy()`，然后立即用 `encrypt()` 重加密。
+旧版未认证 CBC 密文如需迁移，可在受控离线流程中使用对应类的 `aesDecryptLegacy()` 或 `sm4DecryptLegacy()` 读取，再用对应的加密方法重加密。迁移方法不能用于请求输入或在线解密路径。
+
+Token 存储加密器 `SaTokenEncryptor` 与 `SaTokenSmCrypto` 的密文格式不同：存储加密器使用 SM4-CBC + HMAC-SM3，并默认拒绝旧版无密钥 SM3 摘要；仅受控离线迁移可显式调用 `decryptLegacy()`，然后立即用 `encrypt()` 重加密。
 
 ## 防暴力破解
 
@@ -1497,7 +1497,7 @@ src/
 | `ext-openssl` | AES/RSA/HMAC 等加密算法 |
 | `ext-redis` | 可选，Redis 分布式会话存储 |
 | `firebase/php-jwt` | JWT Token 模式 |
-| `pohoc/crypto-sm` | 国密 SM2/SM3/SM4 算法 |
+| `pohoc/crypto-sm` `^0.4.2` | 国密 SM2/SM3/SM4 算法；`SaTokenSmCrypto` 使用 SM4-GCM |
 | `psr/http-message` | PSR-7 HTTP 消息接口 |
 | `psr/simple-cache` | PSR-16 缓存适配 |
 
