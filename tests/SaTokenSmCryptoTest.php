@@ -196,6 +196,10 @@ class SaTokenSmCryptoTest extends TestCase
 
         $decrypted = $crypto->sm4Decrypt($encrypted);
         $this->assertEquals($plaintext, $decrypted);
+
+        $tampered = substr($encrypted, 0, -1) . (str_ends_with($encrypted, '0') ? '1' : '0');
+        $this->expectException(SaTokenException::class);
+        $crypto->sm4Decrypt($tampered);
     }
 
     public function testSm4EncryptWithCustomKey(): void
@@ -275,6 +279,19 @@ class SaTokenSmCryptoTest extends TestCase
 
         $crypto = new SaTokenSmCrypto(['sm4Key' => $key]);
         $this->assertSame($plaintext, $crypto->sm4DecryptLegacy($iv . $ciphertext));
+    }
+
+    public function testAuthenticatedGcmCiphertextIsRejectedByLegacyMigrationMethod(): void
+    {
+        $this->skipIfSmUnavailable();
+
+        $key = 'aa112233445566778899aabbccddeeff';
+        $crypto = new SaTokenSmCrypto(['sm4Key' => $key]);
+        $ciphertext = $crypto->sm4Encrypt('authenticated data');
+
+        $this->expectException(SaTokenException::class);
+        $this->expectExceptionMessage('认证格式不得使用旧版解密器');
+        $crypto->sm4DecryptLegacy($ciphertext);
     }
 
     public function testSm4EncryptEmptyString(): void

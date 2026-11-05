@@ -27,6 +27,9 @@ use SaToken\Exception\SaTokenException;
  */
 class SaTokenSmCrypto
 {
+    private const SM4_LEGACY_AUTHENTICATED_MAGIC = 'SMT1';
+    private const SM4_GCM_MAGIC_PREFIX = '534d3447434d'; // Hex-encoded "SM4GCM" prefix
+
     /**
      * SM2 私钥（64 位 hex 字符串）
      */
@@ -119,8 +122,6 @@ class SaTokenSmCrypto
      * @return string           十六进制编码的自包含认证密文
      * @throws SaTokenException
      */
-    private const SM4_AEAD_MAGIC = 'SMT1';
-
     public function sm4Encrypt(string $data, ?string $key = null): string
     {
         $key = $key ?? $this->sm4Key;
@@ -147,7 +148,7 @@ class SaTokenSmCrypto
      * 解密 crypto-sm 自包含 GCM 密文或升级前本插件生成的 SMT1 CBC+HMAC 密文。
      * 未认证的历史 CBC 密文仍必须通过 sm4DecryptLegacy() 显式迁移。
      *
-     * @param  string           $data 十六进制编码的密文（含前缀 IV）
+     * @param  string           $data 自包含 GCM 密文或旧版 SMT1 密文
      * @param  string|null      $key  32 位 hex 密钥，null 使用配置密钥
      * @return string           明文
      * @throws SaTokenException
@@ -160,9 +161,9 @@ class SaTokenSmCrypto
         }
 
         try {
-            $magicLength = strlen(self::SM4_AEAD_MAGIC);
-            if (str_starts_with($data, self::SM4_AEAD_MAGIC)) {
-                // 新格式：MAGIC(4) + HMAC-SM3(64hex) + IV(32hex) + 密文(hex)
+            $magicLength = strlen(self::SM4_LEGACY_AUTHENTICATED_MAGIC);
+            if (str_starts_with($data, self::SM4_LEGACY_AUTHENTICATED_MAGIC)) {
+                // 旧格式：MAGIC(4) + HMAC-SM3(64hex) + IV(32hex) + 密文(hex)
                 $mac = substr($data, $magicLength, 64);
                 $iv = substr($data, $magicLength + 64, 32);
                 $ciphertext = substr($data, $magicLength + 96);
@@ -196,7 +197,8 @@ class SaTokenSmCrypto
         if ($key === '') {
             throw new SaTokenException('SM4 密钥未配置');
         }
-        if (str_starts_with($data, self::SM4_AEAD_MAGIC)) {
+        if (str_starts_with($data, self::SM4_LEGACY_AUTHENTICATED_MAGIC)
+            || str_starts_with(strtolower($data), self::SM4_GCM_MAGIC_PREFIX)) {
             throw new SaTokenException('SM4 解密失败：认证格式不得使用旧版解密器');
         }
 
