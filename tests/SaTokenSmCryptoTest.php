@@ -191,6 +191,7 @@ class SaTokenSmCryptoTest extends TestCase
         $plaintext = 'Hello, SM4 加密测试！';
         $encrypted = $crypto->sm4Encrypt($plaintext);
         $this->assertNotEmpty($encrypted);
+        $this->assertStringStartsWith('534d3447434d32', $encrypted);
         $this->assertNotEquals($plaintext, $encrypted);
 
         $decrypted = $crypto->sm4Decrypt($encrypted);
@@ -242,8 +243,24 @@ class SaTokenSmCryptoTest extends TestCase
         $tamperedLegacyCiphertext = bin2hex($ivBytes) . $ciphertext;
 
         $this->expectException(SaTokenException::class);
-        $this->expectExceptionMessage('拒绝未认证的旧版 SM4-CBC 密文');
         (new SaTokenSmCrypto(['sm4Key' => $key]))->sm4Decrypt($tamperedLegacyCiphertext);
+    }
+
+    public function testSm4DecryptsAuthenticatedCbcCiphertextFromPreviousPluginVersion(): void
+    {
+        $this->skipIfSmUnavailable();
+
+        $key = 'aa112233445566778899aabbccddeeff';
+        $options = new Sm4Options();
+        $iv = $options->getIv();
+        $plaintext = 'previous authenticated CBC format';
+        $ciphertext = Sm4::encrypt($plaintext, $key, $options);
+        $macKey = hash('sha256', $key . ':sa-token-sm4-plugin-mac');
+        $mac = \CryptoSm\SM3\HmacSm3::hmac($macKey, $iv . $ciphertext);
+        $legacyAuthenticated = 'SMT1' . $mac . $iv . $ciphertext;
+
+        $crypto = new SaTokenSmCrypto(['sm4Key' => $key]);
+        $this->assertSame($plaintext, $crypto->sm4Decrypt($legacyAuthenticated));
     }
 
     public function testLegacySm4CiphertextCanOnlyBeReadThroughExplicitMigrationMethod(): void
