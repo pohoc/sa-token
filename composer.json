@@ -29,7 +29,7 @@
         "php": "^8.2",
         "ext-openssl": "*",
         "firebase/php-jwt": "^7.0",
-        "pohoc/crypto-sm": "^0.3",
+        "pohoc/crypto-sm": "^0.4.2",
         "psr/http-message": "^2.0",
         "psr/simple-cache": "^3.0"
     },

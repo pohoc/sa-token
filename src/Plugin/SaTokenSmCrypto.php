@@ -16,8 +16,8 @@ use SaToken\Exception\SaTokenException;
  *
  * 基于 pohoc/crypto-sm 提供 SM2 签名验签、SM3 哈希、SM4 加解密
  *
- * SM4 加密采用 CBC 模式，加密时随机生成 IV 并拼接到密文前（前 32 hex 字符为 IV），
- * 解密时自动从密文前提取 IV。
+ * SM4 加密采用 crypto-sm 的自包含 GCM 格式，提供认证加密。
+ * 升级前由本插件生成的 SMT1 格式（CBC + HMAC-SM3）仍可读取。
  *
  * 使用示例：
  *   $crypto = new SaTokenSmCrypto($config);
@@ -27,6 +27,9 @@ use SaToken\Exception\SaTokenException;
  */
 class SaTokenSmCrypto
 {
+    private const SM4_LEGACY_AUTHENTICATED_MAGIC = 'SMT1';
+    private const SM4_GCM_MAGIC_PREFIX = '534d3447434d'; // Hex-encoded "SM4GCM" prefix
+
     /**
      * SM2 私钥（64 位 hex 字符串）
      */
@@ -112,18 +115,13 @@ class SaTokenSmCrypto
     }
 
     /**
-     * SM4 加密（CBC 模式，PKCS5 填充）
-     *
-     * 加密时随机生成 IV，并将 IV（32 位 hex）拼接到密文前面。
-     * 最终输出格式：IV(32hex) + Ciphertext(hex)
+     * SM4-GCM 认证加密，使用 crypto-sm 自包含密文格式。
      *
      * @param  string           $data 明文
      * @param  string|null      $key  32 位 hex 密钥，null 使用配置密钥
-     * @return string           十六进制编码的密文（含前缀 IV）
+     * @return string           十六进制编码的自包含认证密文
      * @throws SaTokenException
      */
-    private const SM4_AEAD_MAGIC = 'SMT1';
-
     public function sm4Encrypt(string $data, ?string $key = null): string
     {
         $key = $key ?? $this->sm4Key;
@@ -132,14 +130,7 @@ class SaTokenSmCrypto
         }
 
         try {
-            $options = new Sm4Options(); // 构造时自动生成随机 IV
-            $ciphertext = Sm4::encrypt($data, $key, $options);
-            $iv = $options->getIv();
-
-            // CBC 无认证：拼 MAC（HMAC-SM3，独立派生密钥），防篡改/padding oracle
-            $mac = HmacSm3::hmac($this->deriveSm4MacKey($key), $iv . $ciphertext);
-
-            return self::SM4_AEAD_MAGIC . $mac . $iv . $ciphertext;
+            return Sm4::encrypt($data, $key);
         } catch (\Throwable $e) {
             throw new SaTokenException('SM4 加密失败：' . $e->getMessage(), 0, $e);
         }
@@ -154,12 +145,10 @@ class SaTokenSmCrypto
     }
 
     /**
-     * SM4 解密（CBC 模式，PKCS5 填充）
+     * 解密 crypto-sm 自包含 GCM 密文或升级前本插件生成的 SMT1 CBC+HMAC 密文。
+     * 未认证的历史 CBC 密文仍必须通过 sm4DecryptLegacy() 显式迁移。
      *
-     * 仅接受带 HMAC 的认证密文。旧版无认证 CBC 密文必须通过
-     * sm4DecryptLegacy() 显式迁移，避免静默回退接受 IV 比特翻转。
-     *
-     * @param  string           $data 十六进制编码的密文（含前缀 IV）
+     * @param  string           $data 自包含 GCM 密文或旧版 SMT1 密文
      * @param  string|null      $key  32 位 hex 密钥，null 使用配置密钥
      * @return string           明文
      * @throws SaTokenException
@@ -172,9 +161,9 @@ class SaTokenSmCrypto
         }
 
         try {
-            $magicLength = strlen(self::SM4_AEAD_MAGIC);
-            if (str_starts_with($data, self::SM4_AEAD_MAGIC)) {
-                // 新格式：MAGIC(4) + HMAC-SM3(64hex) + IV(32hex) + 密文(hex)
+            $magicLength = strlen(self::SM4_LEGACY_AUTHENTICATED_MAGIC);
+            if (str_starts_with($data, self::SM4_LEGACY_AUTHENTICATED_MAGIC)) {
+                // 旧格式：MAGIC(4) + HMAC-SM3(64hex) + IV(32hex) + 密文(hex)
                 $mac = substr($data, $magicLength, 64);
                 $iv = substr($data, $magicLength + 64, 32);
                 $ciphertext = substr($data, $magicLength + 96);
@@ -183,12 +172,12 @@ class SaTokenSmCrypto
                 if (!hash_equals($expectedMac, $mac)) {
                     throw new SaTokenException('SM4 解密失败：密文完整性校验未通过（可能被篡改）');
                 }
-            } else {
-                throw new SaTokenException('SM4 解密失败：拒绝未认证的旧版 SM4-CBC 密文');
+                $options = (new Sm4Options())->setIv($iv);
+                return Sm4::decrypt($ciphertext, $key, $options);
             }
 
-            $options = (new Sm4Options())->setIv($iv);
-            return Sm4::decrypt($ciphertext, $key, $options);
+            // 新格式由上游库完成 GCM tag 验证；非自包含格式不会被当作 CBC 接受。
+            return Sm4::decrypt($data, $key);
         } catch (\Throwable $e) {
             throw new SaTokenException('SM4 解密失败：' . $e->getMessage(), 0, $e);
         }
@@ -208,7 +197,8 @@ class SaTokenSmCrypto
         if ($key === '') {
             throw new SaTokenException('SM4 密钥未配置');
         }
-        if (str_starts_with($data, self::SM4_AEAD_MAGIC)) {
+        if (str_starts_with($data, self::SM4_LEGACY_AUTHENTICATED_MAGIC)
+            || str_starts_with(strtolower($data), self::SM4_GCM_MAGIC_PREFIX)) {
             throw new SaTokenException('SM4 解密失败：认证格式不得使用旧版解密器');
         }
 
