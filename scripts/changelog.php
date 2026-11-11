@@ -49,12 +49,14 @@ if (preg_match('//u', $content) !== 1) {
 
 $lines = preg_split('/\r\n|\n|\r/', rtrim($content, "\r\n")) ?: [];
 $notice = '本日志由发布流程根据版本间的 Conventional Commits 自动生成。';
+$legacyNotice = '本日志由发布流程维护；归档时保留已有版本记录。';
 $previousNotice = '发布时，脚本会将“未发布”条目归档到对应版本；历史版本内容保持不变。';
 $lines = array_values(array_filter(
     $lines,
     static fn (string $line): bool =>
         $line !== '本文件由脚本自动生成，基于 git tag 和 commit 记录。'
         && $line !== $notice
+        && $line !== $legacyNotice
         && $line !== $previousNotice
         && !preg_match('/^\[[^\]]+\]:\s+https?:\/\/\S+\s*$/', $line),
 ));
@@ -117,6 +119,7 @@ while (($lines[0] ?? null) === '') {
 }
 
 $output = implode("\n", array_merge([$title, '', $notice, ''], $lines));
+$output = preg_replace('/\n{3,}/', "\n\n", $output) ?? $output;
 $output = rtrim($output) . "\n\n" . generateLinks($tags);
 
 if (file_put_contents($changelogPath, $output) === false) {

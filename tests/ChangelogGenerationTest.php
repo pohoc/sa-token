@@ -21,7 +21,7 @@ class ChangelogGenerationTest extends TestCase
         $this->runCommand('git config user.email "test@example.invalid"');
         file_put_contents(
             $this->repository . '/CHANGELOG.md',
-            "# 变更日志\n\n本日志由发布流程维护。\n\n## 未发布\n\n### 变更\n- 手工内容不应成为版本日志来源\n\n## [v0.3.0] - 2026-10-27\n\n旧版本说明。\n",
+            "# 变更日志\n\n本日志由发布流程维护；归档时保留已有版本记录。\n\n## 未发布\n\n### 变更\n- 手工内容不应成为版本日志来源\n\n## [v0.3.0] - 2026-10-27\n\n旧版本说明。\n",
         );
         $this->runCommand('git add CHANGELOG.md scripts/changelog.php');
         $this->runCommand('git commit -qm "release: seed fixture"');
@@ -51,6 +51,9 @@ class ChangelogGenerationTest extends TestCase
         $changelog = file_get_contents($this->repository . '/CHANGELOG.md');
         self::assertIsString($changelog);
         self::assertStringContainsString('## [v0.3.1]', $changelog);
+        self::assertSame(1, substr_count($changelog, '本日志由发布流程根据版本间的 Conventional Commits 自动生成。'));
+        self::assertStringNotContainsString('本日志由发布流程维护；归档时保留已有版本记录。', $changelog);
+        self::assertDoesNotMatchRegularExpression('/\n{3,}/', $changelog);
         self::assertStringContainsString('### 新增', $changelog);
         self::assertStringContainsString('- (feat/session) ✨ add rotation support', $changelog);
         self::assertStringContainsString('### 修复', $changelog);
