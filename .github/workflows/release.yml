@@ -193,7 +193,7 @@ jobs:
             echo 'updated=false'
           } >> "$GITHUB_OUTPUT"
 
-      - name: Run required CI for changelog pull request
+      - name: Wait for required CI on changelog pull request
         if: steps.changelog.outputs.updated == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -201,16 +201,14 @@ jobs:
           BRANCH_SHA: ${{ steps.changelog.outputs.branch_sha }}
         run: |
           set -euo pipefail
-          gh workflow run CI --ref "$BRANCH"
-
           RUN_ID=''
           for _ in $(seq 1 60); do
-            RUN_ID="$(gh run list --workflow ci.yml --branch "$BRANCH" --event workflow_dispatch --limit 10 --json databaseId,headSha | jq -r --arg sha "$BRANCH_SHA" '.[] | select(.headSha == $sha) | .databaseId' | head -n 1)"
+            RUN_ID="$(gh run list --workflow ci.yml --branch "$BRANCH" --event pull_request --limit 10 --json databaseId,headSha | jq -r --arg sha "$BRANCH_SHA" '.[] | select(.headSha == $sha) | .databaseId' | head -n 1)"
             [[ -n "$RUN_ID" ]] && break
             sleep 10
           done
           if [[ -z "$RUN_ID" ]]; then
-            echo '::error::Timed out waiting for the changelog CI run to start.'
+            echo '::error::Timed out waiting for the changelog pull_request CI run to start.'
             exit 1
           fi
           gh run watch "$RUN_ID" --exit-status

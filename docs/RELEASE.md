@@ -18,7 +18,7 @@
 3. 工作流运行完整 CI。通过后会确认 `main` 未变化，创建不可变的 `v0.3.1` tag，并启动 tag 对应的 **Release** workflow。
 4. **Release** 校验 tag 确实位于 `main`，并确认 PHP 8.2–8.5、最低/最高依赖、真实 Redis、静态分析和 Composer 检查全部成功。
 5. `release` 环境需要审批后，Release workflow 调用 `php scripts/changelog.php --tag v0.3.1`，自动汇总两个版本 tag 之间的用户可见 Conventional Commits，生成版本日志并更新 tag 比较链接，再从该版本生成 Release notes。
-6. 由于 `main` 要求通过 PR，workflow 会创建只包含变更日志的 PR，在该分支运行 CI；CI 通过后自动合并 PR，再创建 GitHub Release。
+6. 由于 `main` 要求通过 PR，workflow 会创建只包含变更日志的 PR。`pull_request` 事件自动运行该 PR 的 CI；Release workflow 按 PR 提交 SHA 等待这次 CI 成功后自动合并 PR，再创建 GitHub Release，不会再对同一提交手动启动第二次完整 CI。
 7. 检查最终 tag、`CHANGELOG.md` 和 GitHub Release 是否指向同一版本并且内容一致。
 
 版本号输入示例：`0.3.1`；工作流会自动补 `v` 前缀。一次点击会启动整个流程。仓库现有的 `release` 环境审批仍然生效；如 CI、变更日志 PR 或环境审批失败，Release 不会发布。
@@ -43,5 +43,5 @@ git push origin v0.3.1
 ## 工作流实现说明
 
 - `start-release.yml` 是一键入口：先完整验证，再创建 tag。由于 GitHub 不会让 `GITHUB_TOKEN` 推送的 tag 自动启动另一个 push workflow，它会在 tag 创建后显式发送 `repository_dispatch` 来启动 **Release**。人工推送 tag 则由 `push.tags` 触发。
-- `release.yml` 只处理已存在的 tag：校验 CI、运行 changelog 脚本、通过 PR 更新 `main`，然后发布 Release。
+- `release.yml` 只处理已存在的 tag：校验版本提交的 CI、运行 changelog 脚本、等待 changelog PR 自动触发的 CI、通过 PR 更新 `main`，然后发布 Release。
 - `scripts/changelog.php` 根据前后版本 tag 之间的 `feat`、`fix`、`security`、`perf`、`deps`、`build`、`refactor` 和 `docs` 提交自动生成日志；CI、测试、维护和发布流程提交不会进入用户版本日志。历史版本说明会保留，比较链接会自动更新。
