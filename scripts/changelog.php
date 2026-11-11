@@ -277,7 +277,7 @@ function generateReleaseBody(?string $previousTag, string $tag): array
 
         $type = strtolower($matches[1]);
         $scope = $matches[2] ?? '';
-        if ($type === 'docs' && preg_match('/^(?:release|changelog)$/i', $scope)) {
+        if (preg_match('/^(?:release|changelog)$/i', $scope)) {
             continue;
         }
 

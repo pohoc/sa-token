@@ -43,6 +43,7 @@ class ChangelogGenerationTest extends TestCase
         $this->commit('fix(auth): 🐛 reject invalid credentials');
         $this->commit('docs(readme): 📝 clarify migration steps');
         $this->commit('docs(changelog): 📝 internal release wording');
+        $this->commit('fix(release): 🐛 automate release notes');
         $this->commit('ci(release): 🎡 tune workflow');
         $this->runCommand('git -c tag.gpgSign=false tag v0.3.1');
 
@@ -58,6 +59,7 @@ class ChangelogGenerationTest extends TestCase
         self::assertStringNotContainsString('未发布', $changelog);
         self::assertStringNotContainsString('手工内容', $changelog);
         self::assertStringNotContainsString('internal release wording', $changelog);
+        self::assertStringNotContainsString('automate release notes', $changelog);
         self::assertStringNotContainsString('tune workflow', $changelog);
     }
 
