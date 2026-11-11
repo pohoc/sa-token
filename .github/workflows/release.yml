@@ -110,6 +110,12 @@ jobs:
           php-version: '8.4'
           coverage: none
 
+      - name: Load current changelog generator
+        run: |
+          set -euo pipefail
+          git fetch origin main --prune
+          git show origin/main:scripts/changelog.php > scripts/changelog.php
+
       - name: Generate changelog and release notes
         env:
           TAG: ${{ needs.validate-tag.outputs.tag }}
