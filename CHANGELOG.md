@@ -1,6 +1,11 @@
 # 变更日志
 
-本日志由发布流程维护；归档时保留已有版本记录。
+本日志由发布流程根据版本间的 Conventional Commits 自动生成。
+
+## [v0.3.1] - 2026-11-11
+
+### 依赖与构建
+- (deps/crypto-sm) 升级并适配 SM4-GCM 0.4.2
 
 ## [v0.3.0] - 2026-10-27
 
@@ -132,3 +137,4 @@ _无显著变更_
 [v0.2.1]: https://github.com/pohoc/sa-token/compare/v0.2.0...v0.2.1
 [v0.2.2]: https://github.com/pohoc/sa-token/compare/v0.2.1...v0.2.2
 [v0.3.0]: https://github.com/pohoc/sa-token/compare/v0.2.2...v0.3.0
+[v0.3.1]: https://github.com/pohoc/sa-token/compare/v0.3.0...v0.3.1
