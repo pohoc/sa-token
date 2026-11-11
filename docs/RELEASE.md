@@ -4,7 +4,7 @@
 
 ## 一键发布
 
-开发期间，将需要出现在版本日志中的用户可见变更整理到 `CHANGELOG.md` 的 `## 未发布` 区域；没有待发布条目时，不保留空标题。Release workflow 会在 tag 创建后将该区域归档到版本标题并移除空占位；没有条目时会写入“无显著变更”。
+不需要手工编辑 `CHANGELOG.md`。开发提交使用 Conventional Commits 标题；创建版本 tag 后，Release workflow 会读取上一个版本 tag 到当前 tag 之间的提交，按提交类型自动生成版本日志和 GitHub Release notes，再通过 PR 更新 `main` 上的 `CHANGELOG.md`。
 
 1. 确认待发布代码已合并到 `main`。
 2. 在 GitHub Actions 运行 **Start Release**，选择 `main`，输入不带 `v` 的 SemVer，例如 `0.3.1`。
@@ -17,7 +17,7 @@
 
 3. 工作流运行完整 CI。通过后会确认 `main` 未变化，创建不可变的 `v0.3.1` tag，并启动 tag 对应的 **Release** workflow。
 4. **Release** 校验 tag 确实位于 `main`，并确认 PHP 8.2–8.5、最低/最高依赖、真实 Redis、静态分析和 Composer 检查全部成功。
-5. `release` 环境需要审批后，Release workflow 调用 `php scripts/changelog.php --tag v0.3.1`，把人工整理的“未发布”条目归档到对应版本，保留历史内容并更新 tag 比较链接，再从该版本生成 Release notes。归档后会移除空的“未发布”区。
+5. `release` 环境需要审批后，Release workflow 调用 `php scripts/changelog.php --tag v0.3.1`，自动汇总两个版本 tag 之间的用户可见 Conventional Commits，生成版本日志并更新 tag 比较链接，再从该版本生成 Release notes。
 6. 由于 `main` 要求通过 PR，workflow 会创建只包含变更日志的 PR，在该分支运行 CI；CI 通过后自动合并 PR，再创建 GitHub Release。
 7. 检查最终 tag、`CHANGELOG.md` 和 GitHub Release 是否指向同一版本并且内容一致。
 
@@ -44,4 +44,4 @@ git push origin v0.3.1
 
 - `start-release.yml` 是一键入口：先完整验证，再创建 tag。由于 GitHub 不会让 `GITHUB_TOKEN` 推送的 tag 自动启动另一个 push workflow，它会在 tag 创建后显式发送 `repository_dispatch` 来启动 **Release**。人工推送 tag 则由 `push.tags` 触发。
 - `release.yml` 只处理已存在的 tag：校验 CI、运行 changelog 脚本、通过 PR 更新 `main`，然后发布 Release。
-- `scripts/changelog.php` 不从数百条提交标题重建日志；它将人工整理的“未发布”内容归档到新 tag，保留已有版本说明并更新比较链接。
+- `scripts/changelog.php` 根据前后版本 tag 之间的 `feat`、`fix`、`security`、`perf`、`deps`、`build`、`refactor` 和 `docs` 提交自动生成日志；CI、测试、维护和发布流程提交不会进入用户版本日志。历史版本说明会保留，比较链接会自动更新。

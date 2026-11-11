@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * Archive the curated "Unreleased" section under an existing release tag.
+ * Generate release notes from user-facing Conventional Commits under a release tag.
  *
  * Usage: php scripts/changelog.php [--tag <tag>]
  * If --tag is omitted, HEAD must point exactly at a version tag.
@@ -48,7 +48,7 @@ if (preg_match('//u', $content) !== 1) {
 }
 
 $lines = preg_split('/\r\n|\n|\r/', rtrim($content, "\r\n")) ?: [];
-$notice = '本日志由发布流程维护；归档时保留已有版本记录。';
+$notice = '本日志由发布流程根据版本间的 Conventional Commits 自动生成。';
 $previousNotice = '发布时，脚本会将“未发布”条目归档到对应版本；历史版本内容保持不变。';
 $lines = array_values(array_filter(
     $lines,
@@ -87,19 +87,15 @@ if ($tagHeading !== null) {
     }
 
     $historyStart = count($lines);
-    $scanStart = $unreleasedIndex === null ? 0 : $unreleasedIndex + 1;
-    for ($index = $scanStart; $index < count($lines); $index++) {
+    for ($index = 0; $index < count($lines); $index++) {
         if ($index !== $unreleasedIndex && str_starts_with($lines[$index], '## ')) {
             $historyStart = $index;
             break;
         }
     }
 
-    $unreleased = $unreleasedIndex === null
-        ? []
-        : array_slice($lines, $unreleasedIndex + 1, $historyStart - $unreleasedIndex - 1);
-    $unreleasedText = trim(implode("\n", $unreleased));
-    $releaseBody = $unreleasedText === '' ? ['_无显著变更_'] : explode("\n", $unreleasedText);
+    $previousTag = previousReleaseTag($tags, $tag);
+    $releaseBody = generateReleaseBody($previousTag, $tag);
     $releaseDate = getTagDate($tag);
     $dateSuffix = $releaseDate === null ? '' : " - $releaseDate";
     $prefixEnd = $unreleasedIndex ?? $historyStart;
@@ -233,4 +229,81 @@ function getRepoUrl(): ?string
     }
 
     return preg_replace('/\.git$/', '', $url);
+}
+
+/** @param list<string> $tags */
+function previousReleaseTag(array $tags, string $tag): ?string
+{
+    $index = array_search($tag, $tags, true);
+    return $index !== false && $index > 0 ? $tags[$index - 1] : null;
+}
+
+/** @return list<string> */
+function generateReleaseBody(?string $previousTag, string $tag): array
+{
+    $range = $previousTag === null
+        ? escapeshellarg($tag)
+        : escapeshellarg($previousTag . '..' . $tag);
+    exec('git log --reverse --no-merges --format=%s ' . $range, $subjects, $status);
+    if ($status !== 0) {
+        fwrite(STDERR, "无法读取 $tag 的提交记录\n");
+        exit(1);
+    }
+
+    $groups = [
+        '新增' => [],
+        '修复' => [],
+        '安全修复' => [],
+        '性能优化' => [],
+        '依赖与构建' => [],
+        '变更' => [],
+        '文档' => [],
+    ];
+    $types = [
+        'feat' => '新增',
+        'fix' => '修复',
+        'security' => '安全修复',
+        'perf' => '性能优化',
+        'deps' => '依赖与构建',
+        'build' => '依赖与构建',
+        'refactor' => '变更',
+        'docs' => '文档',
+    ];
+
+    foreach ($subjects as $subject) {
+        if (!preg_match('/^(feat|fix|security|perf|deps|build|refactor|docs)(?:\(([^)]+)\))?(!)?:\s*(.+)$/iu', trim($subject), $matches)) {
+            continue;
+        }
+
+        $type = strtolower($matches[1]);
+        $scope = $matches[2] ?? '';
+        if ($type === 'docs' && preg_match('/^(?:release|changelog)$/i', $scope)) {
+            continue;
+        }
+
+        $description = trim($matches[4]);
+        $description = preg_replace('/\s+\(#\d+\)$/', '', $description) ?? $description;
+        $entry = '- (' . $type . ($scope === '' ? '' : '/' . $scope) . ') ' . $description;
+        $group = $types[$type];
+        if (!in_array($entry, $groups[$group], true)) {
+            $groups[$group][] = $entry;
+        }
+    }
+
+    $body = [];
+    foreach ($groups as $heading => $entries) {
+        if ($entries === []) {
+            continue;
+        }
+        $body[] = '### ' . $heading;
+        array_push($body, ...$entries);
+        $body[] = '';
+    }
+
+    if ($body === []) {
+        return ['_无显著变更_'];
+    }
+
+    array_pop($body);
+    return $body;
 }
